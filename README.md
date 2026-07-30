@@ -34,27 +34,51 @@ The underlying split-tunnel multipath monitoring pattern applies to any corporat
 
 ## Quick Start
 
-### 1. Prerequisites
+### 1. Install
+
+#### Homebrew (recommended)
+
+```bash
+brew tap iafilius/split-tunnel-monitor
+brew install split-tunnel-monitor
+```
+
+For banner popup notifications on outage/recovery, also install `terminal-notifier`:
+
+```bash
+brew install terminal-notifier
+```
+
+#### Manual (curl)
+
+```bash
+curl -O https://raw.githubusercontent.com/iafilius/split-tunnel-monitor/main/ping_checker.py
+chmod +x ping_checker.py
+```
+
+Requires Python 3.8+ (standard on macOS). No additional pip dependencies.
+
+### 2. Prerequisites
 
 > ⚠️ **macOS only.** Requires macOS (Apple Silicon or Intel). The monitoring pattern is conceptually portable to Linux, but the current implementation uses macOS-specific CLI tools and is not tested on any other platform.
 
-- **Python 3.8+** (standard macOS system Python or Homebrew Python).
+- **Python 3.8+** (standard macOS system Python or Homebrew Python — handled automatically by the Homebrew formula).
 - Standard non-root permissions (uses macOS system `/sbin/ping` and `/usr/sbin/traceroute`).
 - **`terminal-notifier`** *(optional, recommended)* — enables banner popup notifications on outage/recovery. Without it, notifications are delivered silently to Notification Center only.
-  ```bash
-  brew install terminal-notifier
-  ```
 
 > **Startup warnings:** At launch the script checks for all required tools and reports the notification backend. If a required tool is missing a `WARNING:` line is printed and traceroute verification is auto-disabled if `traceroute` is absent. If `terminal-notifier` is not installed, a one-line hint is printed but the script continues normally using `osascript` as fallback. Use `--no-notify` to suppress all notifications.
 
-### 2. Usage
+### 3. Usage
 
 ```bash
-chmod +x ping_checker.py
-./ping_checker.py
+# Homebrew install:
+split-tunnel-monitor
+
+# Manual / script:
+python3 ping_checker.py
 ```
 
-### 3. Example Output
+### 4. Example Output
 
 ```
 ==========================================================================================
@@ -234,7 +258,9 @@ At midnight, the current logfile is closed with a footer and a new dated logfile
 ## CLI Reference
 
 ```bash
-./ping_checker.py [OPTIONS]
+split-tunnel-monitor [OPTIONS]
+# or, if using the script directly:
+python3 ping_checker.py [OPTIONS]
 ```
 
 | Option                        | Default   | Description                                                         |
