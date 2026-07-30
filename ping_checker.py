@@ -427,7 +427,7 @@ def classify_outage(
     elif lan_ok and isp_ok and not zsc_ok:
         if zsc_target_is_virtual_gateway:
             return ("DEGRADED", "Virtual Tunnel Next-Hop ICMP Blocked (Data-Plane Probe Required)")
-        return ("OUTAGE", "Zscaler Issue (Tunnel / ZIA / ZPA Node Unreachable)")
+        return ("OUTAGE", "Zscaler Issue (VPN tunnel ICMP unresponsive)")
     elif not lan_ok and isp_ok:
         # Edge case: LAN Gateway drops ICMP response but public route works
         return ("DEGRADED", "Local Gateway ICMP Unresponsive (ISP Active)")

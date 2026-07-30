@@ -8,6 +8,8 @@ A zero-configuration, lightweight CLI tool for macOS that concurrently probes yo
 
 The underlying split-tunnel multipath monitoring pattern applies to any corporate VPN that installs a virtual tunnel adapter on macOS. **Tested and documented with Zscaler Client Connector (ZCC)**; the approach is compatible with other macOS split-tunnel VPNs such as Cisco AnyConnect and Palo Alto GlobalProtect.
 
+> **Scope — network layer (ICMP) only:** This tool uses ICMP ping to verify path reachability. It tells you *whether* the path is up and *which domain* caused an outage (LAN / ISP / VPN tunnel). It does **not** measure HTTP(S) throughput, SSL/TLS inspection quality, DNS resolution performance, or ZIA/ZPA service health. For application-layer quality monitoring — TLS handshake timing, transfer speed, proxy detection, with/without-tunnel comparison — see [InternetQualityMonitor](https://github.com/iafilius/InternetQualityMonitor).
+
 > ⚠️ **Platform:** This tool requires **macOS** (Apple Silicon or Intel). It uses macOS-specific utilities (`scutil`, BSD `ping -S`, `ipconfig getoption`, `traceroute -I`). The monitoring concept is portable to Linux, but no Linux implementation is included in this repo.
 
 ---
@@ -121,7 +123,7 @@ When an outage clears, an incident resolution block is printed inline:
 
 ```
 [10:24:48] [HEALTHY] LAN (192.168.1.1): 6.3ms | ISP Direct (1.1.1.1): 5.9ms | Zscaler (9.9.9.9): 10.2ms | ...
-[INCIDENT #1 RESOLVED] Domain: Zscaler Issue (Tunnel / ZIA / ZPA Node Unreachable) | Status: OUTAGE | Duration: 2m 35s | 10:22:13 – 10:24:48
+[INCIDENT #1 RESOLVED] Domain: Zscaler Issue (VPN tunnel ICMP unresponsive) | Status: OUTAGE | Duration: 2m 35s | 10:22:13 – 10:24:48
 ```
 
 On Ctrl+C, a session summary is printed:
@@ -140,7 +142,7 @@ On Ctrl+C, a session summary is printed:
 
  Incidents:
    #1  08:22:15  OUTAGE    ISP Issue (Direct Public WAN Unreachable)        2m 14s
-   #2  08:47:08  OUTAGE    Zscaler Issue (Tunnel / ZIA / ZPA Node Unreachable)  1m 08s
+   #2  08:47:08  OUTAGE    Zscaler Issue (VPN tunnel ICMP unresponsive)         1m 08s
 
  Overhead (session):
    baseline p50=+4.8ms  current p50=+5.1ms  p95=+8.2ms  peak=+34.0ms at 08:47:12
@@ -176,7 +178,7 @@ The **baseline** is the p50 computed from the first `--overhead-baseline-samples
 | :-------: | :----------: | :-----------------------: | :------------------------------------------------------------------------------------- |
 |  ❌ DOWN   |    ❌ DOWN    |          ❌ DOWN           | **Local Network Issue** (Wi-Fi / Ethernet dropped)                                     |
 |   ✅ OK    |    ❌ DOWN    |          ❌ DOWN           | **ISP Issue** (Physical WAN connection down)                                           |
-|   ✅ OK    |     ✅ OK     |          ❌ DOWN           | **Zscaler Issue** (Tunnel / ZIA / ZPA Node down)                                       |
+|   ✅ OK    |     ✅ OK     |          ❌ DOWN           | **Zscaler Issue** (VPN tunnel ICMP path unresponsive — ZIA/ZPA service health not assessed by this tool) |
 |   ✅ OK    |     ✅ OK     |           ✅ OK            | **Healthy Connection**                                                                 |
 |   ✅ OK    |     ✅ OK     | *(virtual GW only fails)* | **DEGRADED** — virtual tunnel next-hop drops ICMP by policy; data-plane may be healthy |
 |   ✅ OK    |    ❌ DOWN    |           ✅ OK            | **DEGRADED** — ISP direct path degraded; Zscaler tunnel still active                   |
