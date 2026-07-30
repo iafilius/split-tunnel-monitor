@@ -10,7 +10,7 @@ Runs concurrent ICMP probes across 3 isolated network paths:
 Classifies network state into failure domains: Healthy, Local Network Issue, ISP Issue, Zscaler Issue.
 Generates unique ISO-timestamped log files and live terminal UI updates.
 
-Repository: https://github.com/iafilius/simple-zscaler-ping-check
+Repository: https://github.com/iafilius/split-tunnel-monitor
 License: GNU General Public License v3.0 (GPLv3)
 """
 
@@ -21,6 +21,8 @@ import time
 import asyncio
 import argparse
 import subprocess
+import statistics as _stats
+import collections
 from datetime import datetime
 
 # Default public targets for ISP (direct) and Zscaler (tunneled) probing
@@ -439,22 +441,105 @@ def init_logfile() -> str:
     header = (
         f"# Zscaler & Network Outage Checker Log\n"
         f"# Started At: {datetime.now().astimezone().isoformat()}\n"
-        f"# Format: Timestamp_ISO | Interface | Local_IP | LAN_GW (RTT) | ISP_Direct (RTT) | Zscaler_Tunnel (RTT) | Zscaler_Virtual_Next_Hop | Direct_Verified | Zscaler_Verified | Status | Fault_Domain\n"
+        f"# Format: Timestamp_ISO | Interface | Local_IP | LAN_GW (RTT) | ISP_Direct (RTT) | Zscaler_Tunnel (RTT) | Zscaler_Virtual_Next_Hop | Direct_Verified | Zscaler_Verified | Status | Fault_Domain | OVH_p50 | OVH_p95 | OVH_baseline_p50 | OVH_loss_delta | OVH_alert\n"
         f"# Path_Verification: routing-based assurance only (not packet-capture proof).\n"
-        f"---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------\n"
+        f"----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------\n"
     )
     with open(filename, "w", encoding="utf-8") as f:
         f.write(header)
     return filename
 
 
-def log_entry(filename: str, info: dict, lan: ProbeResult, isp: ProbeResult, zsc: ProbeResult, status: str, fault: str):
+class OverheadStats:
+    """
+    Collects rolling overhead samples (zsc_rtt - isp_rtt) and per-path loss counts.
+    Derives p50/p95 percentiles, loss-rate delta, baseline p50, and alert state.
+    """
+
+    def __init__(self, window_size: int = 60):
+        self._samples: collections.deque = collections.deque(maxlen=window_size)
+        self.isp_total: int = 0
+        self.isp_loss: int = 0
+        self.zsc_total: int = 0
+        self.zsc_loss: int = 0
+        self.baseline_p50: float | None = None
+        self._baseline_just_set: bool = False
+
+    def add_sample(self, isp_res, zsc_res) -> None:
+        """Record one probe iteration into the rolling window and loss counters."""
+        if isp_res.target not in ("N/A", ""):
+            self.isp_total += 1
+            if not isp_res.success:
+                self.isp_loss += 1
+        if zsc_res.target not in ("N/A", ""):
+            self.zsc_total += 1
+            if not zsc_res.success:
+                self.zsc_loss += 1
+        if isp_res.success and zsc_res.success:
+            self._samples.append(zsc_res.rtt_ms - isp_res.rtt_ms)
+
+    def rolling_p50(self) -> float | None:
+        """Return rolling p50 overhead or None if fewer than 5 samples."""
+        if len(self._samples) < 5:
+            return None
+        return _stats.quantiles(list(self._samples), n=100)[49]
+
+    def rolling_p95(self) -> float | None:
+        """Return rolling p95 overhead or None if fewer than 5 samples."""
+        if len(self._samples) < 5:
+            return None
+        return _stats.quantiles(list(self._samples), n=100)[94]
+
+    def loss_delta_pct(self) -> float | None:
+        """Return Zscaler loss% minus ISP loss%, or None if no data."""
+        if self.isp_total == 0 or self.zsc_total == 0:
+            return None
+        isp_pct = (self.isp_loss / self.isp_total) * 100.0
+        zsc_pct = (self.zsc_loss / self.zsc_total) * 100.0
+        return round(zsc_pct - isp_pct, 1)
+
+    def maybe_set_baseline(self, n_samples: int) -> bool:
+        """
+        Set baseline_p50 once when the window has >= n_samples and baseline not yet set.
+        Returns True on the iteration baseline is first set, False otherwise.
+        """
+        if self.baseline_p50 is None and len(self._samples) >= n_samples:
+            p50 = self.rolling_p50()
+            if p50 is not None:
+                self.baseline_p50 = p50
+                return True
+        return False
+
+    def is_alerting(self, threshold_ms: float) -> bool:
+        """Return True when rolling p50 exceeds baseline p50 by more than threshold_ms."""
+        if self.baseline_p50 is None:
+            return False
+        p50 = self.rolling_p50()
+        if p50 is None:
+            return False
+        return p50 > self.baseline_p50 + threshold_ms
+
+
+def log_entry(filename: str, info: dict, lan: ProbeResult, isp: ProbeResult, zsc: ProbeResult, status: str, fault: str, overhead: "OverheadStats | None" = None):
     """Appends structured log record to log file."""
     now_iso = datetime.now().astimezone().isoformat()
     zsc_virtual_gateway = info.get("zscaler", {}).get("gateway_ip", "") or "N/A"
     pathv = info.get("path_verification", {})
     direct_verified = "YES" if pathv.get("direct_verified") else "NO"
     zsc_verified = "YES" if pathv.get("zsc_verified") else "NO"
+    # Overhead statistics columns
+    if overhead is not None:
+        p50 = overhead.rolling_p50()
+        p95 = overhead.rolling_p95()
+        bl = overhead.baseline_p50
+        ld = overhead.loss_delta_pct()
+        ovh_p50 = f"+{p50:.1f}ms" if p50 is not None else "N/A"
+        ovh_p95 = f"+{p95:.1f}ms" if p95 is not None else "N/A"
+        ovh_base = f"+{bl:.1f}ms" if bl is not None else "N/A"
+        ovh_loss = f"{ld:+.1f}%" if ld is not None else "N/A"
+        ovh_alert = "WARN" if (overhead is not None and p50 is not None and bl is not None and overhead.is_alerting(0)) else "OK"
+    else:
+        ovh_p50 = ovh_p95 = ovh_base = ovh_loss = ovh_alert = "N/A"
     line = (
         f"{now_iso} | {info['interface']} | {info['local_ip']} | "
         f"{info['gateway_ip']} ({lan.format_rtt()}) | "
@@ -462,7 +547,8 @@ def log_entry(filename: str, info: dict, lan: ProbeResult, isp: ProbeResult, zsc
         f"{zsc.target} ({zsc.format_rtt()}) | "
         f"{zsc_virtual_gateway} | "
         f"{direct_verified} | {zsc_verified} | "
-        f"{status} | {fault}\n"
+        f"{status} | {fault} | "
+        f"{ovh_p50} | {ovh_p95} | {ovh_base} | {ovh_loss} | {ovh_alert}\n"
     )
     with open(filename, "a", encoding="utf-8") as f:
         f.write(line)
@@ -497,6 +583,9 @@ async def main():
     parser.add_argument("--isp-target", type=str, default=DEFAULT_ISP_TARGET, help=f"Direct ISP target IP (default: {DEFAULT_ISP_TARGET})")
     parser.add_argument("--zscaler-target", type=str, default=DEFAULT_ZSCALER_TARGET, help=f"Zscaler tunneled target IP (default: {DEFAULT_ZSCALER_TARGET})")
     parser.add_argument("--no-trace-verify", action="store_true", help="Disable background ICMP traceroute path verification")
+    parser.add_argument("--overhead-window", type=int, default=60, help="Rolling overhead window size in samples (default: 60)")
+    parser.add_argument("--overhead-baseline-samples", type=int, default=30, help="Samples before baseline is set (default: 30)")
+    parser.add_argument("--overhead-alert-ms", type=float, default=20.0, help="Alert when rolling p50 exceeds baseline by this many ms (default: 20.0)")
     parser.add_argument("--logfile", type=str, default="", help="Custom logfile path (default: auto-generated unique filename)")
     args = parser.parse_args()
     args.trace_verify = not args.no_trace_verify
@@ -558,6 +647,7 @@ async def main():
     print("-" * 90)
     print("Press Ctrl+C to stop monitoring.\n")
 
+    overhead = OverheadStats(window_size=args.overhead_window)
     iteration = 0
     try:
         while True:
@@ -615,8 +705,14 @@ async def main():
                 zsc_target_is_virtual_gateway=zsc_target_is_virtual_gateway
             )
 
+            # Update overhead statistics
+            overhead.add_sample(isp_res, zsc_res)
+            baseline_just_set = overhead.maybe_set_baseline(args.overhead_baseline_samples)
+            if baseline_just_set:
+                print(f"\n[BASELINE] Overhead baseline established: p50=+{overhead.baseline_p50:.1f}ms (after {args.overhead_baseline_samples} samples)")
+
             # Log to file
-            log_entry(logfile, network_info, lan_res, isp_res, zsc_res, status, fault)
+            log_entry(logfile, network_info, lan_res, isp_res, zsc_res, status, fault, overhead=overhead)
 
             # Formulate compact Live Terminal Console string
             time_str = datetime.now().strftime("%H:%M:%S")
@@ -645,7 +741,19 @@ async def main():
                 elif trace_verify_task is not None:
                     trace_tag = " | TRACE(PENDING)"
 
-            console_line = f"[{time_str}] {status_color} {lan_str} | {isp_str} | {zsc_str} | {direct_tag} | {zsc_tag}{trace_tag}{fault_str}"
+            # Overhead statistics suffix
+            ovh_tag = ""
+            p50 = overhead.rolling_p50()
+            p95 = overhead.rolling_p95()
+            if p50 is not None:
+                ld = overhead.loss_delta_pct()
+                ld_str = f" Δloss={ld:+.1f}%" if ld is not None else ""
+                ovh_tag = f" | OVH: p50=+{p50:.1f}ms p95=+{p95:.1f}ms{ld_str}"
+                if overhead.is_alerting(args.overhead_alert_ms) and overhead.baseline_p50 is not None:
+                    above = p50 - overhead.baseline_p50
+                    ovh_tag += f" \033[93m[OVERHEAD-WARN: +{above:.1f}ms above baseline]\033[0m"
+
+            console_line = f"[{time_str}] {status_color} {lan_str} | {isp_str} | {zsc_str} | {direct_tag} | {zsc_tag}{trace_tag}{ovh_tag}{fault_str}"
 
             # Print update; handle broken pipe gracefully (e.g. piped to head)
             try:
