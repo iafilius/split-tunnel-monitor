@@ -223,14 +223,14 @@ The monitor supports two usage patterns:
 
 **Logfile volume at default 2-second interval:**
 
-| Period  | Lines     | Size     |
-| ------- | --------- | -------- |
-| 1 hour  | 1,800     | ~0.5 MB  |
-| 1 day   | 43,200    | ~10.7 MB |
-| 1 week  | 302,400   | ~75 MB   |
-| 1 month | 1,296,000 | ~321 MB  |
+| Period  | Lines     | Uncompressed | Compressed (gzip, default) |
+| ------- | --------- | ------------ | -------------------------- |
+| 1 hour  | 1,800     | ~0.5 MB      | ~50 KB                     |
+| 1 day   | 43,200    | ~10.7 MB     | ~1 MB                      |
+| 1 week  | 302,400   | ~75 MB       | ~7 MB                      |
+| 1 month | 1,296,000 | ~321 MB      | ~30 MB                     |
 
-Daily logfile rotation is **on by default** — each calendar day gets its own logfile (~10 MB/day cap). Use `--no-rotate-daily` to disable rotation and write to a single session-long logfile.
+Daily logfile rotation is **on by default** — each calendar day gets its own logfile. Rotated logfiles are **gzip-compressed in the background at low CPU priority** (nice 10) by default, replacing `ping_checker_YYYYMMDD.log` with `ping_checker_YYYYMMDD.log.gz`. Use `--no-compress-rotated` to keep uncompressed `.log` files. Use `--no-rotate-daily` to disable rotation entirely.
 
 **Typical background invocation:**
 ```bash
@@ -242,6 +242,7 @@ In this mode you'll see:
 [08:00:01] Monitor started — silent mode. Logfile: ping_checker_20260731_080001.log
 Silent Mode:               ENABLED (alerts only; heartbeat every 30 min)
 Daily Log Rotation:        ENABLED (rotates at midnight, baseline resets)
+Rotated Log Compression:   ENABLED (gzip background, nice 10)
 
 [ALIVE 09:00] Healthy ×1800 | OVH baseline: +4.8ms | log: ping_checker_20260731_080001.log
 
@@ -251,6 +252,7 @@ Daily Log Rotation:        ENABLED (rotates at midnight, baseline resets)
 
 [ALIVE 10:30] Healthy ×430 | OVH baseline: +4.8ms | log: ping_checker_20260731_080001.log
 [ROTATE] New logfile: ping_checker_20260801_000001.log | baseline reset
+[COMPRESS] ping_checker_20260731_080001.log → .gz (background)
 ```
 
 At midnight, the current logfile is closed with a footer and a new dated logfile is opened automatically — no restart needed. The overhead baseline resets for the new day.
@@ -274,6 +276,7 @@ python3 ping_checker.py [OPTIONS]
 | `--silent`                    | off       | Suppress HEALTHY output; print only alerts and heartbeat            |
 | `--heartbeat-minutes`         | `30`      | Liveness heartbeat interval in minutes (only in `--silent` mode)    |
 | `--no-rotate-daily`           | off       | Disable daily midnight logfile rotation (rotation is on by default) |
+| `--no-compress-rotated`       | off       | Disable background gzip of rotated logfiles (compression is on by default) |
 | `--overhead-window`           | `60`      | Rolling overhead window size (samples)                              |
 | `--overhead-baseline-samples` | `30`      | Samples before baseline is established (~60 s at default interval)  |
 | `--overhead-alert-ms`         | `20.0`    | Alert when rolling p50 exceeds baseline by this many ms             |

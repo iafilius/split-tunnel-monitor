@@ -700,12 +700,14 @@ async def main():
     parser.add_argument("--silent", action="store_true", help="Suppress HEALTHY console output; print only alerts and periodic heartbeat")
     parser.add_argument("--heartbeat-minutes", type=int, default=30, help="Liveness heartbeat interval in minutes when --silent is active (default: 30)")
     parser.add_argument("--no-rotate-daily", action="store_true", help="Disable midnight logfile rotation (rotation is on by default)")
+    parser.add_argument("--no-compress-rotated", action="store_true", help="Disable background gzip compression of rotated logfiles (compression is on by default)")
     parser.add_argument("--logfile", type=str, default="", help="Custom logfile path (default: auto-generated unique filename)")
     parser.add_argument("--version", action="version", version=f"ping_checker {__version__} (log-schema: {__log_schema__})")
     parser.add_argument("--no-notify", action="store_true", help="Disable macOS desktop notifications (notifications are on by default)")
     args = parser.parse_args()
     args.trace_verify = not args.no_trace_verify
     args.rotate_daily = not args.no_rotate_daily
+    args.compress_rotated = not args.no_compress_rotated
 
     logfile = args.logfile if args.logfile else init_logfile()
     print("=" * 90)
@@ -765,6 +767,10 @@ async def main():
         print(f"Silent Mode:               ENABLED (alerts only; heartbeat every {args.heartbeat_minutes} min)")
     if args.rotate_daily:
         print(f"Daily Log Rotation:        ENABLED (rotates at midnight, baseline resets)")
+        if args.compress_rotated:
+            print(f"Rotated Log Compression:   ENABLED (gzip background, nice 10)")
+        else:
+            print(f"Rotated Log Compression:   DISABLED (--no-compress-rotated)")
     else:
         print(f"Daily Log Rotation:        DISABLED (--no-rotate-daily set; single session logfile)")
 
@@ -797,6 +803,7 @@ async def main():
                     # Write footer to old logfile
                     with open(logfile, "a", encoding="utf-8") as f:
                         f.write(f"# END OF DAY — rotated at {datetime.now().strftime('%H:%M:%S')}\n")
+                    old_logfile = logfile
                     # Open new logfile for the new day
                     logfile = init_logfile()
                     current_log_date = today
@@ -806,6 +813,12 @@ async def main():
                     last_heartbeat_time = time.time()
                     rotate_msg = f"[ROTATE] New logfile: {os.path.basename(logfile)} | baseline reset"
                     print(rotate_msg, flush=True)  # always print, even in silent
+                    if args.compress_rotated:
+                        subprocess.Popen(
+                            ["nice", "-n", "10", "gzip", old_logfile],
+                            close_fds=True
+                        )
+                        print(f"[COMPRESS] {os.path.basename(old_logfile)} → .gz (background)", flush=True)
 
             # Periodically re-discover network configuration (every 10 iterations) or if interface changed
             if iteration % 10 == 1 or not network_info['local_ip'] or not network_info['gateway_ip']:
