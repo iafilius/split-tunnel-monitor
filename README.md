@@ -42,6 +42,9 @@ The underlying split-tunnel multipath monitoring pattern applies to any corporat
 
 ```bash
 brew tap iafilius/split-tunnel-monitor
+# If Homebrew prompts an untrusted tap warning, trust the formula/tap:
+brew trust --formula iafilius/split-tunnel-monitor/split-tunnel-monitor
+
 brew install split-tunnel-monitor
 ```
 
