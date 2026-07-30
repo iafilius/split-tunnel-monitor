@@ -25,6 +25,9 @@ import statistics as _stats
 import collections
 from datetime import datetime
 
+__version__ = "1.0.0"
+__log_schema__ = 1
+
 # Default public targets for ISP (direct) and Zscaler (tunneled) probing
 DEFAULT_ISP_TARGET = "1.1.1.1"       # Probed via ping -S <local_ip> (Physical ISP path)
 DEFAULT_ZSCALER_TARGET = "9.9.9.9"  # Probed standard ping (Routed via utun / Zscaler)
@@ -143,7 +146,7 @@ class NetworkDiscovery:
             ifconfig_out = proc.read()
             proc.close()
 
-            utun_blocks = re.findall(r"(utun\d+):.*?\n(?=\S|\Z)", ifconfig_out, re.DOTALL)
+            utun_blocks = re.findall(r"utun\d+:.*?\n(?=\S|\Z)", ifconfig_out, re.DOTALL)
             for block in utun_blocks:
                 match = re.search(r"inet\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s+-->\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})", block)
                 if match:
@@ -441,6 +444,8 @@ def init_logfile() -> str:
     header = (
         f"# Zscaler & Network Outage Checker Log\n"
         f"# Started At: {datetime.now().astimezone().isoformat()}\n"
+        f"# Script-Version: {__version__}\n"
+        f"# Log-Schema: {__log_schema__}\n"
         f"# Format: Timestamp_ISO | Interface | Local_IP | LAN_GW (RTT) | ISP_Direct (RTT) | Zscaler_Tunnel (RTT) | Zscaler_Virtual_Next_Hop | Direct_Verified | Zscaler_Verified | Status | Fault_Domain | OVH_p50 | OVH_p95 | OVH_baseline_p50 | OVH_loss_delta | OVH_alert\n"
         f"# Path_Verification: routing-based assurance only (not packet-capture proof).\n"
         f"----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------\n"
@@ -577,6 +582,112 @@ def check_required_tools() -> dict:
     return results
 
 
+def _notify(title: str, body: str, enabled: bool) -> None:
+    """Fire a macOS desktop notification. Non-blocking; failures silently ignored.
+
+    Prefers terminal-notifier (brew install terminal-notifier) for reliable banner display.
+    Falls back to osascript (always available, but may only appear in Notification Center on macOS Sonoma+).
+    """
+    if not enabled:
+        return
+    try:
+        result = subprocess.run(
+            ["terminal-notifier", "-message", body, "-title", title, "-timeout", "5"],
+            capture_output=True, timeout=3,
+        )
+        if result.returncode == 0:
+            return
+    except (FileNotFoundError, Exception):
+        pass
+    try:
+        script = f'display notification "{body}" with title "{title}"'
+        subprocess.run(["osascript", "-e", script], capture_output=True, timeout=2)
+    except Exception:
+        pass
+
+
+def _fmt_duration(seconds: int) -> str:
+    """Format an integer number of seconds as 'Xm Ys' or 'Xh Ym Zs'."""
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}h {m}m {s}s" if h else f"{m}m {s}s"
+
+
+def _print_session_summary(
+    session_start: datetime,
+    status_counts: dict,
+    incidents: list,
+    current_incident,
+    incident_count: int,
+    peak_ovh,
+    peak_ovh_time,
+    overhead,
+    logfile: str,
+    network_info: dict,
+) -> None:
+    """Print a human-readable session report to stdout."""
+    now = datetime.now()
+    total_secs = int((now - session_start).total_seconds())
+    total = sum(status_counts.values())
+    sep = "\u2500" * 50
+
+    print(f"\n{sep}")
+    print(" Session Summary")
+    print(sep)
+    print(f" Duration:    {_fmt_duration(total_secs)}  ({session_start.strftime('%H:%M:%S')} \u2013 {now.strftime('%H:%M:%S')})")
+    print(f" Interface:   {network_info.get('interface', 'N/A')}")
+    print(f" Samples:     {total:,}")
+    print()
+
+    for s_name in ("HEALTHY", "DEGRADED", "OUTAGE"):
+        count = status_counts[s_name]
+        pct = (count / total * 100) if total else 0.0
+        print(f"   {s_name:<10} {pct:5.1f}%  ({count:,} samples)")
+    print()
+
+    # Build display list including any open incident
+    display_incidents = list(incidents)
+    if current_incident is not None:
+        ongoing_secs = int((now - current_incident["start"]).total_seconds())
+        display_incidents.append({
+            "number": current_incident["number"],
+            "start": current_incident["start"],
+            "worst_status": current_incident["worst_status"],
+            "domain": current_incident["domain"],
+            "duration_str": _fmt_duration(ongoing_secs),
+            "ongoing": True,
+        })
+
+    print(" Incidents:")
+    if not display_incidents:
+        print("   No incidents")
+    else:
+        for inc in display_incidents[:10]:
+            tag = " [ongoing at exit]" if inc.get("ongoing") else ""
+            print(f"   #{inc['number']}  {inc['start'].strftime('%H:%M:%S')}  "
+                  f"{inc['worst_status']:<8}  {inc['domain']:<46}  {inc['duration_str']}{tag}")
+        if len(display_incidents) > 10:
+            print(f"   ... and {len(display_incidents) - 10} more")
+    print()
+
+    print(" Overhead (session):")
+    if overhead.baseline_p50 is not None:
+        p50 = overhead.rolling_p50()
+        p95 = overhead.rolling_p95()
+        p50_str = f"+{p50:.1f}ms" if p50 is not None else "N/A"
+        p95_str = f"+{p95:.1f}ms" if p95 is not None else "N/A"
+        peak_str = (f"+{peak_ovh:.1f}ms at {peak_ovh_time.strftime('%H:%M:%S')}"
+                    if peak_ovh is not None else "N/A")
+        print(f"   baseline p50=+{overhead.baseline_p50:.1f}ms  "
+              f"current p50={p50_str}  p95={p95_str}  peak={peak_str}")
+    else:
+        print("   N/A (baseline not yet established)")
+
+    print(sep)
+    print(f" Log: {os.path.abspath(logfile)}")
+    print(sep)
+
+
 async def main():
     parser = argparse.ArgumentParser(description="Zscaler & Dual-Path macOS Network Outage Monitor")
     parser.add_argument("-i", "--interval", type=float, default=2.0, help="Ping interval in seconds (default: 2.0)")
@@ -586,9 +697,15 @@ async def main():
     parser.add_argument("--overhead-window", type=int, default=60, help="Rolling overhead window size in samples (default: 60)")
     parser.add_argument("--overhead-baseline-samples", type=int, default=30, help="Samples before baseline is set (default: 30)")
     parser.add_argument("--overhead-alert-ms", type=float, default=20.0, help="Alert when rolling p50 exceeds baseline by this many ms (default: 20.0)")
+    parser.add_argument("--silent", action="store_true", help="Suppress HEALTHY console output; print only alerts and periodic heartbeat")
+    parser.add_argument("--heartbeat-minutes", type=int, default=30, help="Liveness heartbeat interval in minutes when --silent is active (default: 30)")
+    parser.add_argument("--no-rotate-daily", action="store_true", help="Disable midnight logfile rotation (rotation is on by default)")
     parser.add_argument("--logfile", type=str, default="", help="Custom logfile path (default: auto-generated unique filename)")
+    parser.add_argument("--version", action="version", version=f"ping_checker {__version__} (log-schema: {__log_schema__})")
+    parser.add_argument("--no-notify", action="store_true", help="Disable macOS desktop notifications (notifications are on by default)")
     args = parser.parse_args()
     args.trace_verify = not args.no_trace_verify
+    args.rotate_daily = not args.no_rotate_daily
 
     logfile = args.logfile if args.logfile else init_logfile()
     print("=" * 90)
@@ -644,14 +761,51 @@ async def main():
             asyncio.to_thread(assess_traceroute_verification, trace_info_snapshot, args.isp_target, zscaler_target)
         )
 
+    if args.silent:
+        print(f"Silent Mode:               ENABLED (alerts only; heartbeat every {args.heartbeat_minutes} min)")
+    if args.rotate_daily:
+        print(f"Daily Log Rotation:        ENABLED (rotates at midnight, baseline resets)")
+    else:
+        print(f"Daily Log Rotation:        DISABLED (--no-rotate-daily set; single session logfile)")
+
     print("-" * 90)
     print("Press Ctrl+C to stop monitoring.\n")
 
     overhead = OverheadStats(window_size=args.overhead_window)
     iteration = 0
+    prev_status = "HEALTHY"                    # for transition detection in silent mode
+    silent_healthy_count = 0                    # healthy iterations since last event/heartbeat
+    last_heartbeat_time = time.time()           # for --silent heartbeat
+    current_log_date = datetime.now().date()    # for --rotate-daily
+    # Session tracking (incident lifecycle, exit summary, notifications)
+    session_start = datetime.now()
+    status_counts: dict = {"HEALTHY": 0, "DEGRADED": 0, "OUTAGE": 0}
+    incidents: list = []                        # closed incidents
+    current_incident = None                     # open incident dict or None
+    incident_count = 0
+    peak_ovh = None                             # highest rolling p50 seen this session
+    peak_ovh_time = None
+    prev_ovh_warn = False                       # for overhead-warn transition detection
     try:
         while True:
             iteration += 1
+
+            # Daily logfile rotation at midnight
+            if args.rotate_daily:
+                today = datetime.now().date()
+                if today != current_log_date:
+                    # Write footer to old logfile
+                    with open(logfile, "a", encoding="utf-8") as f:
+                        f.write(f"# END OF DAY — rotated at {datetime.now().strftime('%H:%M:%S')}\n")
+                    # Open new logfile for the new day
+                    logfile = init_logfile()
+                    current_log_date = today
+                    # Reset overhead stats for fresh baseline
+                    overhead = OverheadStats(window_size=args.overhead_window)
+                    silent_healthy_count = 0
+                    last_heartbeat_time = time.time()
+                    rotate_msg = f"[ROTATE] New logfile: {os.path.basename(logfile)} | baseline reset"
+                    print(rotate_msg, flush=True)  # always print, even in silent
 
             # Periodically re-discover network configuration (every 10 iterations) or if interface changed
             if iteration % 10 == 1 or not network_info['local_ip'] or not network_info['gateway_ip']:
@@ -711,8 +865,51 @@ async def main():
             if baseline_just_set:
                 print(f"\n[BASELINE] Overhead baseline established: p50=+{overhead.baseline_p50:.1f}ms (after {args.overhead_baseline_samples} samples)")
 
-            # Log to file
+            # Log to file (always, regardless of silent mode)
             log_entry(logfile, network_info, lan_res, isp_res, zsc_res, status, fault, overhead=overhead)
+
+            # ── Incident lifecycle ────────────────────────────────────────────
+            status_counts[status] += 1
+            incident_just_closed = None
+
+            if status != "HEALTHY":
+                if current_incident is None:
+                    # Open new incident
+                    incident_count += 1
+                    current_incident = {
+                        "number": incident_count,
+                        "start": datetime.now(),
+                        "domain": fault,
+                        "worst_status": status,
+                    }
+                    _notify(
+                        "⚠ ping_checker",
+                        f"{'Outage' if status == 'OUTAGE' else 'Degraded'}: {fault}",
+                        not args.no_notify,
+                    )
+                elif status == "OUTAGE" and current_incident["worst_status"] == "DEGRADED":
+                    current_incident["worst_status"] = "OUTAGE"
+            elif current_incident is not None:
+                # Close incident on HEALTHY recovery
+                end_time = datetime.now()
+                dur_secs = int((end_time - current_incident["start"]).total_seconds())
+                dur_str = _fmt_duration(dur_secs)
+                incident_just_closed = dict(current_incident)
+                incident_just_closed["end_time"] = end_time
+                incident_just_closed["duration_str"] = dur_str
+                incidents.append(incident_just_closed)
+                current_incident = None
+            # ─────────────────────────────────────────────────────────────────
+
+            # Track status transitions for silent mode
+            if status != "HEALTHY":
+                silent_healthy_count = 0
+                if prev_status == "HEALTHY" and args.silent:
+                    # First non-healthy iteration — prefix with a transition marker
+                    print(f"[STATUS CHANGE] HEALTHY → {status}", flush=True)
+            else:
+                silent_healthy_count += 1
+            prev_status = status
 
             # Formulate compact Live Terminal Console string
             time_str = datetime.now().strftime("%H:%M:%S")
@@ -745,6 +942,7 @@ async def main():
             ovh_tag = ""
             p50 = overhead.rolling_p50()
             p95 = overhead.rolling_p95()
+            is_ovh_warn = False
             if p50 is not None:
                 ld = overhead.loss_delta_pct()
                 ld_str = f" Δloss={ld:+.1f}%" if ld is not None else ""
@@ -752,18 +950,71 @@ async def main():
                 if overhead.is_alerting(args.overhead_alert_ms) and overhead.baseline_p50 is not None:
                     above = p50 - overhead.baseline_p50
                     ovh_tag += f" \033[93m[OVERHEAD-WARN: +{above:.1f}ms above baseline]\033[0m"
+                    is_ovh_warn = True
+                # Track session peak
+                if peak_ovh is None or p50 > peak_ovh:
+                    peak_ovh = p50
+                    peak_ovh_time = datetime.now()
+
+            # Overhead-warn transition notifications (fire once on entry/exit, not every iteration)
+            if is_ovh_warn and not prev_ovh_warn:
+                _notify("⚠ ping_checker", f"Overhead warn: p50=+{p50:.1f}ms above baseline", not args.no_notify)
+            elif not is_ovh_warn and prev_ovh_warn:
+                p50_disp = f"+{p50:.1f}ms" if p50 is not None else "N/A"
+                _notify("✓ ping_checker", f"Overhead normal: p50={p50_disp}", not args.no_notify)
+            prev_ovh_warn = is_ovh_warn
 
             console_line = f"[{time_str}] {status_color} {lan_str} | {isp_str} | {zsc_str} | {direct_tag} | {zsc_tag}{trace_tag}{ovh_tag}{fault_str}"
 
+            # Silent mode: suppress HEALTHY unless there's an alert; always print non-HEALTHY
+            should_print = True
+            if args.silent and status == "HEALTHY" and not is_ovh_warn:
+                should_print = False
+
             # Print update; handle broken pipe gracefully (e.g. piped to head)
-            try:
-                print(console_line, flush=True)
-            except BrokenPipeError:
-                raise asyncio.CancelledError
+            if should_print:
+                try:
+                    print(console_line, flush=True)
+                except BrokenPipeError:
+                    raise asyncio.CancelledError
+
+            # Print incident resolution block after the first HEALTHY line
+            if incident_just_closed is not None:
+                inc = incident_just_closed
+                print(
+                    f"[INCIDENT #{inc['number']} RESOLVED] "
+                    f"Domain: {inc['domain']} | "
+                    f"Status: {inc['worst_status']} | "
+                    f"Duration: {inc['duration_str']} | "
+                    f"{inc['start'].strftime('%H:%M:%S')} \u2013 {inc['end_time'].strftime('%H:%M:%S')}",
+                    flush=True,
+                )
+                _notify(
+                    "✓ ping_checker",
+                    f"Resolved: {inc['domain']} (after {inc['duration_str']})",
+                    not args.no_notify,
+                )
+
+            # Silent mode heartbeat
+            if args.silent:
+                elapsed = time.time() - last_heartbeat_time
+                if elapsed >= args.heartbeat_minutes * 60:
+                    bl_str = f"+{overhead.baseline_p50:.1f}ms" if overhead.baseline_p50 is not None else "N/A"
+                    hb_time = datetime.now().strftime("%H:%M")
+                    print(
+                        f"[ALIVE {hb_time}] Healthy \xd7{silent_healthy_count} | OVH baseline: {bl_str} | log: {os.path.basename(logfile)}",
+                        flush=True
+                    )
+                    last_heartbeat_time = time.time()
+                    silent_healthy_count = 0
 
             await asyncio.sleep(args.interval)
 
     except (KeyboardInterrupt, asyncio.CancelledError):
+        _print_session_summary(
+            session_start, status_counts, incidents, current_incident,
+            incident_count, peak_ovh, peak_ovh_time, overhead, logfile, network_info,
+        )
         print("\nMonitoring stopped by user.")
         print(f"Full diagnostic session recorded in: {os.path.abspath(logfile)}")
 

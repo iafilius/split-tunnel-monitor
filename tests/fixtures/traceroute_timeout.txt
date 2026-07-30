@@ -1,0 +1,4 @@
+traceroute to 9.9.9.9 (9.9.9.9), 3 hops max, 72 byte packets
+ 1  * * *
+ 2  * * *
+ 3  * * *

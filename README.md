@@ -25,6 +25,9 @@ The underlying split-tunnel multipath monitoring pattern applies to any corporat
 - **ICMP Traceroute Background Verification**: Runs `traceroute -I` (no elevated permissions) in the background every 30 iterations to confirm paths at the routing-hop level (`TRACE(D=OK,Z=OK)`).
 - **Startup Tool Check**: Verifies all required CLI tools are present at launch; auto-disables traceroute verification if `traceroute` is absent.
 - **Resilient Mid-Run Discovery**: Auto-detects network interface switches (e.g. Ethernet ↔ Wi-Fi) without restarting.
+- **Incident Tracking**: Automatically opens and closes incidents on status transitions. Prints an `[INCIDENT #N RESOLVED]` summary line (domain, duration, timestamps) inline when connectivity recovers.
+- **Session Exit Summary**: On Ctrl+C, prints a human-readable report — duration, status breakdown, full incident timeline, overhead statistics, and logfile path — ready to paste into a helpdesk ticket.
+- **macOS Desktop Notifications**: Fires a notification (via `terminal-notifier` or `osascript`) on every notable state transition — outage start/end, degraded start/end, overhead-warn entry/exit. On by default; suppress with `--no-notify`.
 - **Timestamped Session Logs**: Writes ISO 8601 formatted records to unique session logfiles (`ping_checker_YYYYMMDD_HHMMSS.log`).
 
 ---
@@ -37,6 +40,12 @@ The underlying split-tunnel multipath monitoring pattern applies to any corporat
 
 - **Python 3.8+** (standard macOS system Python or Homebrew Python).
 - Standard non-root permissions (uses macOS system `/sbin/ping` and `/usr/sbin/traceroute`).
+- **`terminal-notifier`** *(optional, recommended)* — enables banner popup notifications on outage/recovery. Without it, notifications are delivered silently to Notification Center only.
+  ```bash
+  brew install terminal-notifier
+  ```
+
+> **Startup warnings:** At launch the script checks for all required tools and reports the notification backend. If a required tool is missing a `WARNING:` line is printed and traceroute verification is auto-disabled if `traceroute` is absent. If `terminal-notifier` is not installed, a one-line hint is printed but the script continues normally using `osascript` as fallback. Use `--no-notify` to suppress all notifications.
 
 ### 2. Usage
 
@@ -55,6 +64,7 @@ Logging to: /Users/you/ping_checker_20260730_113947.log
 ISP Direct Probe Target:   1.1.1.1
 Zscaler Tunnel Target:     9.9.9.9
 Tool Check:                OK (ping, traceroute, scutil, ipconfig, route, pgrep, ifconfig available)
+Notifications:             terminal-notifier available (/opt/homebrew/bin/terminal-notifier)
 Performing dynamic path discovery...
 Detected Interface:        en0
 Detected Local IPv4:       192.168.1.52
@@ -81,6 +91,38 @@ If Zscaler overhead rises unexpectedly, the alert appears inline:
 
 ```
 [12:05:10] [HEALTHY] ... | OVH: p50=+26.1ms p95=+34.0ms [OVERHEAD-WARN: +21.3ms above baseline]
+```
+
+When an outage clears, an incident resolution block is printed inline:
+
+```
+[10:24:48] [HEALTHY] LAN (192.168.1.1): 6.3ms | ISP Direct (1.1.1.1): 5.9ms | Zscaler (9.9.9.9): 10.2ms | ...
+[INCIDENT #1 RESOLVED] Domain: Zscaler Issue (Tunnel / ZIA / ZPA Node Unreachable) | Status: OUTAGE | Duration: 2m 35s | 10:22:13 – 10:24:48
+```
+
+On Ctrl+C, a session summary is printed:
+
+```
+──────────────────────────────────────────────────
+ Session Summary
+──────────────────────────────────────────────────
+ Duration:    47m 22s  (08:15:00 – 09:02:22)
+ Interface:   en0
+ Samples:     1,419
+
+   HEALTHY      96.2%  (1,365 samples)
+   DEGRADED      0.7%  (10 samples)
+   OUTAGE        3.1%  (44 samples)
+
+ Incidents:
+   #1  08:22:15  OUTAGE    ISP Issue (Direct Public WAN Unreachable)        2m 14s
+   #2  08:47:08  OUTAGE    Zscaler Issue (Tunnel / ZIA / ZPA Node Unreachable)  1m 08s
+
+ Overhead (session):
+   baseline p50=+4.8ms  current p50=+5.1ms  p95=+8.2ms  peak=+34.0ms at 08:47:12
+──────────────────────────────────────────────────
+ Log: /Users/you/ping_checker_20260730_081500.log
+──────────────────────────────────────────────────
 ```
 
 ---
@@ -144,22 +186,71 @@ Each session writes a unique `ping_checker_YYYYMMDD_HHMMSS.log` file. Columns ar
 
 ---
 
+## Long-term Background Monitoring
+
+The monitor supports two usage patterns:
+
+| Pattern                          | Command                            | Console output                           |
+| -------------------------------- | ---------------------------------- | ---------------------------------------- |
+| **Active / real-time** (default) | `python3 ping_checker.py`          | Every sample — 43,000+ lines/day         |
+| **Background / silent**          | `python3 ping_checker.py --silent` | Alert events + heartbeat — ~50 lines/day |
+
+**Logfile volume at default 2-second interval:**
+
+| Period  | Lines     | Size     |
+| ------- | --------- | -------- |
+| 1 hour  | 1,800     | ~0.5 MB  |
+| 1 day   | 43,200    | ~10.7 MB |
+| 1 week  | 302,400   | ~75 MB   |
+| 1 month | 1,296,000 | ~321 MB  |
+
+Daily logfile rotation is **on by default** — each calendar day gets its own logfile (~10 MB/day cap). Use `--no-rotate-daily` to disable rotation and write to a single session-long logfile.
+
+**Typical background invocation:**
+```bash
+python3 ping_checker.py --silent --rotate-daily
+```
+
+In this mode you'll see:
+```
+[08:00:01] Monitor started — silent mode. Logfile: ping_checker_20260731_080001.log
+Silent Mode:               ENABLED (alerts only; heartbeat every 30 min)
+Daily Log Rotation:        ENABLED (rotates at midnight, baseline resets)
+
+[ALIVE 09:00] Healthy ×1800 | OVH baseline: +4.8ms | log: ping_checker_20260731_080001.log
+
+[STATUS CHANGE] HEALTHY → OUTAGE
+[10:22:15] [OUTAGE] LAN (192.168.1.1): 6.1ms | ISP Direct: TIMEOUT | Zscaler: TIMEOUT ==> ISP Issue
+[10:24:48] [HEALTHY] LAN (192.168.1.1): 6.3ms | ISP Direct: 5.9ms | Zscaler: 10.2ms | ...
+
+[ALIVE 10:30] Healthy ×430 | OVH baseline: +4.8ms | log: ping_checker_20260731_080001.log
+[ROTATE] New logfile: ping_checker_20260801_000001.log | baseline reset
+```
+
+At midnight, the current logfile is closed with a footer and a new dated logfile is opened automatically — no restart needed. The overhead baseline resets for the new day.
+
+---
+
 ## CLI Reference
 
 ```bash
 ./ping_checker.py [OPTIONS]
 ```
 
-| Option                        | Default   | Description                                                        |
-| ----------------------------- | --------- | ------------------------------------------------------------------ |
-| `-i`, `--interval`            | `2.0`     | Ping interval in seconds                                           |
-| `--isp-target`                | `1.1.1.1` | Direct ISP probe target IP                                         |
-| `--zscaler-target`            | `9.9.9.9` | Zscaler tunnel probe target IP                                     |
-| `--no-trace-verify`           | off       | Disable background ICMP traceroute verification                    |
-| `--overhead-window`           | `60`      | Rolling overhead window size (samples)                             |
-| `--overhead-baseline-samples` | `30`      | Samples before baseline is established (~60 s at default interval) |
-| `--overhead-alert-ms`         | `20.0`    | Alert when rolling p50 exceeds baseline by this many ms            |
-| `--logfile`                   | auto      | Custom logfile path; default: `ping_checker_YYYYMMDD_HHMMSS.log`   |
+| Option                        | Default   | Description                                                         |
+| ----------------------------- | --------- | ------------------------------------------------------------------- |
+| `-i`, `--interval`            | `2.0`     | Ping interval in seconds                                            |
+| `--isp-target`                | `1.1.1.1` | Direct ISP probe target IP                                          |
+| `--zscaler-target`            | `9.9.9.9` | Zscaler tunnel probe target IP                                      |
+| `--no-trace-verify`           | off       | Disable background ICMP traceroute verification                     |
+| `--silent`                    | off       | Suppress HEALTHY output; print only alerts and heartbeat            |
+| `--heartbeat-minutes`         | `30`      | Liveness heartbeat interval in minutes (only in `--silent` mode)    |
+| `--no-rotate-daily`           | off       | Disable daily midnight logfile rotation (rotation is on by default) |
+| `--overhead-window`           | `60`      | Rolling overhead window size (samples)                              |
+| `--overhead-baseline-samples` | `30`      | Samples before baseline is established (~60 s at default interval)  |
+| `--overhead-alert-ms`         | `20.0`    | Alert when rolling p50 exceeds baseline by this many ms             |
+| `--logfile`                   | auto      | Custom logfile path; default: `ping_checker_YYYYMMDD_HHMMSS.log`    |
+| `--no-notify`                 | off       | Disable macOS desktop notifications (on by default)                 |
 
 ---
 

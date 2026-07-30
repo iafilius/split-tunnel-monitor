@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Dynamically discovers the macOS physical network interface, local IP, LAN gateway, and VPN tunnel presence; probes all three network paths concurrently; classifies the failure domain when connectivity degrades.
+
+## Requirements
 
 ### Requirement: Dynamic Network Interface and Gateway Discovery
 The system SHALL dynamically discover the primary active physical network interface, local IPv4 address, and default LAN gateway on macOS without requiring hardcoded configuration or manual user parameters.

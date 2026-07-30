@@ -1,0 +1,7 @@
+Network interfaces: utun0
+         utun0 utun1 utun2 utun3
+
+IPv4 network signatures in priority order:
+   1: utun0 (no flags)
+
+   REACH : Reachable,Transient Connection,Directly Reachable Address

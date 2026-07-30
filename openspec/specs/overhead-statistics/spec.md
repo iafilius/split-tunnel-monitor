@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Tracks the per-iteration VPN overhead delta (VPN RTT minus direct ISP RTT), computes rolling p50/p95 percentiles and packet-loss delta, establishes a session baseline, and alerts when overhead rises significantly above baseline.
+
+## Requirements
 
 ### Requirement: Rolling Overhead Window Collection
 The system SHALL collect per-iteration overhead samples (`zsc_rtt_ms - isp_rtt_ms`) into a bounded rolling window. A sample SHALL only be added when both the ISP Direct probe and the Zscaler Tunnel probe succeed in a given iteration. The window size SHALL be configurable via `--overhead-window` (default: 60 samples).
@@ -50,3 +54,13 @@ The system SHALL display a `[OVERHEAD-WARN]` label on the console line when the 
 
 ### Requirement: Overhead Statistics in Logfile
 The system SHALL append overhead statistics columns to each logfile entry, including current rolling p50, p95, baseline p50, loss-rate delta, and alert state. Entries written before baseline establishment SHALL record `N/A` for baseline and alert columns.
+
+#### Scenario: Overhead columns written to logfile each iteration
+
+- **WHEN** a probe iteration completes with both ISP and VPN probes succeeding
+- **THEN** the logfile entry contains non-N/A values for `OVH_p50`, `OVH_p95`, and `OVH_loss_delta`
+
+#### Scenario: Overhead columns show N/A before baseline established
+
+- **WHEN** fewer than `--overhead-baseline-samples` valid samples have been collected
+- **THEN** the `OVH_baseline_p50` and `OVH_alert` logfile columns contain `N/A`
