@@ -10,3 +10,4 @@ ping_checker_*.log
 venv/
 __pycache__/
 *.pyc
+teams-message-kathy.md

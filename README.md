@@ -93,11 +93,11 @@ The `OVH` suffix shows the **extra latency added by the VPN tunnel relative to y
 overhead = vpn_rtt − direct_rtt   (recorded each iteration when both probes succeed)
 ```
 
-| Field | Meaning |
-|---|---|
-| `p50=+Xms` | Median VPN tunnel overhead over the rolling window |
-| `p95=+Yms` | 95th-percentile VPN overhead (worst-case tail latency cost) |
-| `Δloss=Z%` | VPN packet-loss% minus direct ISP packet-loss% |
+| Field             | Meaning                                                              |
+| ----------------- | -------------------------------------------------------------------- |
+| `p50=+Xms`        | Median VPN tunnel overhead over the rolling window                   |
+| `p95=+Yms`        | 95th-percentile VPN overhead (worst-case tail latency cost)          |
+| `Δloss=Z%`        | VPN packet-loss% minus direct ISP packet-loss%                       |
 | `[OVERHEAD-WARN]` | Rolling p50 exceeded baseline p50 by more than `--overhead-alert-ms` |
 
 The **baseline** is the p50 computed from the first `--overhead-baseline-samples` (default 30) valid samples of the session. It is fixed for the rest of the run. The alert clears automatically when overhead returns to normal.
@@ -123,24 +123,24 @@ The **baseline** is the p50 computed from the first `--overhead-baseline-samples
 
 Each session writes a unique `ping_checker_YYYYMMDD_HHMMSS.log` file. Columns are pipe-separated:
 
-| Column | Content |
-|---|---|
-| `Timestamp_ISO` | ISO 8601 local datetime of the sample |
-| `Interface` | Active physical network interface (e.g. `en0`) |
-| `Local_IP` | Local IPv4 address on the physical interface |
-| `LAN_GW (RTT)` | LAN gateway IP and round-trip time |
-| `ISP_Direct (RTT)` | Direct ISP probe target and RTT |
-| `VPN_Tunnel (RTT)` | VPN tunnel probe target and RTT |
+| Column                 | Content                                              |
+| ---------------------- | ---------------------------------------------------- |
+| `Timestamp_ISO`        | ISO 8601 local datetime of the sample                |
+| `Interface`            | Active physical network interface (e.g. `en0`)       |
+| `Local_IP`             | Local IPv4 address on the physical interface         |
+| `LAN_GW (RTT)`         | LAN gateway IP and round-trip time                   |
+| `ISP_Direct (RTT)`     | Direct ISP probe target and RTT                      |
+| `VPN_Tunnel (RTT)`     | VPN tunnel probe target and RTT                      |
 | `VPN_Virtual_Next_Hop` | Discovered virtual tunnel gateway IP (informational) |
-| `Direct_Verified` | `YES`/`NO` — route check confirmed direct path |
-| `VPN_Verified` | `YES`/`NO` — route check confirmed VPN path |
-| `Status` | `HEALTHY`, `DEGRADED`, or `OUTAGE` |
-| `Fault_Domain` | Root cause label or `None` |
-| `OVH_p50` | Rolling p50 overhead (`N/A` before baseline) |
-| `OVH_p95` | Rolling p95 overhead (`N/A` before baseline) |
-| `OVH_baseline_p50` | Session baseline p50 (`N/A` before established) |
-| `OVH_loss_delta` | VPN minus direct packet-loss% (`N/A` before data) |
-| `OVH_alert` | `WARN` if alerting, `OK` otherwise |
+| `Direct_Verified`      | `YES`/`NO` — route check confirmed direct path       |
+| `VPN_Verified`         | `YES`/`NO` — route check confirmed VPN path          |
+| `Status`               | `HEALTHY`, `DEGRADED`, or `OUTAGE`                   |
+| `Fault_Domain`         | Root cause label or `None`                           |
+| `OVH_p50`              | Rolling p50 overhead (`N/A` before baseline)         |
+| `OVH_p95`              | Rolling p95 overhead (`N/A` before baseline)         |
+| `OVH_baseline_p50`     | Session baseline p50 (`N/A` before established)      |
+| `OVH_loss_delta`       | VPN minus direct packet-loss% (`N/A` before data)    |
+| `OVH_alert`            | `WARN` if alerting, `OK` otherwise                   |
 
 ---
 
