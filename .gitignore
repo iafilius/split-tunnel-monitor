@@ -1,0 +1,12 @@
+# Log files
+*.log
+ping_checker_*.log
+
+# IDE & temporary files
+.DS_Store
+.logs/
+.arjan/
+.venv/
+venv/
+__pycache__/
+*.pyc
