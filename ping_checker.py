@@ -696,7 +696,8 @@ def _print_session_summary(
     print(sep)
 
 
-async def main():
+def _build_parser() -> argparse.ArgumentParser:
+    """Build and return the CLI argument parser. Extracted for testability."""
     parser = argparse.ArgumentParser(description="Zscaler & Dual-Path macOS Network Outage Monitor")
     parser.add_argument("-i", "--interval", type=float, default=2.0, help="Ping interval in seconds (default: 2.0)")
     parser.add_argument("--isp-target", type=str, default=DEFAULT_ISP_TARGET, help=f"Direct ISP target IP (default: {DEFAULT_ISP_TARGET})")
@@ -712,6 +713,11 @@ async def main():
     parser.add_argument("--logfile", type=str, default="", help="Custom logfile path (default: auto-generated unique filename)")
     parser.add_argument("--version", action="version", version=f"ping_checker {__version__} (log-schema: {__log_schema__})")
     parser.add_argument("--no-notify", action="store_true", help="Disable macOS desktop notifications (notifications are on by default)")
+    return parser
+
+
+async def main():
+    parser = _build_parser()
     args = parser.parse_args()
     args.trace_verify = not args.no_trace_verify
     args.rotate_daily = not args.no_rotate_daily
