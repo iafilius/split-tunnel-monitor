@@ -437,6 +437,14 @@ def classify_outage(
         return ("DEGRADED", "Partial Path Failure / Packet Loss")
 
 
+def _compress_logfile_background(path: str) -> None:
+    """Compress a closed logfile with gzip at low CPU priority in a detached subprocess."""
+    subprocess.Popen(
+        ["nice", "-n", "10", "gzip", path],
+        close_fds=True
+    )
+
+
 def init_logfile() -> str:
     """Creates a unique timestamped log file in current directory."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -814,10 +822,7 @@ async def main():
                     rotate_msg = f"[ROTATE] New logfile: {os.path.basename(logfile)} | baseline reset"
                     print(rotate_msg, flush=True)  # always print, even in silent
                     if args.compress_rotated:
-                        subprocess.Popen(
-                            ["nice", "-n", "10", "gzip", old_logfile],
-                            close_fds=True
-                        )
+                        _compress_logfile_background(old_logfile)
                         print(f"[COMPRESS] {os.path.basename(old_logfile)} → .gz (background)", flush=True)
 
             # Periodically re-discover network configuration (every 10 iterations) or if interface changed
