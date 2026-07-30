@@ -418,21 +418,48 @@ def classify_outage(
     isp_ok = isp_res.success
     zsc_ok = zsc_res.success
 
+    # Case T,T,T — all three paths up.
     if lan_ok and isp_ok and zsc_ok:
         return ("HEALTHY", "None")
+
+    # Case F,F,F — LAN gateway, ISP, and Zscaler all unreachable.
+    # The physical link itself is down (Wi-Fi dropped, cable unplugged).
     elif not lan_ok and not isp_ok and not zsc_ok:
         return ("OUTAGE", "Local Network Issue (LAN Gateway Unreachable)")
+
+    # Case T,F,F — LAN gateway responds, but both public paths are down.
+    # The physical interface is alive but the WAN uplink has failed.
     elif lan_ok and not isp_ok and not zsc_ok:
         return ("OUTAGE", "ISP Issue (Direct Public WAN Unreachable)")
+
+    # Case T,T,F — LAN and ISP direct both healthy, only the Zscaler tunnel is down.
+    # If the probe target is the virtual gateway (100.64.x.x) rather than a routed
+    # public IP, the gateway suppresses ICMP by policy — classify as DEGRADED, not OUTAGE.
     elif lan_ok and isp_ok and not zsc_ok:
         if zsc_target_is_virtual_gateway:
             return ("DEGRADED", "Virtual Tunnel Next-Hop ICMP Blocked (Data-Plane Probe Required)")
         return ("OUTAGE", "Zscaler Issue (VPN tunnel ICMP unresponsive)")
-    elif not lan_ok and isp_ok:
-        # Edge case: LAN Gateway drops ICMP response but public route works
-        return ("DEGRADED", "Local Gateway ICMP Unresponsive (ISP Active)")
+
+    # Case F,T,T — LAN gateway does not answer ICMP, but both public paths are fine.
+    # Many home/corporate gateways suppress ICMP TTL-exceeded and echo-reply by policy;
+    # traffic still flows.  No evidence of a real outage.
+    elif not lan_ok and isp_ok and zsc_ok:
+        return ("DEGRADED", "Local Gateway ICMP Unresponsive (ISP and Zscaler Active)")
+
+    # Case F,T,F — LAN gateway silent AND Zscaler tunnel down, but ISP direct path works.
+    # ISP connectivity is confirmed; Zscaler failure is real.  The silent LAN gateway
+    # is a known ICMP-suppression artefact that does not mask the VPN issue.
+    elif not lan_ok and isp_ok and not zsc_ok:
+        return ("OUTAGE", "Zscaler Issue (VPN tunnel ICMP unresponsive; LAN Gateway ICMP also unresponsive)")
+
+    # Case T,F,T — LAN and Zscaler tunnel healthy, ISP direct path unresponsive.
+    # Split-tunnel traffic still flows via Zscaler; direct-bound traffic is affected.
     elif lan_ok and not isp_ok and zsc_ok:
         return ("DEGRADED", "ISP Direct Path Degraded (Zscaler Tunnel Active)")
+
+    # Case F,F,T — LAN and ISP both unreachable, yet Zscaler probe succeeded.
+    # Physically implausible in a split-tunnel setup; most likely a probe race condition
+    # (Zscaler response arrived before the link fully dropped).
     else:
         return ("DEGRADED", "Partial Path Failure / Packet Loss")
 

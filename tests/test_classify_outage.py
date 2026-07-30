@@ -10,23 +10,24 @@ def _make(success: bool, target: str = "1.1.1.1") -> ProbeResult:
 
 
 @pytest.mark.parametrize("lan,isp,zsc,virtual,expected_status,expected_fault_contains", [
-    # All OK
+    # T,T,T — all paths up
     (True,  True,  True,  False, "HEALTHY",  "None"),
-    # All fail → local network
+    # F,F,F — complete local network failure
     (False, False, False, False, "OUTAGE",   "Local Network"),
-    # LAN OK, ISP+ZSC fail → ISP issue
+    # T,F,F — LAN ok, both public paths down → ISP link broken
     (True,  False, False, False, "OUTAGE",   "ISP Issue"),
-    # LAN+ISP OK, ZSC fail → Zscaler issue
+    # T,T,F — LAN+ISP ok, Zscaler tunnel down
     (True,  True,  False, False, "OUTAGE",   "Zscaler Issue"),
-    # LAN+ISP OK, ZSC fail, virtual gateway → DEGRADED not OUTAGE
+    # T,T,F — virtual-gateway probe: DEGRADED, not OUTAGE
     (True,  True,  False, True,  "DEGRADED", "Virtual Tunnel"),
-    # LAN fail, ISP OK → LAN ICMP unresponsive
-    (False, True,  True,  False, "DEGRADED", "Local Gateway"),
-    # LAN fail, ISP OK, ZSC fail → LAN ICMP unresponsive
-    (False, True,  False, False, "DEGRADED", "Local Gateway"),
-    # LAN+ZSC OK, ISP fail → ISP direct degraded
+    # F,T,T — LAN ICMP suppressed by gateway policy; both public paths work
+    (False, True,  True,  False, "DEGRADED", "Local Gateway ICMP Unresponsive"),
+    # F,T,F — LAN ICMP silent AND Zscaler down; ISP direct fine → real Zscaler outage
+    #          Previously misclassified as "Local Gateway ICMP Unresponsive" (bug)
+    (False, True,  False, False, "OUTAGE",   "Zscaler Issue"),
+    # T,F,T — LAN+Zscaler ok, ISP direct path degraded (split-tunnel route affected)
     (True,  False, True,  False, "DEGRADED", "ISP Direct"),
-    # LAN fail, both fail (catch-all)
+    # F,F,T — LAN+ISP both down, Zscaler somehow responds (probe race / physically implausible)
     (False, False, True,  False, "DEGRADED", "Partial"),
 ])
 def test_classify_outage(lan, isp, zsc, virtual, expected_status, expected_fault_contains):

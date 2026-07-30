@@ -182,6 +182,9 @@ The **baseline** is the p50 computed from the first `--overhead-baseline-samples
 |   ✅ OK    |     ✅ OK     |           ✅ OK            | **Healthy Connection**                                                                                   |
 |   ✅ OK    |     ✅ OK     | *(virtual GW only fails)* | **DEGRADED** — virtual tunnel next-hop drops ICMP by policy; data-plane may be healthy                   |
 |   ✅ OK    |    ❌ DOWN    |           ✅ OK            | **DEGRADED** — ISP direct path degraded; Zscaler tunnel still active                                     |
+|  ❌ DOWN   |     ✅ OK     |           ✅ OK            | **DEGRADED** — LAN gateway suppresses ICMP (policy); internet and Zscaler tunnel confirmed active        |
+|  ❌ DOWN   |     ✅ OK     |          ❌ DOWN           | **OUTAGE** — Zscaler Issue; ISP direct confirms internet is up; LAN gateway ICMP also unresponsive       |
+|  ❌ DOWN   |    ❌ DOWN    |           ✅ OK            | **DEGRADED** — Partial path failure (probe race condition; physically implausible in split-tunnel)        |
 
 > **Note on virtual next-hop**: Zscaler sets up a `100.64.x.x` tunnel gateway that often does not respond to ICMP. The tool explicitly detects this case and does **not** classify it as a Zscaler outage. Tunnel health is judged by probing a routed public target through the tunnel.
 
