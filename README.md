@@ -234,7 +234,7 @@ Daily logfile rotation is **on by default** — each calendar day gets its own l
 
 **Typical background invocation:**
 ```bash
-python3 ping_checker.py --silent --rotate-daily
+python3 ping_checker.py --silent
 ```
 
 In this mode you'll see:
