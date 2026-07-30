@@ -41,6 +41,14 @@ The system SHALL evaluate the results of the three concurrent probes against an 
 - **WHEN** the LAN gateway ping and ISP direct ping succeed, but the Zscaler tunneled ping fails
 - **THEN** the system classifies the outage as "Zscaler Issue".
 
+#### Scenario: Zscaler tunnel failure with silent LAN gateway
+- **WHEN** the LAN gateway does not respond to ICMP (suppressed by policy), the ISP direct ping succeeds, and the Zscaler tunneled ping fails
+- **THEN** the system classifies the state as OUTAGE "Zscaler Issue" — ISP connectivity confirms the tunnel failure is genuine; the silent LAN gateway is treated as an ICMP-suppression artefact and does not mask the Zscaler fault.
+
+#### Scenario: LAN gateway ICMP suppressed, internet paths active
+- **WHEN** the LAN gateway does not respond to ICMP but both the ISP direct ping and the Zscaler tunneled ping succeed
+- **THEN** the system classifies the state as DEGRADED "Local Gateway ICMP Unresponsive" — traffic is flowing normally; the gateway suppresses ICMP echo by policy.
+
 #### Scenario: Zscaler tunnel healthy despite non-pingable virtual next-hop
 - **WHEN** the discovered virtual tunnel next-hop does not answer ICMP, but the routed Zscaler tunneled destination probe succeeds
 - **THEN** the system classifies the Zscaler tunneled path as healthy for outage-matrix purposes and records the non-pingable next-hop as diagnostic metadata only.
