@@ -4,6 +4,7 @@ ping_checker_*.log
 
 # IDE & temporary files
 .DS_Store
+.agent/
 .logs/
 .arjan/
 .venv/
