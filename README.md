@@ -174,14 +174,14 @@ The **baseline** is the p50 computed from the first `--overhead-baseline-samples
 
 ## Outage Classification Matrix
 
-| Local LAN | ISP (Direct) |    Zscaler (Tunneled)     | Identified Root Cause                                                                  |
-| :-------: | :----------: | :-----------------------: | :------------------------------------------------------------------------------------- |
-|  ❌ DOWN   |    ❌ DOWN    |          ❌ DOWN           | **Local Network Issue** (Wi-Fi / Ethernet dropped)                                     |
-|   ✅ OK    |    ❌ DOWN    |          ❌ DOWN           | **ISP Issue** (Physical WAN connection down)                                           |
+| Local LAN | ISP (Direct) |    Zscaler (Tunneled)     | Identified Root Cause                                                                                    |
+| :-------: | :----------: | :-----------------------: | :------------------------------------------------------------------------------------------------------- |
+|  ❌ DOWN   |    ❌ DOWN    |          ❌ DOWN           | **Local Network Issue** (Wi-Fi / Ethernet dropped)                                                       |
+|   ✅ OK    |    ❌ DOWN    |          ❌ DOWN           | **ISP Issue** (Physical WAN connection down)                                                             |
 |   ✅ OK    |     ✅ OK     |          ❌ DOWN           | **Zscaler Issue** (VPN tunnel ICMP path unresponsive — ZIA/ZPA service health not assessed by this tool) |
-|   ✅ OK    |     ✅ OK     |           ✅ OK            | **Healthy Connection**                                                                 |
-|   ✅ OK    |     ✅ OK     | *(virtual GW only fails)* | **DEGRADED** — virtual tunnel next-hop drops ICMP by policy; data-plane may be healthy |
-|   ✅ OK    |    ❌ DOWN    |           ✅ OK            | **DEGRADED** — ISP direct path degraded; Zscaler tunnel still active                   |
+|   ✅ OK    |     ✅ OK     |           ✅ OK            | **Healthy Connection**                                                                                   |
+|   ✅ OK    |     ✅ OK     | *(virtual GW only fails)* | **DEGRADED** — virtual tunnel next-hop drops ICMP by policy; data-plane may be healthy                   |
+|   ✅ OK    |    ❌ DOWN    |           ✅ OK            | **DEGRADED** — ISP direct path degraded; Zscaler tunnel still active                                     |
 
 > **Note on virtual next-hop**: Zscaler sets up a `100.64.x.x` tunnel gateway that often does not respond to ICMP. The tool explicitly detects this case and does **not** classify it as a Zscaler outage. Tunnel health is judged by probing a routed public target through the tunnel.
 
@@ -267,21 +267,22 @@ split-tunnel-monitor [OPTIONS]
 python3 ping_checker.py [OPTIONS]
 ```
 
-| Option                        | Default   | Description                                                         |
-| ----------------------------- | --------- | ------------------------------------------------------------------- |
-| `-i`, `--interval`            | `2.0`     | Ping interval in seconds                                            |
-| `--isp-target`                | `1.1.1.1` | Direct ISP probe target IP                                          |
-| `--zscaler-target`            | `9.9.9.9` | Zscaler tunnel probe target IP                                      |
-| `--no-trace-verify`           | off       | Disable background ICMP traceroute verification                     |
-| `--silent`                    | off       | Suppress HEALTHY output; print only alerts and heartbeat            |
-| `--heartbeat-minutes`         | `30`      | Liveness heartbeat interval in minutes (only in `--silent` mode)    |
-| `--no-rotate-daily`           | off       | Disable daily midnight logfile rotation (rotation is on by default) |
+| Option                        | Default   | Description                                                                |
+| ----------------------------- | --------- | -------------------------------------------------------------------------- |
+| `-i`, `--interval`            | `2.0`     | Ping interval in seconds                                                   |
+| `-i`, `--interval`            | `2.0`     | Ping interval in seconds                                                   |
+| `--isp-target`                | `1.1.1.1` | Direct ISP probe target IP                                                 |
+| `--zscaler-target`            | `9.9.9.9` | Zscaler tunnel probe target IP                                             |
+| `--no-trace-verify`           | off       | Disable background ICMP traceroute verification                            |
+| `--silent`                    | off       | Suppress HEALTHY output; print only alerts and heartbeat                   |
+| `--heartbeat-minutes`         | `30`      | Liveness heartbeat interval in minutes (only in `--silent` mode)           |
+| `--no-rotate-daily`           | off       | Disable daily midnight logfile rotation (rotation is on by default)        |
 | `--no-compress-rotated`       | off       | Disable background gzip of rotated logfiles (compression is on by default) |
-| `--overhead-window`           | `60`      | Rolling overhead window size (samples)                              |
-| `--overhead-baseline-samples` | `30`      | Samples before baseline is established (~60 s at default interval)  |
-| `--overhead-alert-ms`         | `20.0`    | Alert when rolling p50 exceeds baseline by this many ms             |
-| `--logfile`                   | auto      | Custom logfile path; default: `ping_checker_YYYYMMDD_HHMMSS.log`    |
-| `--no-notify`                 | off       | Disable macOS desktop notifications (on by default)                 |
+| `--overhead-window`           | `60`      | Rolling overhead window size (samples)                                     |
+| `--overhead-baseline-samples` | `30`      | Samples before baseline is established (~60 s at default interval)         |
+| `--overhead-alert-ms`         | `20.0`    | Alert when rolling p50 exceeds baseline by this many ms                    |
+| `--logfile`                   | auto      | Custom logfile path; default: `ping_checker_YYYYMMDD_HHMMSS.log`           |
+| `--no-notify`                 | off       | Disable macOS desktop notifications (on by default)                        |
 
 ---
 
