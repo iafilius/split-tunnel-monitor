@@ -203,21 +203,239 @@ Time (CEST)  ping_checker               ZCC ZSATunnel log
 
 ## Step 8 — Generate per-incident analysis report
 
-The script `incident_report.py` (alongside this SKILL.md) analyses every incident in the supplied logs — both OUTAGE and DEGRADED — and produces an evidence-backed verdict for each. Written in pure Python stdlib (no pip install needed).
+Copy-paste the script below and run it directly with `python3`. Pure stdlib — no pip install needed.
+Also available as `incident_report.py` alongside this SKILL.md.
 
-```bash
-# All incidents across both log files (e.g. outage crossing midnight)
-python3 .github/skills/zscaler-outage-analysis/incident_report.py \
-  ping_checker_20260730_200436.log.gz \
-  ping_checker_20260731_000001.log
+```python
+#!/usr/bin/env python3
+"""
+incident_report.py — Zscaler session incident analysis report
+stdlib only, no pip dependencies.
+
+Usage:
+    python3 incident_report.py <logfile1> [logfile2 ...]
+
+Accepts plain .log and compressed .log.gz files.
+Produces a per-incident evidence report with confidence verdicts.
+"""
+
+import gzip
+import os
+import re
+import sys
+import zipfile
+from datetime import datetime, timedelta
+
+ZCC_DIR = "/Library/Application Support/Zscaler/log-de316a5833"
+ZCC_BRIEF_THRESHOLD_SECS = 30   # incidents shorter than this skip ZCC archive scan
+
+
+def open_log(path):
+    if path.endswith('.gz'):
+        return gzip.open(path, 'rt', encoding='utf-8', errors='ignore')
+    return open(path, 'r', encoding='utf-8', errors='ignore')
+
+
+def parse_ts(ts_str):
+    try:
+        return datetime.fromisoformat(ts_str.strip())
+    except Exception:
+        return None
+
+
+def extract_incidents(logfiles):
+    incidents = []
+    current = None
+    for path in logfiles:
+        with open_log(path) as f:
+            for line in f:
+                if line.startswith('#') or '|' not in line:
+                    continue
+                parts = [p.strip() for p in line.split('|')]
+                if len(parts) < 11:
+                    continue
+                ts = parse_ts(parts[0])
+                if ts is None:
+                    continue
+                status = parts[9]
+                if status in ('OUTAGE', 'DEGRADED'):
+                    if current is None:
+                        current = {'start': ts, 'type': status, 'domain': parts[10],
+                                   'isp_sample': parts[4], 'zsc_verified': parts[8], 'samples': 1}
+                    else:
+                        current['samples'] += 1
+                        if status == 'OUTAGE' and current['type'] == 'DEGRADED':
+                            current['type'] = 'OUTAGE'
+                elif status == 'HEALTHY' and current is not None:
+                    current['end'] = ts
+                    incidents.append(current)
+                    current = None
+    if current is not None:
+        current['end'] = None
+        incidents.append(current)
+    return incidents
+
+
+def search_zcc_archive(incident_start):
+    if not os.path.isdir(ZCC_DIR):
+        return None
+    search_dates = {(incident_start + timedelta(days=d)).strftime('%Y-%m-%d') for d in (-1, 0, 1)}
+    date_pat = re.compile(r'\d{4}-\d{2}-\d{2}')
+    zcc_ts_pat = re.compile(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})')
+    try:
+        zips = sorted(f for f in os.listdir(ZCC_DIR) if f.startswith('ZSATunnel_') and f.endswith('.log.zip'))
+    except OSError:
+        return None
+    best = None
+    for zipname in zips:
+        m = date_pat.search(zipname)
+        if not m or m.group() not in search_dates:
+            continue
+        try:
+            with zipfile.ZipFile(os.path.join(ZCC_DIR, zipname)) as zf:
+                for member in zf.namelist():
+                    with zf.open(member) as fh:
+                        for raw in fh:
+                            line = raw.decode('utf-8', errors='ignore')
+                            if 'SERVER_DOWN_ERROR' not in line:
+                                continue
+                            tm = zcc_ts_pat.match(line)
+                            if not tm:
+                                continue
+                            try:
+                                zcc_ts = datetime.fromisoformat(tm.group(1))
+                            except Exception:
+                                continue
+                            delta = (incident_start.replace(tzinfo=None) - zcc_ts).total_seconds()
+                            if 0 <= delta <= 7200:
+                                if best is None or zcc_ts > best[0]:
+                                    best = (zcc_ts, tm.group(1), zipname)
+        except Exception:
+            continue
+    return (best[1], best[2]) if best else None
+
+
+def assess_evidence(inc, zcc_result):
+    isp_ok = 'TIMEOUT' not in inc['isp_sample'] and 'FAIL' not in inc['isp_sample']
+    zsc_ok = inc['zsc_verified'] == 'YES'
+    if isp_ok and zsc_ok and zcc_result:
+        return "Zscaler cloud infrastructure failure (server-side)", "HIGH"
+    elif isp_ok and zsc_ok:
+        return "Zscaler cloud infrastructure failure (server-side)", "MEDIUM-HIGH"
+    elif not isp_ok and not zsc_ok:
+        return "Local network or ISP failure", "HIGH"
+    elif not zsc_ok:
+        return "ZCC tunnel routing issue (utun not established)", "HIGH"
+    else:
+        return "Unclear — insufficient corroborating evidence", "LOW"
+
+
+def fmt_dur(secs):
+    h, r = divmod(int(secs), 3600)
+    m, s = divmod(r, 60)
+    return f"{h}h {m}m {s}s" if h else f"{m}m {s}s"
+
+
+def ruler(label, width=60):
+    bar = '━' * max(0, width - len(label) - 2)
+    return f"━━ {label} {bar}"
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(f"usage: python3 {os.path.basename(sys.argv[0])} <logfile> [logfile2 ...]")
+        sys.exit(1)
+    logfiles = sys.argv[1:]
+    missing = [f for f in logfiles if not os.path.exists(f)]
+    if missing:
+        for f in missing:
+            print(f"error: file not found: {f}", file=sys.stderr)
+        sys.exit(1)
+
+    incidents = extract_incidents(logfiles)
+    print("═" * 60)
+    print(" Session Incident Analysis")
+    print("═" * 60)
+    print(f" Log files: {', '.join(os.path.basename(f) for f in logfiles)}")
+    print(f" Incidents: {len(incidents)} found (OUTAGE + DEGRADED)")
+
+    if not incidents:
+        print(" No incidents detected in supplied logs.")
+        print("═" * 60)
+        return
+
+    confirmed  = sum(1 for i in incidents if not (i['end'] and (i['end']-i['start']).total_seconds() < ZCC_BRIEF_THRESHOLD_SECS))
+    micro      = sum(1 for i in incidents if i['end'] and (i['end']-i['start']).total_seconds() < ZCC_BRIEF_THRESHOLD_SECS)
+    unresolved = sum(1 for i in incidents if not i['end'])
+    total_secs = sum((i['end']-i['start']).total_seconds() for i in incidents if i['end'])
+
+    print(f" Summary:   {confirmed} standard  |  {micro} micro (<{ZCC_BRIEF_THRESHOLD_SECS}s, below ZCC detection)  |  {unresolved} unresolved")
+    if total_secs:
+        print(f"            Total outage time: {fmt_dur(total_secs)}")
+    if micro > 0:
+        print(f" Note: ZCC filters out events < {ZCC_BRIEF_THRESHOLD_SECS}s by design — micro-outages are invisible to Zscaler's own tooling.")
+    if micro >= 3:
+        print(f" Pattern:  {micro} micro-outages suggests Zscaler PoP instability even after apparent recovery.")
+    print()
+
+    for idx, inc in enumerate(incidents, 1):
+        start_s = inc['start'].strftime('%Y-%m-%d %H:%M:%S')
+        if inc['end']:
+            end_s = inc['end'].strftime('%Y-%m-%d %H:%M:%S')
+            secs = (inc['end'] - inc['start']).total_seconds()
+            dur_s = fmt_dur(secs) + "  (resolved)"
+        else:
+            end_s = "(not resolved in supplied logs)"
+            secs = None
+            dur_s = "(unresolved)"
+
+        brief = secs is not None and secs < ZCC_BRIEF_THRESHOLD_SECS
+
+        print(ruler(f"Incident #{idx}  {inc['type']}  {fmt_dur(secs) if secs else '?'}"))
+        print(f"  Start:    {start_s}")
+        print(f"  End:      {end_s}")
+        print(f"  Duration: {dur_s}")
+        print(f"  Domain:   {inc['domain']}")
+        print(f"  Samples:  {inc['samples']}")
+        print()
+        print("  Evidence:")
+
+        isp_ok = 'TIMEOUT' not in inc['isp_sample'] and 'FAIL' not in inc['isp_sample']
+        if isp_ok:
+            print(f"    ✓ ISP direct healthy ({inc['isp_sample']}) — local/ISP fault ruled out")
+        else:
+            print(f"    ✗ ISP direct also failing ({inc['isp_sample']}) — may not be Zscaler-specific")
+
+        if inc['zsc_verified'] == 'YES':
+            print("    ✓ ZSC route verified (utun active + Zscaler process running)")
+        else:
+            print("    ✗ ZSC route NOT verified (Zscaler_Verified=NO)")
+
+        if brief:
+            print(f"    ℹ ZCC archive: not checked — incident resolved in {int(secs)}s, ZCC health-check cycle is ~30s so no event expected")
+            zcc_result = None
+        else:
+            zcc_result = search_zcc_archive(inc['start'])
+            if zcc_result:
+                ts_str, zipname = zcc_result
+                print(f"    ✓ ZCC SERVER_DOWN_ERROR: {ts_str}  ({zipname})")
+            else:
+                print("    ✗ ZCC archive: no SERVER_DOWN_ERROR found in date window")
+
+        verdict, confidence = assess_evidence(inc, zcc_result)
+        print()
+        print(f"  Verdict:    {verdict}")
+        print(f"  Confidence: {confidence}")
+        print()
+
+    print(f" Reference: https://trust.zscaler.com")
+    print(f" Admin:     Analytics → Tunnel Insights (per-device history)")
+    print("═" * 60)
+
+
+if __name__ == '__main__':
+    main()
 ```
-
-For each incident the report checks:
-- **ISP direct path** — rules out local/ISP fault
-- **ZSC route verification** — confirms utun was active
-- **ZCC ZSATunnel archive** — searches for `SERVER_DOWN_ERROR` within 2h before incident start; skipped automatically for incidents < 30s (below ZCC health-check resolution)
-
-Confidence levels: **HIGH** (all 3 sources agree), **MEDIUM-HIGH** (ISP + ZSC route confirmed, no ZCC event), **LOW** (inconclusive).
 
 **Example output (Jul 30–31 2026):**
 ```
@@ -227,30 +445,19 @@ Confidence levels: **HIGH** (all 3 sources agree), **MEDIUM-HIGH** (ISP + ZSC ro
  Log files: ping_checker_20260730_200436.log.gz, ping_checker_20260731_000001.log
  Incidents: 4 found (OUTAGE + DEGRADED)
 
-━━ Incident #1  OUTAGE  5h 43m 53s ━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Start:    2026-07-30 21:56:09
-  End:      2026-07-31 03:40:02
-  Duration: 5h 43m 53s  (resolved)
-  Domain:   Zscaler Issue (VPN tunnel ICMP unresponsive)
-  Samples:  3429
+ Summary:   2 standard  |  2 micro (<30s, below ZCC detection)  |  0 unresolved
+            Total outage time: 5h 46m 58s
+ Note: ZCC filters out events < 30s by design — micro-outages are invisible to Zscaler's own tooling.
 
+━━ Incident #1  OUTAGE  5h 43m 53s ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Start:    2026-07-30 21:56:09  |  End: 2026-07-31 03:40:02
+  Duration: 5h 43m 53s  (resolved)
   Evidence:
     ✓ ISP direct healthy (1.1.1.1 (11.4ms)) — local/ISP fault ruled out
     ✓ ZSC route verified (utun active + Zscaler process running)
     ✓ ZCC SERVER_DOWN_ERROR: 2026-07-30 21:56:07  (ZSATunnel_2026-07-30-21-41-13...zip)
-
   Verdict:    Zscaler cloud infrastructure failure (server-side)
   Confidence: HIGH
-
-━━ Incident #2  OUTAGE  0m 3s ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  ...
-  Evidence:
-    ✓ ISP direct healthy
-    ✓ ZSC route verified
-    ℹ ZCC archive: not checked — incident resolved in 3s, ZCC health-check cycle is ~30s so no event expected
-
-  Verdict:    Zscaler cloud infrastructure failure (server-side)
-  Confidence: MEDIUM-HIGH
 ```
 
 ---
