@@ -9,7 +9,6 @@ class SplitTunnelMonitor < Formula
   depends_on "python3"
 
   def install
-    opoo "iafilius/simple_coon_check tap is deprecated! Please migrate to central tap: brew tap iafilius/tap"
     bin.install "ping_checker.py" => "split-tunnel-monitor"
   end
 
