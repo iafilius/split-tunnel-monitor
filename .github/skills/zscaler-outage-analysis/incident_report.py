@@ -258,7 +258,7 @@ def main():
             print("    ✗ ZSC route NOT verified (Zscaler_Verified=NO)")
 
         if brief:
-            print(f"    ℹ ZCC archive: skipped (duration < {ZCC_BRIEF_THRESHOLD_SECS}s — below ZCC health-check resolution)")
+            print(f"    ℹ ZCC archive: not checked — incident resolved in {int(secs)}s, ZCC health-check cycle is ~30s so no event expected")
             zcc_result = None
         else:
             zcc_result = search_zcc_archive(inc['start'])

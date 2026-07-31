@@ -247,7 +247,7 @@ Confidence levels: **HIGH** (all 3 sources agree), **MEDIUM-HIGH** (ISP + ZSC ro
   Evidence:
     ✓ ISP direct healthy
     ✓ ZSC route verified
-    ℹ ZCC archive: skipped (duration < 30s — below ZCC health-check resolution)
+    ℹ ZCC archive: not checked — incident resolved in 3s, ZCC health-check cycle is ~30s so no event expected
 
   Verdict:    Zscaler cloud infrastructure failure (server-side)
   Confidence: MEDIUM-HIGH
