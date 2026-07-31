@@ -472,6 +472,11 @@ def _compress_logfile_background(path: str) -> None:
     )
 
 
+def _ts() -> str:
+    """Return current local timestamp as [YYYY-MM-DD HH:MM:SS] for uniform console output."""
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
 def init_logfile() -> str:
     """Creates a unique timestamped log file in current directory."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -852,11 +857,11 @@ async def main():
                     overhead = OverheadStats(window_size=args.overhead_window)
                     silent_healthy_count = 0
                     last_heartbeat_time = time.time()
-                    rotate_msg = f"[ROTATE] New logfile: {os.path.basename(logfile)} | baseline reset"
+                    rotate_msg = f"[{_ts()}] [ROTATE] New logfile: {os.path.basename(logfile)} | baseline reset"
                     print(rotate_msg, flush=True)  # always print, even in silent
                     if args.compress_rotated:
                         _compress_logfile_background(old_logfile)
-                        print(f"[COMPRESS] {os.path.basename(old_logfile)} → .gz (background)", flush=True)
+                        print(f"[{_ts()}] [COMPRESS] {os.path.basename(old_logfile)} → .gz (background)", flush=True)
 
             # Periodically re-discover network configuration (every 10 iterations) or if interface changed
             if iteration % 10 == 1 or not network_info['local_ip'] or not network_info['gateway_ip']:
@@ -914,7 +919,7 @@ async def main():
             overhead.add_sample(isp_res, zsc_res)
             baseline_just_set = overhead.maybe_set_baseline(args.overhead_baseline_samples)
             if baseline_just_set:
-                print(f"\n[BASELINE] Overhead baseline established: p50=+{overhead.baseline_p50:.1f}ms (after {args.overhead_baseline_samples} samples)")
+                print(f"\n[{_ts()}] [BASELINE] Overhead baseline established: p50=+{overhead.baseline_p50:.1f}ms (after {args.overhead_baseline_samples} samples)")
 
             # Log to file (always, regardless of silent mode)
             log_entry(logfile, network_info, lan_res, isp_res, zsc_res, status, fault, overhead=overhead)
@@ -957,13 +962,13 @@ async def main():
                 silent_healthy_count = 0
                 if prev_status == "HEALTHY" and args.silent:
                     # First non-healthy iteration — prefix with a transition marker
-                    print(f"[STATUS CHANGE] HEALTHY → {status}", flush=True)
+                    print(f"[{_ts()}] [STATUS CHANGE] HEALTHY → {status}", flush=True)
             else:
                 silent_healthy_count += 1
             prev_status = status
 
             # Formulate compact Live Terminal Console string
-            time_str = datetime.now().strftime("%H:%M:%S")
+            time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             lan_str = f"LAN ({gw_ip or 'N/A'}): {lan_res.format_rtt()}"
             isp_str = f"ISP Direct ({args.isp_target}): {isp_res.format_rtt()}"
             zsc_str = f"Zscaler ({zsc_target}): {zsc_res.format_rtt()}"
@@ -1051,9 +1056,8 @@ async def main():
                 elapsed = time.time() - last_heartbeat_time
                 if elapsed >= args.heartbeat_minutes * 60:
                     bl_str = f"+{overhead.baseline_p50:.1f}ms" if overhead.baseline_p50 is not None else "N/A"
-                    hb_time = datetime.now().strftime("%H:%M")
                     print(
-                        f"[ALIVE {hb_time}] Healthy \xd7{silent_healthy_count} | OVH baseline: {bl_str} | log: {os.path.basename(logfile)}",
+                        f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [ALIVE] Healthy \xd7{silent_healthy_count} | OVH baseline: {bl_str} | log: {os.path.basename(logfile)}",
                         flush=True
                     )
                     last_heartbeat_time = time.time()
