@@ -45,6 +45,9 @@ brew tap iafilius/tap
 brew install split-tunnel-monitor
 ```
 
+> **Note for existing users**: If you previously installed from the old tap (`iafilius/split-tunnel-monitor`), run `brew uninstall split-tunnel-monitor && brew untap iafilius/split-tunnel-monitor` first.
+
+
 For banner popup notifications on outage/recovery, also install `terminal-notifier`:
 
 ```bash
