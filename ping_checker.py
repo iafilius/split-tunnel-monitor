@@ -829,6 +829,7 @@ async def main():
     silent_healthy_count = 0                    # healthy iterations since last event/heartbeat
     last_heartbeat_time = time.time()           # for --silent heartbeat
     current_log_date = datetime.now().date()    # for --rotate-daily
+    current_zsc_iface = network_info['zscaler'].get('interface', '')  # for tunnel change detection
     # Session tracking (incident lifecycle, exit summary, notifications)
     session_start = datetime.now()
     status_counts: dict = {"HEALTHY": 0, "DEGRADED": 0, "OUTAGE": 0}
@@ -868,6 +869,23 @@ async def main():
                 fresh_info = NetworkDiscovery.discover_all()
                 if fresh_info['interface'] != network_info['interface'] or fresh_info['local_ip'] != network_info['local_ip']:
                     network_info = fresh_info
+
+                # ── Tunnel interface change detection ─────────────────────────
+                new_zsc_iface = fresh_info['zscaler'].get('interface', '')
+                if new_zsc_iface and current_zsc_iface and new_zsc_iface != current_zsc_iface:
+                    old_iface = current_zsc_iface
+                    new_vgw = fresh_info['zscaler'].get('gateway_ip', 'N/A')
+                    print(f"[{_ts()}] [TUNNEL CHANGE] {old_iface} → {new_zsc_iface} (vgw={new_vgw})", flush=True)
+                    # Reset overhead baseline — new tunnel has different latency characteristics
+                    overhead = OverheadStats(window_size=args.overhead_window)
+                    silent_healthy_count = 0
+                    last_heartbeat_time = time.time()
+                    # Force fresh path verification using the new interface
+                    network_info = fresh_info
+                    network_info["path_verification"] = assess_path_verification(network_info, args.isp_target, zscaler_target)
+                if new_zsc_iface:
+                    current_zsc_iface = new_zsc_iface
+                # ─────────────────────────────────────────────────────────────
 
             gw_ip = network_info['gateway_ip']
             local_ip = network_info['local_ip']

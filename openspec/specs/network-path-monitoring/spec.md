@@ -69,7 +69,7 @@ The system SHALL verify at startup that all required external CLI tools are avai
 - **THEN** the system prints a `WARNING: Missing tools: traceroute` message, states that trace verification is disabled, and continues probing using route-based verification.
 
 ### Requirement: Route-Based Path Verification
-The system SHALL perform a routing-layer verification each probe iteration and display a per-line indicator (DIRECT=OK/UNCERTAIN, ZSC=OK/UNCERTAIN) confirming that the direct probe is routing via the physical interface and the Zscaler probe is routing via a `utun` interface with Zscaler process active.
+The system SHALL perform a routing-layer verification each probe iteration and display a per-line indicator (DIRECT=OK/UNCERTAIN, ZSC=OK/UNCERTAIN) confirming that the direct probe is routing via the physical interface and the Zscaler probe is routing via a `utun` interface with Zscaler process active. When the active tunnel interface changes, path verification SHALL be re-run immediately using the new interface before the next console line is emitted.
 
 #### Scenario: Direct path routing confirmed
 - **WHEN** a probe iteration runs and `route -n get -ifscope <interface>` confirms the ISP target resolves via the physical interface
@@ -78,6 +78,10 @@ The system SHALL perform a routing-layer verification each probe iteration and d
 #### Scenario: Zscaler routing confirmed
 - **WHEN** a probe iteration runs and route lookup confirms the Zscaler target resolves via a `utun` interface AND Zscaler process is detected
 - **THEN** the console line displays `ZSC=OK(<utun_interface>)`.
+
+#### Scenario: Verification updates immediately after tunnel change
+- **WHEN** a tunnel interface change is detected mid-run
+- **THEN** path verification is recalculated using the new `utun` interface within the same iteration, so the very next probe line reflects the new tunnel state
 
 ### Requirement: ICMP Traceroute Background Path Verification
 The system SHALL run ICMP-mode traceroute (`traceroute -I`) as a background task every 30 probe iterations to supplement route-based checks with stronger hop-level evidence. Results SHALL appear as `TRACE(D=OK,Z=OK)` or `TRACE(D=OK,Z=UNCERTAIN)` in the console line once available, and as `TRACE(PENDING)` while the first result is outstanding. Trace verification SHALL be on by default and MAY be disabled with `--no-trace-verify`.
