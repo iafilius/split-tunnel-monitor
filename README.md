@@ -292,6 +292,29 @@ python3 ping_checker.py [OPTIONS]
 
 ---
 
+## Outage Investigation & Incident Reports
+
+When an outage or degradation is detected in the logs, the `zscaler-outage-analysis` skill produces a professional per-incident evidence report correlated with ZCC (Zscaler Client Connector) local logs.
+
+```bash
+python3 .github/skills/zscaler-outage-analysis/incident_report.py \
+  ping_checker_20260730_200436.log.gz \
+  ping_checker_20260731_000001.log
+```
+
+For each incident the report independently verifies:
+- **ISP direct path health** — rules out local/ISP fault
+- **ZSC tunnel route** — confirms utun was active
+- **ZCC ZSATunnel archive** — searches for `SERVER_DOWN_ERROR` within 2h before incident start
+
+Output includes a per-incident confidence verdict (**HIGH** / **MEDIUM-HIGH** / **LOW**), a session-level summary distinguishing major outages from micro-outages that ZCC filters by design, and a total outage time.
+
+> **Note:** ZCC Client Connector silently ignores Zscaler outages shorter than ~30 seconds by design. This tool captures those events at the ICMP layer — providing observability that Zscaler's own tooling deliberately omits.
+
+Full investigation guide including ZCC log correlation, timeline building, and the embedded Python script: [`.github/skills/zscaler-outage-analysis/SKILL.md`](.github/skills/zscaler-outage-analysis/SKILL.md)
+
+---
+
 ## License
 
 GNU General Public License v3.0 (GPLv3)
