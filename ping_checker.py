@@ -25,7 +25,7 @@ import statistics as _stats
 import collections
 from datetime import datetime
 
-__version__ = "1.0.1"
+__version__ = "1.1.0"
 __log_schema__ = 1
 
 # Default public targets for ISP (direct) and Zscaler (tunneled) probing
