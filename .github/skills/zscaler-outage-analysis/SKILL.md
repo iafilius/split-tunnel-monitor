@@ -214,7 +214,7 @@ incident at first recovery, flagging subsequent incidents separately.
 #   bash incident_report.sh ping_checker_20260730_200436.log.gz \
 #                           ping_checker_20260731_000001.log
 
-set -euo pipefail
+set -uo pipefail
 [[ $# -eq 0 ]] && { echo "usage: $0 <logfile> [logfile2 ...]"; exit 1; }
 
 read_log() { [[ "$1" == *.gz ]] && gunzip -c "$1" || cat "$1"; }
