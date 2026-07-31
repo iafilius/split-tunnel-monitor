@@ -172,12 +172,17 @@ Time (CEST)  ping_checker               ZCC ZSATunnel log
 21:41:13     HEALTHY                    ZIA: ON → SERVER_DOWN_ERROR
                                         ZPHM: [GOOD] → [BAD]
                                         ERR: tcp echo server unreachable
-21:41:13–    HEALTHY (ICMP still OK)    ZIA flapping ON↔SERVER_DOWN_ERROR
-21:56                                   every ~10–30s
-21:56:09     OUTAGE: Zscaler Issue      (ICMP through utun begins 100% loss)
-             every 5s continuously
-[midnight]   rotation + compress ✓
-07:39        still OUTAGE
+21:41–21:56  HEALTHY (ICMP still OK)    ZIA flapping ON↔SERVER_DOWN_ERROR
+                                        every ~10–30s
+21:56:09     OUTAGE: Zscaler Issue ─┐   ICMP through utun begins 100% loss
+             every 5s continuously  │
+[midnight]   rotation + compress ✓  │
+03:40:02     HEALTHY ◄───────────── ┘   PRIMARY OUTAGE ENDS (5h 43m 53s)
+
+(gap: ~3h 59m healthy)
+
+07:39:02     OUTAGE: Zscaler Issue ─┐   SEPARATE subsequent incident
+07:39:05     HEALTHY ◄───────────── ┘   Resolved after ~3s — unrelated blip
 ```
 
 **Typical lag:** ZCC detects TCP-level failure 10–20 min before ICMP through the tunnel degrades. ICMP is lower-priority traffic than ZCC's own TCP keepalives.
