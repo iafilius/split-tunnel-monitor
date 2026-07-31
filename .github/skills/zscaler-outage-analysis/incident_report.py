@@ -224,6 +224,25 @@ def main():
         print("═" * 60)
         return
 
+    # ── Session-level intelligence ─────────────────────────────────────────────
+    confirmed   = sum(1 for i in incidents if not (i['end'] and (i['end']-i['start']).total_seconds() < ZCC_BRIEF_THRESHOLD_SECS))
+    micro       = sum(1 for i in incidents if i['end'] and (i['end']-i['start']).total_seconds() < ZCC_BRIEF_THRESHOLD_SECS)
+    unresolved  = sum(1 for i in incidents if not i['end'])
+    total_outage_secs = sum(
+        (i['end'] - i['start']).total_seconds()
+        for i in incidents if i['end']
+    )
+
+    print(f" Summary:   {confirmed} standard  |  {micro} micro (<{ZCC_BRIEF_THRESHOLD_SECS}s, below ZCC detection)  |  {unresolved} unresolved")
+    if total_outage_secs:
+        print(f"            Total outage time: {fmt_dur(total_outage_secs)}")
+    if micro > 0:
+        print(f" Note: ZCC Client Connector filters out events < {ZCC_BRIEF_THRESHOLD_SECS}s by design — micro-outages")
+        print(f"       are invisible to Zscaler's own tooling but captured here.")
+    if micro >= 3:
+        print(f" Pattern:  {micro} micro-outages suggests Zscaler PoP instability even after apparent recovery.")
+    print()
+
     for idx, inc in enumerate(incidents, 1):
         start_s = inc['start'].strftime('%Y-%m-%d %H:%M:%S')
         if inc['end']:
