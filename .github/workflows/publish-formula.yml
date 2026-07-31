@@ -1,0 +1,56 @@
+name: Update Homebrew Formula
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  update-formula:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Calculate SHA-256 and update central tap
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.event.release.tag_name }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "TAP_GITHUB_TOKEN secret not configured, skipping central tap sync."
+            exit 0
+          fi
+
+          VERSION="${TAG_NAME#v}"
+          URL="https://github.com/iafilius/split-tunnel-monitor/archive/refs/tags/${TAG_NAME}.tar.gz"
+          SHA256=$(curl -sL "$URL" | sha256sum | awk '{print $1}')
+
+          git clone https://x-access-token:${TAP_TOKEN}@github.com/iafilius/homebrew-tap.git central-tap
+          
+          cat <<EOF > central-tap/Formula/split-tunnel-monitor.rb
+          class SplitTunnelMonitor < Formula
+            desc "Split-tunnel VPN multipath monitor for macOS (Zscaler, AnyConnect, GlobalProtect)"
+            homepage "https://github.com/iafilius/split-tunnel-monitor"
+            url "$URL"
+            sha256 "$SHA256"
+            license "GPL-3.0-or-later"
+
+            depends_on :macos
+            depends_on "python3"
+
+            def install
+              bin.install "ping_checker.py" => "split-tunnel-monitor"
+            end
+
+            test do
+              assert_match "split-tunnel-monitor #{version}", shell_output("#{bin}/split-tunnel-monitor --version")
+            end
+          end
+          EOF
+
+          cd central-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/split-tunnel-monitor.rb
+          git commit -m "Update split-tunnel-monitor formula to ${TAG_NAME}" || exit 0
+          git push origin main || git push origin master

@@ -9,10 +9,11 @@ class SplitTunnelMonitor < Formula
   depends_on "python3"
 
   def install
+    opoo "iafilius/simple_coon_check tap is deprecated! Please migrate to central tap: brew tap iafilius/tap"
     bin.install "ping_checker.py" => "split-tunnel-monitor"
   end
 
   test do
-    assert_match "split-tunnel-monitor 1.0.1", shell_output("#{bin}/split-tunnel-monitor --version")
+    assert_match "split-tunnel-monitor #{version}", shell_output("#{bin}/split-tunnel-monitor --version")
   end
 end

@@ -1,6 +1,7 @@
 # Log files
 *.log
-ping_checker_*.log
+*.log.gz
+ping_checker_*.log*
 
 # IDE & temporary files
 .DS_Store
