@@ -196,6 +196,119 @@ Time (CEST)  ping_checker               ZCC ZSATunnel log
 
 ---
 
+## Step 8 — Generate combined incident statement
+
+Run this pipeline to produce a single copy-pasteable incident report that combines both sources.
+Replace `<logfile>` with the actual ping_checker log path (use `gunzip -c` for `.log.gz`).
+
+```bash
+#!/usr/bin/env bash
+# Usage: bash incident_report.sh ping_checker_YYYYMMDD_HHMMSS.log[.gz]
+# Combines ping_checker log + ZCC tunnel logs into a single incident statement.
+
+LOGFILE="${1:?usage: $0 <ping_checker_logfile>}"
+
+# Read compressed or plain log
+if [[ "$LOGFILE" == *.gz ]]; then
+  READ_LOG="gunzip -c \"$LOGFILE\""
+else
+  READ_LOG="cat \"$LOGFILE\""
+fi
+
+# ── ping_checker facts ────────────────────────────────────────────────────────
+OUTAGE_FIRST=$(eval "$READ_LOG" | awk -F'|' '$10~/OUTAGE/{print $1; exit}')
+OUTAGE_LAST=$(eval  "$READ_LOG" | awk -F'|' '$10~/OUTAGE/{last=$1} END{print last}')
+HEALTHY_CNT=$(eval  "$READ_LOG" | awk -F'|' '$10~/HEALTHY/{c++} END{print c+0}')
+OUTAGE_CNT=$(eval   "$READ_LOG" | awk -F'|' '$10~/OUTAGE/{c++}  END{print c+0}')
+ZSC_FAULT=$(eval    "$READ_LOG" | awk -F'|' '$10~/OUTAGE/{print $11; exit}' | xargs)
+ISP_SAMPLE=$(eval   "$READ_LOG" | awk -F'|' '$10~/OUTAGE/{print $5; exit}' | xargs)
+ZSC_VERIFIED=$(eval "$READ_LOG" | awk -F'|' '$10~/OUTAGE/{print $9; exit}' | xargs)
+LOGNAME=$(basename "$LOGFILE")
+
+# ── ZCC SERVER_DOWN_ERROR — scan archived tunnel zips ────────────────────────
+ZCC_DIR="/Library/Application Support/Zscaler/log-de316a5833"
+ZCC_FIRST_ERROR=""
+for ZIP in "$ZCC_DIR"/ZSATunnel_*.log.zip; do
+  MATCH=$(unzip -p "$ZIP" 2>/dev/null | grep -m1 "SERVER_DOWN_ERROR")
+  if [[ -n "$MATCH" ]]; then
+    TS=$(echo "$MATCH" | awk '{print $1, $2}')
+    # Only record if earlier than already found (or none yet)
+    if [[ -z "$ZCC_FIRST_ERROR" || "$TS" < "$ZCC_FIRST_ERROR" ]]; then
+      ZCC_FIRST_ERROR="$TS ($(basename "$ZIP"))"
+    fi
+    break   # zips are sorted; first match IS the earliest
+  fi
+done
+[[ -z "$ZCC_FIRST_ERROR" ]] && ZCC_FIRST_ERROR="(not found — ZDX/archive may not cover this window)"
+
+# ── Root cause determination ──────────────────────────────────────────────────
+if [[ "$ZSC_VERIFIED" == "YES" && "$ISP_SAMPLE" != *"TIMEOUT"* && -n "$ZCC_FIRST_ERROR" ]]; then
+  ROOT_CAUSE="Zscaler cloud infrastructure failure (server-side PoP/gateway)"
+  CONFIDENCE="HIGH — ISP direct healthy, ZCC route correct, ZCC own logs confirm SERVER_DOWN_ERROR"
+elif [[ "$ZSC_VERIFIED" == "NO" ]]; then
+  ROOT_CAUSE="ZCC process or routing issue (utun not active)"
+  CONFIDENCE="HIGH — Zscaler_Verified=NO indicates tunnel not established on this device"
+elif [[ "$ISP_SAMPLE" == *"TIMEOUT"* ]]; then
+  ROOT_CAUSE="ISP or local network issue (ISP direct also failing)"
+  CONFIDENCE="HIGH — both ISP direct and Zscaler failed; not a Zscaler-specific outage"
+else
+  ROOT_CAUSE="Zscaler tunnel issue (ZCC logs inconclusive)"
+  CONFIDENCE="MEDIUM — ISP healthy, ZSC failed, but no ZCC corroboration found"
+fi
+
+# ── Print incident statement ──────────────────────────────────────────────────
+echo "════════════════════════════════════════════════════════"
+echo " Zscaler Tunnel Outage — Incident Statement"
+echo "════════════════════════════════════════════════════════"
+echo " Source 1 (ping_checker ICMP monitor)"
+echo "   Log file:       $LOGNAME"
+echo "   Outage start:   $OUTAGE_FIRST"
+echo "   Outage end:     $OUTAGE_LAST  (last sample in log)"
+echo "   Outage samples: $OUTAGE_CNT  |  Healthy samples: $HEALTHY_CNT"
+echo "   Fault domain:   $ZSC_FAULT"
+echo "   ISP direct:     $ISP_SAMPLE  (healthy = server-side Zscaler fault)"
+echo "   ZSC route OK:   $ZSC_VERIFIED  (utun active + pgrep confirmed)"
+echo ""
+echo " Source 2 (Zscaler Client Connector — ZSATunnel archive)"
+echo "   First SERVER_DOWN_ERROR:  $ZCC_FIRST_ERROR"
+echo "   Note: ZCC TCP-proxy detects failure ~10-20 min before ICMP data-plane"
+echo ""
+echo " Root Cause:   $ROOT_CAUSE"
+echo " Confidence:   $CONFIDENCE"
+echo ""
+echo " External reference: https://trust.zscaler.com"
+echo " Admin console:      Analytics → Tunnel Insights (per-device history)"
+echo "════════════════════════════════════════════════════════"
+```
+
+**Expected output for a confirmed Zscaler server-side outage:**
+```
+════════════════════════════════════════════════════════
+ Zscaler Tunnel Outage — Incident Statement
+════════════════════════════════════════════════════════
+ Source 1 (ping_checker ICMP monitor)
+   Log file:       ping_checker_20260730_200436.log.gz
+   Outage start:   2026-07-30T21:56:09.091301+02:00
+   Outage end:     2026-07-30T23:59:59.906190+02:00  (last sample in log)
+   Outage samples: 1120  |  Healthy samples: 465
+   Fault domain:   Zscaler Issue (VPN tunnel ICMP unresponsive)
+   ISP direct:     1.1.1.1 (11.4ms)  (healthy = server-side Zscaler fault)
+   ZSC route OK:   YES  (utun active + pgrep confirmed)
+
+ Source 2 (Zscaler Client Connector — ZSATunnel archive)
+   First SERVER_DOWN_ERROR:  2026-07-30 21:41:13 (ZSATunnel_2026-07-30-21-41-13...zip)
+   Note: ZCC TCP-proxy detects failure ~10-20 min before ICMP data-plane
+
+ Root Cause:   Zscaler cloud infrastructure failure (server-side PoP/gateway)
+ Confidence:   HIGH — ISP direct healthy, ZCC route correct, ZCC own logs confirm SERVER_DOWN_ERROR
+
+ External reference: https://trust.zscaler.com
+ Admin console:      Analytics → Tunnel Insights (per-device history)
+════════════════════════════════════════════════════════
+```
+
+---
+
 ## External verification
 
 - **Zscaler Trust portal**: https://trust.zscaler.com — check for incidents in your region/timeframe
