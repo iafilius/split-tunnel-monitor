@@ -198,72 +198,95 @@ Time (CEST)  ping_checker               ZCC ZSATunnel log
 
 ## Step 8 — Generate combined incident statement
 
-Run this pipeline to produce a single copy-pasteable incident report that combines both sources.
-Replace `<logfile>` with the actual ping_checker log path (use `gunzip -c` for `.log.gz`).
+Accepts **one or more** ping_checker log files — pass all files that cover the outage, including across a midnight rotation boundary. The script aggregates across all of them and scans ZCC archives only for the relevant date window.
 
 ```bash
 #!/usr/bin/env bash
-# Usage: bash incident_report.sh ping_checker_YYYYMMDD_HHMMSS.log[.gz]
-# Combines ping_checker log + ZCC tunnel logs into a single incident statement.
+# Usage: bash incident_report.sh <logfile1> [logfile2 ...]
+# Handles multi-day outages: pass every ping_checker log that covers the event.
+# Example: bash incident_report.sh ping_checker_20260730_200436.log.gz ping_checker_20260731_000001.log
 
-LOGFILE="${1:?usage: $0 <ping_checker_logfile>}"
+[[ $# -eq 0 ]] && { echo "usage: $0 <logfile> [logfile2 ...]"; exit 1; }
 
-# Read compressed or plain log
-if [[ "$LOGFILE" == *.gz ]]; then
-  READ_LOG="gunzip -c \"$LOGFILE\""
+# ── Helper: emit contents of a log file (plain or .gz) ──────────────────────
+read_log() { [[ "$1" == *.gz ]] && gunzip -c "$1" || cat "$1"; }
+
+# ── Aggregate across all supplied log files ───────────────────────────────────
+OUTAGE_FIRST="" OUTAGE_LAST="" HEALTHY_CNT=0 OUTAGE_CNT=0
+ZSC_FAULT="" ISP_SAMPLE="" ZSC_VERIFIED="" LOGNAMES=""
+
+for LOGFILE in "$@"; do
+  LOGNAMES="${LOGNAMES:+$LOGNAMES, }$(basename "$LOGFILE")"
+  while IFS= read -r line; do
+    st=$(echo "$line" | awk -F'|' '{print $10}' | xargs)
+    [[ "$st" == "OUTAGE" ]] && OUTAGE_CNT=$((OUTAGE_CNT+1))
+    [[ "$st" == "HEALTHY" ]] && HEALTHY_CNT=$((HEALTHY_CNT+1))
+    if [[ "$st" == "OUTAGE" ]]; then
+      ts=$(echo "$line" | awk -F'|' '{print $1}' | xargs)
+      [[ -z "$OUTAGE_FIRST" ]] && OUTAGE_FIRST="$ts"
+      OUTAGE_LAST="$ts"
+      [[ -z "$ZSC_FAULT"    ]] && ZSC_FAULT=$(echo "$line"    | awk -F'|' '{print $11}' | xargs)
+      [[ -z "$ISP_SAMPLE"   ]] && ISP_SAMPLE=$(echo "$line"   | awk -F'|' '{print $5}'  | xargs)
+      [[ -z "$ZSC_VERIFIED" ]] && ZSC_VERIFIED=$(echo "$line" | awk -F'|' '{print $9}'  | xargs)
+    fi
+  done < <(read_log "$LOGFILE")
+done
+
+# ── Duration ──────────────────────────────────────────────────────────────────
+if [[ -n "$OUTAGE_FIRST" && -n "$OUTAGE_LAST" ]]; then
+  T1=$(date -j -f "%Y-%m-%dT%H:%M:%S" "${OUTAGE_FIRST:0:19}" "+%s" 2>/dev/null || echo 0)
+  T2=$(date -j -f "%Y-%m-%dT%H:%M:%S" "${OUTAGE_LAST:0:19}"  "+%s" 2>/dev/null || echo 0)
+  SECS=$(( T2 - T1 ))
+  DURATION="$(( SECS/3600 ))h $(( (SECS%3600)/60 ))m $(( SECS%60 ))s"
+  [[ "$OUTAGE_LAST" == *"$(basename "${!#}")"* ]] && DURATION="${DURATION} (ongoing — last log not closed)"
 else
-  READ_LOG="cat \"$LOGFILE\""
+  DURATION="(unknown)"
 fi
 
-# ── ping_checker facts ────────────────────────────────────────────────────────
-OUTAGE_FIRST=$(eval "$READ_LOG" | awk -F'|' '$10~/OUTAGE/{print $1; exit}')
-OUTAGE_LAST=$(eval  "$READ_LOG" | awk -F'|' '$10~/OUTAGE/{last=$1} END{print last}')
-HEALTHY_CNT=$(eval  "$READ_LOG" | awk -F'|' '$10~/HEALTHY/{c++} END{print c+0}')
-OUTAGE_CNT=$(eval   "$READ_LOG" | awk -F'|' '$10~/OUTAGE/{c++}  END{print c+0}')
-ZSC_FAULT=$(eval    "$READ_LOG" | awk -F'|' '$10~/OUTAGE/{print $11; exit}' | xargs)
-ISP_SAMPLE=$(eval   "$READ_LOG" | awk -F'|' '$10~/OUTAGE/{print $5; exit}' | xargs)
-ZSC_VERIFIED=$(eval "$READ_LOG" | awk -F'|' '$10~/OUTAGE/{print $9; exit}' | xargs)
-LOGNAME=$(basename "$LOGFILE")
-
-# ── ZCC SERVER_DOWN_ERROR — scan archived tunnel zips ────────────────────────
+# ── ZCC SERVER_DOWN_ERROR — search only zips whose date overlaps the outage ───
 ZCC_DIR="/Library/Application Support/Zscaler/log-de316a5833"
+# Extract date prefix from outage start (YYYY-MM-DD) for filtering
+OUTAGE_DATE="${OUTAGE_FIRST:0:10}"          # e.g. 2026-07-30
+OUTAGE_DATE2=$(date -j -v+1d -f "%Y-%m-%d" "$OUTAGE_DATE" "+%Y-%m-%d" 2>/dev/null)
+
 ZCC_FIRST_ERROR=""
-for ZIP in "$ZCC_DIR"/ZSATunnel_*.log.zip; do
+for ZIP in $(ls "$ZCC_DIR"/ZSATunnel_*.log.zip 2>/dev/null | sort); do
+  # Only scan zips whose filename date is within the outage day or the next day
+  ZIPDATE=$(basename "$ZIP" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
+  [[ "$ZIPDATE" == "$OUTAGE_DATE" || "$ZIPDATE" == "$OUTAGE_DATE2" ]] || continue
   MATCH=$(unzip -p "$ZIP" 2>/dev/null | grep -m1 "SERVER_DOWN_ERROR")
   if [[ -n "$MATCH" ]]; then
     TS=$(echo "$MATCH" | awk '{print $1, $2}')
-    # Only record if earlier than already found (or none yet)
-    if [[ -z "$ZCC_FIRST_ERROR" || "$TS" < "$ZCC_FIRST_ERROR" ]]; then
-      ZCC_FIRST_ERROR="$TS ($(basename "$ZIP"))"
-    fi
-    break   # zips are sorted; first match IS the earliest
+    ZCC_FIRST_ERROR="$TS  ($(basename "$ZIP"))"
+    break
   fi
 done
-[[ -z "$ZCC_FIRST_ERROR" ]] && ZCC_FIRST_ERROR="(not found — ZDX/archive may not cover this window)"
+[[ -z "$ZCC_FIRST_ERROR" ]] && ZCC_FIRST_ERROR="(not found in date-filtered archive)"
 
-# ── Root cause determination ──────────────────────────────────────────────────
-if [[ "$ZSC_VERIFIED" == "YES" && "$ISP_SAMPLE" != *"TIMEOUT"* && -n "$ZCC_FIRST_ERROR" ]]; then
+# ── Root cause ────────────────────────────────────────────────────────────────
+if [[ "$ZSC_VERIFIED" == "YES" && "$ISP_SAMPLE" != *"TIMEOUT"* && -n "$ZCC_FIRST_ERROR" && "$ZCC_FIRST_ERROR" != *"not found"* ]]; then
   ROOT_CAUSE="Zscaler cloud infrastructure failure (server-side PoP/gateway)"
   CONFIDENCE="HIGH — ISP direct healthy, ZCC route correct, ZCC own logs confirm SERVER_DOWN_ERROR"
 elif [[ "$ZSC_VERIFIED" == "NO" ]]; then
   ROOT_CAUSE="ZCC process or routing issue (utun not active)"
-  CONFIDENCE="HIGH — Zscaler_Verified=NO indicates tunnel not established on this device"
+  CONFIDENCE="HIGH — Zscaler_Verified=NO indicates tunnel not established"
 elif [[ "$ISP_SAMPLE" == *"TIMEOUT"* ]]; then
   ROOT_CAUSE="ISP or local network issue (ISP direct also failing)"
-  CONFIDENCE="HIGH — both ISP direct and Zscaler failed; not a Zscaler-specific outage"
+  CONFIDENCE="HIGH — both ISP direct and Zscaler failed"
 else
   ROOT_CAUSE="Zscaler tunnel issue (ZCC logs inconclusive)"
-  CONFIDENCE="MEDIUM — ISP healthy, ZSC failed, but no ZCC corroboration found"
+  CONFIDENCE="MEDIUM — ISP healthy, ZSC failed, ZCC archive not conclusive"
 fi
 
-# ── Print incident statement ──────────────────────────────────────────────────
+# ── Print ─────────────────────────────────────────────────────────────────────
 echo "════════════════════════════════════════════════════════"
 echo " Zscaler Tunnel Outage — Incident Statement"
 echo "════════════════════════════════════════════════════════"
 echo " Source 1 (ping_checker ICMP monitor)"
-echo "   Log file:       $LOGNAME"
+echo "   Log files:      $LOGNAMES"
 echo "   Outage start:   $OUTAGE_FIRST"
-echo "   Outage end:     $OUTAGE_LAST  (last sample in log)"
+echo "   Outage end:     $OUTAGE_LAST"
+echo "   Duration:       $DURATION"
 echo "   Outage samples: $OUTAGE_CNT  |  Healthy samples: $HEALTHY_CNT"
 echo "   Fault domain:   $ZSC_FAULT"
 echo "   ISP direct:     $ISP_SAMPLE  (healthy = server-side Zscaler fault)"
@@ -281,13 +304,12 @@ echo " Admin console:      Analytics → Tunnel Insights (per-device history)"
 echo "════════════════════════════════════════════════════════"
 ```
 
-**Expected output for a confirmed Zscaler server-side outage:**
+**Multi-day outage example (Jul 30–31 2026):**
+```bash
+bash incident_report.sh \
+  ping_checker_20260730_200436.log.gz \
+  ping_checker_20260731_000001.log
 ```
-════════════════════════════════════════════════════════
- Zscaler Tunnel Outage — Incident Statement
-════════════════════════════════════════════════════════
- Source 1 (ping_checker ICMP monitor)
-   Log file:       ping_checker_20260730_200436.log.gz
    Outage start:   2026-07-30T21:56:09.091301+02:00
    Outage end:     2026-07-30T23:59:59.906190+02:00  (last sample in log)
    Outage samples: 1120  |  Healthy samples: 465
