@@ -312,6 +312,17 @@ echo ""
 echo " Root Cause:   $ROOT_CAUSE"
 echo " Confidence:   $CONFIDENCE"
 echo ""
+echo " Evidence used:"
+[[ "$ISP_SAMPLE" != *"TIMEOUT"* ]] \
+  && echo "   ✓ ISP direct path healthy ($ISP_SAMPLE) — rules out local/ISP fault" \
+  || echo "   ✗ ISP direct also failing — may not be Zscaler-specific"
+[[ "$ZSC_VERIFIED" == "YES" ]] \
+  && echo "   ✓ ZCC route verified (utun active + Zscaler process running)" \
+  || echo "   ✗ ZCC route NOT verified (Zscaler_Verified=NO)"
+[[ "$ZCC_FIRST_ERROR" != *"not found"* ]] \
+  && echo "   ✓ ZCC SERVER_DOWN_ERROR found: $ZCC_FIRST_ERROR" \
+  || echo "   ✗ ZCC SERVER_DOWN_ERROR not found in date-filtered archive"
+echo ""
 echo " External reference: https://trust.zscaler.com"
 echo " Admin console:      Analytics → Tunnel Insights (per-device history)"
 echo "════════════════════════════════════════════════════════"
