@@ -674,7 +674,7 @@ def _print_session_summary(
     print(f"\n{sep}")
     print(" Session Summary")
     print(sep)
-    print(f" Duration:    {_fmt_duration(total_secs)}  ({session_start.strftime('%H:%M:%S')} \u2013 {now.strftime('%H:%M:%S')})")
+    print(f" Duration:    {_fmt_duration(total_secs)}  ({session_start.strftime('%Y-%m-%d %H:%M:%S')} \u2013 {now.strftime('%Y-%m-%d %H:%M:%S')})")
     print(f" Interface:   {network_info.get('interface', 'N/A')}")
     print(f" Samples:     {total:,}")
     print()
@@ -704,7 +704,7 @@ def _print_session_summary(
     else:
         for inc in display_incidents[:10]:
             tag = " [ongoing at exit]" if inc.get("ongoing") else ""
-            print(f"   #{inc['number']}  {inc['start'].strftime('%H:%M:%S')}  "
+            print(f"   #{inc['number']}  {inc['start'].strftime('%Y-%m-%d %H:%M:%S')}  "
                   f"{inc['worst_status']:<8}  {inc['domain']:<46}  {inc['duration_str']}{tag}")
         if len(display_incidents) > 10:
             print(f"   ... and {len(display_incidents) - 10} more")
@@ -716,7 +716,7 @@ def _print_session_summary(
         p95 = overhead.rolling_p95()
         p50_str = f"+{p50:.1f}ms" if p50 is not None else "N/A"
         p95_str = f"+{p95:.1f}ms" if p95 is not None else "N/A"
-        peak_str = (f"+{peak_ovh:.1f}ms at {peak_ovh_time.strftime('%H:%M:%S')}"
+        peak_str = (f"+{peak_ovh:.1f}ms at {peak_ovh_time.strftime('%Y-%m-%d %H:%M:%S')}"
                     if peak_ovh is not None else "N/A")
         print(f"   baseline p50=+{overhead.baseline_p50:.1f}ms  "
               f"current p50={p50_str}  p95={p95_str}  peak={peak_str}")
@@ -1038,11 +1038,12 @@ async def main():
             if incident_just_closed is not None:
                 inc = incident_just_closed
                 print(
+                    f"[{inc['end_time'].strftime('%Y-%m-%d %H:%M:%S')}] "
                     f"[INCIDENT #{inc['number']} RESOLVED] "
                     f"Domain: {inc['domain']} | "
                     f"Status: {inc['worst_status']} | "
                     f"Duration: {inc['duration_str']} | "
-                    f"{inc['start'].strftime('%H:%M:%S')} \u2013 {inc['end_time'].strftime('%H:%M:%S')}",
+                    f"{inc['start'].strftime('%Y-%m-%d %H:%M:%S')} \u2013 {inc['end_time'].strftime('%Y-%m-%d %H:%M:%S')}",
                     flush=True,
                 )
                 _notify(
