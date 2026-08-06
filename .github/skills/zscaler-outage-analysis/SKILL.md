@@ -12,6 +12,23 @@ Investigate a Zscaler VPN outage by correlating ping_checker session logs with l
 
 ---
 
+## QUICK START — When given only a time window
+
+**If user reports:** `11:00:04 – 14:51:16` (no date specified)  
+**Action:**
+1. Check **current date context** (today's date)
+2. Assume the time window is **today** unless explicitly stated otherwise
+3. Run `incident_report.py` on **today's log files** first:
+   ```bash
+   python3 incident_report.py ping_checker_$(date +%Y%m%d)*.log
+   ```
+4. If no incidents found, check **yesterday** or **date in recent history**
+5. When matching an incident, verify the exact time window provided (e.g., "11:00:04 – 14:51:16 matches start/end timestamps)
+
+**Why:** Users usually report *recent* incidents, especially if mentioned casually without a date prefix. The current date context is available and should be the first search target.
+
+---
+
 ## What this skill does
 
 Given a reported or suspected Zscaler outage, you will:
@@ -186,6 +203,8 @@ Time (CEST)  ping_checker               ZCC ZSATunnel log
 ```
 
 **Typical lag:** ZCC detects TCP-level failure 10–20 min before ICMP through the tunnel degrades. ICMP is lower-priority traffic than ZCC's own TCP keepalives.
+
+**ZCC SERVER_DOWN_ERROR timing:** When `SERVER_DOWN_ERROR` appears in ZCC logs, ICMP probe timeouts typically begin **13–30 seconds later**. This makes ZCC logging especially valuable for pinpointing the exact moment Zscaler infrastructure detected the failure at the control plane, even if data-plane (ICMP) effects lag slightly behind.
 
 ---
 

@@ -13,3 +13,5 @@ venv/
 __pycache__/
 *.pyc
 teams-message-kathy.md
+ping_checker_*log.gz
+ping_checker_*log
