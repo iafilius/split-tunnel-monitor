@@ -61,13 +61,13 @@ curl -O https://raw.githubusercontent.com/iafilius/split-tunnel-monitor/main/pin
 chmod +x ping_checker.py
 ```
 
-Requires Python 3.8+ (standard on macOS). No additional pip dependencies.
+Requires Python 3.9+ (standard on macOS; floor set by `asyncio.to_thread`, used for background traceroute verification). No additional pip dependencies.
 
 ### 2. Prerequisites
 
 > ⚠️ **macOS only.** Requires macOS (Apple Silicon or Intel). The monitoring pattern is conceptually portable to Linux, but the current implementation uses macOS-specific CLI tools and is not tested on any other platform.
 
-- **Python 3.8+** (standard macOS system Python or Homebrew Python — handled automatically by the Homebrew formula).
+- **Python 3.9+** (standard macOS system Python or Homebrew Python — handled automatically by the Homebrew formula; floor set by `asyncio.to_thread`).
 - Standard non-root permissions (uses macOS system `/sbin/ping` and `/usr/sbin/traceroute`).
 - **`terminal-notifier`** *(optional, recommended)* — enables banner popup notifications on outage/recovery. Without it, notifications are delivered silently to Notification Center only.
 

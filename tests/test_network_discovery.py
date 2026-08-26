@@ -118,3 +118,58 @@ class TestGetZscalerInfo:
 
         assert info["is_active"] is False
         assert info["virtual_ip"] == ""
+
+
+class TestGetIpAssignmentMode:
+    def test_dhcp_lease_present(self):
+        dhcp_output = (
+            "op = BOOTREPLY\n"
+            "yiaddr = 192.168.1.42\n"
+            "server_identifier = 192.168.1.1\n"
+        )
+        with patch("os.popen", return_value=_popen_mock(dhcp_output)):
+            mode = NetworkDiscovery.get_ip_assignment_mode("en0")
+        assert mode == "dhcp"
+
+    def test_static_when_no_packet_present(self):
+        with patch("os.popen", return_value=_popen_mock("no packet\n")):
+            mode = NetworkDiscovery.get_ip_assignment_mode("en6")
+        assert mode == "static"
+
+    def test_static_when_output_empty(self):
+        with patch("os.popen", return_value=_popen_mock("")):
+            mode = NetworkDiscovery.get_ip_assignment_mode("en6")
+        assert mode == "static"
+
+    def test_unknown_on_ambiguous_output(self):
+        with patch("os.popen", return_value=_popen_mock("garbled unexpected output\n")):
+            mode = NetworkDiscovery.get_ip_assignment_mode("en0")
+        assert mode == ""
+
+    def test_unknown_on_empty_interface(self):
+        assert NetworkDiscovery.get_ip_assignment_mode("") == ""
+
+    def test_unknown_on_exception(self):
+        with patch("os.popen", side_effect=OSError("boom")):
+            mode = NetworkDiscovery.get_ip_assignment_mode("en0")
+        assert mode == ""
+
+
+class TestInterfaceExists:
+    def test_true_when_ifconfig_succeeds(self):
+        mock_result = MagicMock(returncode=0)
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            assert NetworkDiscovery.interface_exists("en0") is True
+        mock_run.assert_called_once()
+
+    def test_false_when_ifconfig_fails(self):
+        mock_result = MagicMock(returncode=1)
+        with patch("subprocess.run", return_value=mock_result):
+            assert NetworkDiscovery.interface_exists("en6") is False
+
+    def test_false_when_empty_interface(self):
+        assert NetworkDiscovery.interface_exists("") is False
+
+    def test_false_on_exception(self):
+        with patch("subprocess.run", side_effect=OSError("boom")):
+            assert NetworkDiscovery.interface_exists("en0") is False

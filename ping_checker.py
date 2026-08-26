@@ -12,7 +12,13 @@ Generates unique ISO-timestamped log files and live terminal UI updates.
 
 Repository: https://github.com/iafilius/split-tunnel-monitor
 License: GNU General Public License v3.0 (GPLv3)
+
+Requires Python 3.9+ (floor set by `asyncio.to_thread`, used for background
+traceroute verification). `from __future__ import annotations` below defers
+evaluation of PEP 604 `X | Y` annotations so they don't raise the floor further.
 """
+
+from __future__ import annotations
 
 import sys
 import os
@@ -25,7 +31,7 @@ import statistics as _stats
 import collections
 from datetime import datetime
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 __log_schema__ = 1
 
 # Default public targets for ISP (direct) and Zscaler (tunneled) probing
@@ -41,7 +47,7 @@ class NetworkDiscovery:
         """Find active physical network interface (e.g. en0, en1) using scutil --nwi or route."""
         try:
             # Method 1: scutil --nwi
-            proc = os.popen("scutil --nwi")
+            proc = os.popen("scutil --nwi 2>/dev/null")
             output = proc.read()
             proc.close()
             match = re.search(r"Network interfaces:\s*(\w+)", output)
@@ -51,7 +57,7 @@ class NetworkDiscovery:
                     return iface
 
             # Method 2: route -n get 1.1.1.1
-            proc = os.popen("route -n get 1.1.1.1")
+            proc = os.popen("route -n get 1.1.1.1 2>/dev/null")
             route_out = proc.read()
             proc.close()
             match = re.search(r"interface:\s*(\w+)", route_out)
@@ -66,10 +72,25 @@ class NetworkDiscovery:
         return "en0"
 
     @staticmethod
+    def interface_exists(interface: str) -> bool:
+        """Check whether a physical interface still exists (e.g. after a docking cable is unplugged)."""
+        if not interface:
+            return False
+        try:
+            result = subprocess.run(
+                ["ifconfig", interface],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+
+    @staticmethod
     def get_local_ip(interface: str) -> str:
         """Get assigned IPv4 address for physical interface using ipconfig getifaddr."""
         try:
-            proc = os.popen(f"ipconfig getifaddr {interface}")
+            proc = os.popen(f"ipconfig getifaddr {interface} 2>/dev/null")
             ip = proc.read().strip()
             proc.close()
             if ip and re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", ip):
@@ -79,18 +100,38 @@ class NetworkDiscovery:
         return ""
 
     @staticmethod
+    def get_ip_assignment_mode(interface: str) -> str:
+        """Return 'dhcp', 'static', or '' (unknown) for the interface's IPv4 assignment."""
+        if not interface:
+            return ""
+        try:
+            proc = os.popen(f"ipconfig getpacket {interface} 2>/dev/null")
+            output = proc.read()
+            proc.close()
+            stripped = output.strip()
+            if not stripped:
+                return "static"
+            if re.search(r"op\s*=\s*BOOTREPLY", output) or "yiaddr" in output:
+                return "dhcp"
+            if "no packet" in stripped.lower():
+                return "static"
+        except Exception:
+            pass
+        return ""
+
+    @staticmethod
     def get_lan_gateway(interface: str) -> str:
         """Get default router LAN IP using ipconfig getoption or route query."""
         try:
             # Primary macOS option query
-            proc = os.popen(f"ipconfig getoption {interface} router")
+            proc = os.popen(f"ipconfig getoption {interface} router 2>/dev/null")
             gw = proc.read().strip()
             proc.close()
             if gw and re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", gw):
                 return gw
 
             # Fallback route query
-            proc = os.popen("route -n get 1.1.1.1")
+            proc = os.popen("route -n get 1.1.1.1 2>/dev/null")
             route_out = proc.read()
             proc.close()
             match = re.search(r"gateway:\s*(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})", route_out)
@@ -115,7 +156,7 @@ class NetworkDiscovery:
 
         # 1. Check if Zscaler Client Connector process is running
         try:
-            proc = os.popen("pgrep -fi Zscaler")
+            proc = os.popen("pgrep -fi Zscaler 2>/dev/null")
             pids = proc.read().strip()
             proc.close()
             if pids:
@@ -125,7 +166,7 @@ class NetworkDiscovery:
 
         # 2. Inspect route to standard public IP (e.g. 8.8.8.8) to see if it routes via utun
         try:
-            proc = os.popen("route -n get 8.8.8.8")
+            proc = os.popen("route -n get 8.8.8.8 2>/dev/null")
             route_out = proc.read()
             proc.close()
 
@@ -142,7 +183,7 @@ class NetworkDiscovery:
 
         # 3. Scan ifconfig for IPv4 utun interfaces (e.g., inet 100.64.X.X -> 100.64.Y.Y)
         try:
-            proc = os.popen("ifconfig")
+            proc = os.popen("ifconfig 2>/dev/null")
             ifconfig_out = proc.read()
             proc.close()
 
@@ -170,11 +211,13 @@ class NetworkDiscovery:
         local_ip = cls.get_local_ip(iface)
         gw_ip = cls.get_lan_gateway(iface)
         zscaler_info = cls.get_zscaler_info()
+        ip_assignment_mode = cls.get_ip_assignment_mode(iface)
 
         return {
             "interface": iface,
             "local_ip": local_ip,
             "gateway_ip": gw_ip,
+            "ip_assignment_mode": ip_assignment_mode,
             "zscaler": zscaler_info
         }
 
@@ -193,9 +236,9 @@ def get_route_info(target_ip: str, ifscope: str = "") -> dict:
         return info
 
     try:
-        cmd = f"route -n get {target_ip}"
+        cmd = f"route -n get {target_ip} 2>/dev/null"
         if ifscope:
-            cmd = f"route -n get -ifscope {ifscope} {target_ip}"
+            cmd = f"route -n get -ifscope {ifscope} {target_ip} 2>/dev/null"
 
         proc = os.popen(cmd)
         output = proc.read()
@@ -214,6 +257,27 @@ def get_route_info(target_ip: str, ifscope: str = "") -> dict:
         return info
 
     return info
+
+
+def format_local_ip_line(local_ip: str, ip_assignment_mode: str) -> str:
+    """Render the 'Detected Local IPv4' banner value, appending (dhcp)/(static) when known."""
+    suffix = f" ({ip_assignment_mode})" if ip_assignment_mode else ""
+    return f"{local_ip or 'Searching...'}{suffix}"
+
+
+def should_rediscover(iteration: int, network_info: dict) -> bool:
+    """Decide whether to re-run network discovery this iteration: periodic cadence,
+    missing local IP/gateway, or the current physical interface having vanished
+    (e.g. a docking cable unplugged) — the latter fires immediately, not on the
+    next periodic cycle."""
+    interface = network_info.get("interface", "")
+    interface_vanished = bool(interface) and not NetworkDiscovery.interface_exists(interface)
+    return (
+        iteration % 10 == 1
+        or not network_info.get("local_ip")
+        or not network_info.get("gateway_ip")
+        or interface_vanished
+    )
 
 
 def assess_path_verification(network_info: dict, isp_target: str, zsc_target: str) -> dict:
@@ -791,7 +855,7 @@ async def main():
     startup_pathv = network_info["path_verification"]
 
     print(f"Detected Interface:        {network_info['interface']}")
-    print(f"Detected Local IPv4:       {network_info['local_ip'] or 'Searching...'}")
+    print(f"Detected Local IPv4:       {format_local_ip_line(network_info['local_ip'], network_info.get('ip_assignment_mode', ''))}")
     print(f"Detected LAN Gateway:      {network_info['gateway_ip'] or 'Searching...'}")
     print(f"Detected Zscaler Tunnel:   {z_status}")
     print(f"Zscaler Virtual Next-Hop:  {z_vgw}")
@@ -864,8 +928,9 @@ async def main():
                         _compress_logfile_background(old_logfile)
                         print(f"[{_ts()}] [COMPRESS] {os.path.basename(old_logfile)} → .gz (background)", flush=True)
 
-            # Periodically re-discover network configuration (every 10 iterations) or if interface changed
-            if iteration % 10 == 1 or not network_info['local_ip'] or not network_info['gateway_ip']:
+            # Periodically re-discover network configuration (every 10 iterations), if interface changed,
+            # or immediately if the current physical interface has vanished (e.g. docking cable unplugged)
+            if should_rediscover(iteration, network_info):
                 fresh_info = NetworkDiscovery.discover_all()
                 if fresh_info['interface'] != network_info['interface'] or fresh_info['local_ip'] != network_info['local_ip']:
                     network_info = fresh_info

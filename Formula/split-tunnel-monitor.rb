@@ -6,6 +6,7 @@ class SplitTunnelMonitor < Formula
   license "GPL-3.0-or-later"
 
   depends_on :macos
+  # Floor is Python 3.9+ (asyncio.to_thread, used for background traceroute verification)
   depends_on "python3"
 
   def install
