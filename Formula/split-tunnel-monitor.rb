@@ -14,6 +14,6 @@ class SplitTunnelMonitor < Formula
   end
 
   test do
-    assert_match "split-tunnel-monitor #{version}", shell_output("#{bin}/split-tunnel-monitor --version")
+    assert_match "ping_checker #{version}", shell_output("#{bin}/split-tunnel-monitor --version")
   end
 end
