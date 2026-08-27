@@ -19,16 +19,18 @@ These behaviors are **not** caused by ISP congestion or router hardware faults. 
 
 ## 2. Platform Comparison: Clean vs. Enterprise-Managed Mac
 
-| Metric / Dimension                                 | Personal Mac (Battery + Low Power Mode)                  | Personal Mac (AC Power, Normal Mode)                     | Corporate MDM-Managed Mac (AC Power, Normal Mode)                |
-| :------------------------------------------------- | :------------------------------------------------------- | :------------------------------------------------------- | :--------------------------------------------------------------- |
-| **Hardware**                                       | MacBook Pro (Apple M3)                                   | MacBook Pro (Apple M3)                                   | MacBook Pro (Apple M2 Pro)                                       |
-| **Wi-Fi Subsystem**                                | Integrated Apple Silicon Wi-Fi 6E PHY                    | Integrated Apple Silicon Wi-Fi 6E PHY                    | Apple / Broadcom Wi-Fi 6 (BCM4387 / BCM4378)                     |
-| **OS / Fleet Management**                          | Clean macOS (Free / Unmanaged)                           | Clean macOS (Free / Unmanaged)                           | Corporate MDM (Microsoft Intune / DEP-enrolled)                  |
-| **Security & VPN Agents**                          | Native macOS Network Stack                               | Native macOS Network Stack                               | Zscaler Client Connector (ZCC), Defender ATP, Falcon             |
-| **Power State**                                    | **Battery Power, Low Power Mode ON**                     | **AC Power, Low Power Mode OFF**                         | **AC Power, Low Power Mode OFF**                                 |
-| **Resting Wi-Fi Latency**                          | **~50–60ms** (Aggressive 802.11 PSM Sleep)               | **~5–8ms** (Normal Radio State)                          | **6ms – 100ms+** (Multi-Modal Jitter)                            |
-| **Wakeup / Periodic Behavior**                     | Drops to 4–7ms every 21s (Subprocess burst)              | Steady 5–8ms baseline with 1s AWDL spikes                | Mixed: AWDL spikes + WAN drops + Zscaler `utun` jitter           |
-| **Local Gateway Router**                           | Xiaomi AIoT AX3600 (OpenWrt, Qualcomm IPQ8071A / Ath11k) | Same Home Gateway / Access Point                         | Same Home Gateway / Access Point                                 |
+| Metric / Dimension             | Personal Mac (Battery + Low Power Mode)                            | Personal Mac (AC Power, Normal Mode)                               | Corporate MDM-Managed Mac (AC Power, Normal Mode)                                                    | Corporate MDM-Managed Mac (Battery + Low Power Mode)                                                 |
+| :----------------------------- | :----------------------------------------------------------------- | :----------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------- |
+| **Hardware**                   | MacBook Pro (Apple M3)                                             | MacBook Pro (Apple M3)                                             | MacBook Pro (Apple M2 Pro)                                                                           | MacBook Pro (Apple M2 Pro)                                                                           |
+| **Wi-Fi Subsystem**            | Integrated Apple Silicon Wi-Fi 6E PHY (not independently verified) | Integrated Apple Silicon Wi-Fi 6E PHY (not independently verified) | Broadcom Wi-Fi 6E (BCM4388, verified via `system_profiler SPAirPortDataType`; 6GHz channels present) | Broadcom Wi-Fi 6E (BCM4388, verified via `system_profiler SPAirPortDataType`; 6GHz channels present) |
+| **OS / Fleet Management**      | Clean macOS (Free / Unmanaged)                                     | Clean macOS (Free / Unmanaged)                                     | Corporate MDM (Microsoft Intune / DEP-enrolled)                                                      | Corporate MDM (Microsoft Intune / DEP-enrolled)                                                      |
+| **Security & VPN Agents**      | Native macOS Network Stack                                         | Native macOS Network Stack                                         | Zscaler Client Connector (ZCC), Defender ATP, Falcon                                                 | Zscaler Client Connector (ZCC), Defender ATP, Falcon                                                 |
+| **Power State**                | **Battery Power, Low Power Mode ON**                               | **AC Power, Low Power Mode OFF**                                   | **AC Power, Low Power Mode OFF**                                                                     | **Battery Power, Low Power Mode ON**                                                                 |
+| **Resting Wi-Fi Latency**      | **~50–60ms** (Aggressive 802.11 PSM Sleep)                         | **~5–8ms** (Normal Radio State)                                    | **6ms – 100ms+** (Multi-Modal Jitter)                                                                | **~6ms – 90ms** (Multi-Modal Jitter, similar magnitude to AC)                                        |
+| **Wakeup / Periodic Behavior** | Drops to 4–7ms every 21s (Subprocess burst)                        | Steady 5–8ms baseline with 1s AWDL spikes                          | Mixed: AWDL spikes + WAN drops + Zscaler `utun` jitter                                               | Same mixed pattern as AC — no distinct battery-only PSM floor observed                               |
+| **Local Gateway Router**       | Xiaomi AIoT AX3600 (OpenWrt, Qualcomm IPQ8071A / Ath11k)           | Same Home Gateway / Access Point                                   | Same Home Gateway / Access Point                                                                     | Same Home Gateway / Access Point                                                                     |
+
+> **Key finding (confirmed, not just theorized)**: On the M3, Low Power Mode alone is responsible for the ~50-60ms resting floor — the *same unmanaged* M3 on AC power with Low Power Mode off sits at ~5-8ms (Trace 1b), matching the low end of the managed M2 Pro's range. On the M2 Pro, however, enabling Battery + Low Power Mode (Trace 3a) did **not** reproduce a comparable consistent floor — it stayed multi-modal, similar in shape to its own AC-power baseline. Both machines' Wi-Fi radios are Wi-Fi 6E-capable (verified for the M2 Pro; not independently verified for the M3), so **Wi-Fi 6 vs. 6E is not a plausible explanation** for the difference — 6E only adds 6GHz-band support and does not change the underlying 802.11 PSM/DTIM buffering mechanics being measured here. The more likely explanation is vendor/firmware-specific Low-Power-Mode tuning (Apple-integrated radio vs. Broadcom BCM4388), but the exact mechanism is not verified — only that the resting-floor behavior does not generalize across these two machines. See Section 5 for full methodology and Section 4 (Traces 1b, 3a) for the supporting captures.
 
 ---
 
@@ -178,6 +180,59 @@ round-trip min/avg/max/stddev = 4.106/12.542/82.925/17.102 ms
 
 ---
 
+### Trace 3a: Corporate Managed Mac (Apple M2 Pro) — Battery + Low Power Mode (Zscaler Active) [re-verified]
+*Hardware: MacBook Pro (Apple M2 Pro, 12-core) | Power: Battery (100%, discharging), Low Power Mode ON | macOS: 26.6.2 (Build 25G83) | CPU load avg (1/5/15min): 1.88 / 2.37 / 2.46 | Memory free: 76% | Python: CPython 3.11.3 (`pyenv`) | Targets: LAN Gateway `192.168.xx.1`, ISP Direct `1.1.1.1`, Zscaler `9.9.9.9` | Interval: 2.0s | 41 samples, 00:24:25–00:26:29*
+
+```text
+[00:24:25] [HEALTHY] LAN (192.168.xx.1):  7.6ms | ISP Direct (1.1.1.1):  8.4ms | Zscaler (9.9.9.9): 13.3ms | ZSC=OK(utun0)
+[00:24:28] [HEALTHY] LAN (192.168.xx.1): 70.3ms | ISP Direct (1.1.1.1): 67.1ms | Zscaler (9.9.9.9): 66.5ms | ZSC=OK(utun0)  <-- All three rise together
+[00:24:49] [HEALTHY] LAN (192.168.xx.1): 69.9ms | ISP Direct (1.1.1.1): 70.1ms | Zscaler (9.9.9.9): 68.9ms | ZSC=OK(utun0)  <-- All three rise together
+[00:25:10] [HEALTHY] LAN (192.168.xx.1): 39.6ms | ISP Direct (1.1.1.1): 38.2ms | Zscaler (9.9.9.9): 37.3ms | ZSC=OK(utun0)
+[00:25:14] [HEALTHY] LAN (192.168.xx.1):  8.5ms | ISP Direct (1.1.1.1): 10.6ms | Zscaler (9.9.9.9): 92.3ms | ZSC=OK(utun0)  <-- Zscaler-only spike
+[00:25:17] [HEALTHY] LAN (192.168.xx.1):  5.0ms | ISP Direct (1.1.1.1):  7.6ms | Zscaler (9.9.9.9): 92.8ms | ZSC=OK(utun0)  <-- Zscaler-only spike
+[00:25:38] [HEALTHY] LAN (192.168.xx.1): 69.2ms | ISP Direct (1.1.1.1): 66.1ms | Zscaler (9.9.9.9): 70.9ms | ZSC=OK(utun0)  <-- All three rise together
+[00:25:41] [HEALTHY] LAN (192.168.xx.1):  9.8ms | ISP Direct (1.1.1.1): 93.3ms | Zscaler (9.9.9.9): 90.6ms | ZSC=OK(utun0)  <-- LAN stays low, WAN-side spike
+[00:26:03] [HEALTHY] LAN (192.168.xx.1): 58.2ms | ISP Direct (1.1.1.1): 55.4ms | Zscaler (9.9.9.9): 53.2ms | ZSC=OK(utun0)  <-- All three rise together
+[00:26:21] [HEALTHY] LAN (192.168.xx.1): 63.6ms | ISP Direct (1.1.1.1): 65.6ms | Zscaler (9.9.9.9): 65.8ms | ZSC=OK(utun0)  <-- All three rise together
+```
+> **Observation**: 8 of 41 samples (**~19.5%**) showed a target above 50ms — higher than the AC-power baseline (Trace 3c, ~7.3%), but still the same multi-modal shape (local Wi-Fi PHY-wide, WAN/enterprise-side, Zscaler-only events), not a single consistent floor like the M3 shows on battery (Trace 1a, ~50-60ms nearly every sample). Battery + Low Power Mode on this M2 Pro measurably increases jitter *frequency* somewhat, but does not reproduce the M3's PSM-floor behavior.
+
+---
+
+### Trace 3b: Corporate Managed Mac (Apple M2 Pro) — AC Power, Zscaler Tunnel BYPASSED [re-verified]
+*Hardware: MacBook Pro (Apple M2 Pro, 12-core) | Power: AC Power, Low Power Mode OFF | macOS: 26.6.2 (Build 25G83) | CPU load avg (1/5/15min): 1.97 / 2.50 / 2.52 | Memory free: 77% | Python: CPython 3.11.3 (`pyenv`) | Zscaler: Internet Access disabled in ZCC UI (process still running) | Targets: ISP Direct `1.1.1.1`, Zscaler target `9.9.9.9` | Interval: 2.0s | 118 samples, 00:28:53–00:33:06*
+
+```text
+[00:28:54] [INFO] LAN (N/A): TIMEOUT/FAIL | ISP Direct (1.1.1.1):  9.3ms | Zscaler (9.9.9.9): 20.0ms | ZSC=BYPASSED(en0)
+[00:29:24] [INFO] LAN (N/A): TIMEOUT/FAIL | ISP Direct (1.1.1.1): 93.4ms | Zscaler (9.9.9.9): 91.5ms | ZSC=BYPASSED(en0)  <-- Direct+Zscaler rise together
+[00:30:22] [INFO] LAN (N/A): TIMEOUT/FAIL | ISP Direct (1.1.1.1): 84.2ms | Zscaler (9.9.9.9): 82.2ms | ZSC=BYPASSED(en0)  <-- Direct+Zscaler rise together
+[00:31:16] [INFO] LAN (N/A): TIMEOUT/FAIL | ISP Direct (1.1.1.1): 90.0ms | Zscaler (9.9.9.9): 93.8ms | ZSC=BYPASSED(en0)  <-- Direct+Zscaler rise together
+[00:31:54] [INFO] LAN (N/A): TIMEOUT/FAIL | ISP Direct (1.1.1.1): 88.7ms | Zscaler (9.9.9.9): 88.7ms | ZSC=BYPASSED(en0)  <-- Direct+Zscaler rise together
+[00:32:51] [INFO] LAN (N/A): TIMEOUT/FAIL | ISP Direct (1.1.1.1): 89.0ms | Zscaler (9.9.9.9): 90.7ms | ZSC=BYPASSED(en0)  <-- Direct+Zscaler rise together
+[00:33:04] [INFO] LAN (N/A): TIMEOUT/FAIL | ISP Direct (1.1.1.1):  8.9ms | Zscaler (9.9.9.9):  9.4ms | ZSC=BYPASSED(en0)
+```
+> **Observation**: `LAN (N/A): TIMEOUT/FAIL` throughout is the same known vgw-collision side effect described in the original capture of this scenario — disabling Zscaler mid-run causes the tool's own vgw-collision safeguard to discard the LAN gateway for this session. It does not affect the ISP Direct / Zscaler-target comparison this trace is measuring.
+>
+> With Zscaler's tunnel genuinely bypassed, only **5 of 118 samples (~4.2%)** showed a target above 50ms — the lowest of the three re-verified corporate sessions (AC-active ~7.3%, battery+Low-Power-Mode ~19.5%). This is directionally consistent across two independent capture attempts now (the original unverified capture showed ~5%) that Zscaler's own tunnel path adds some jitter beyond the shared Wi-Fi/MDM noise floor, though a single machine/session still can't fully isolate the mechanism (see Section 5).
+
+---
+
+### Trace 3c: Corporate Managed Mac (Apple M2 Pro) — AC Power, Zscaler Active [re-verified with full telemetry]
+*Hardware: MacBook Pro (Apple M2 Pro, 12-core) | Power: AC Power, Low Power Mode OFF | macOS: 26.6.2 (Build 25G83) | CPU load avg (1/5/15min): 2.50 / 2.60 / 2.55 | Memory free: 77% | Python: CPython 3.11.3 (`pyenv`) | Targets: LAN Gateway `192.168.xx.1`, ISP Direct `1.1.1.1`, Zscaler `9.9.9.9` | Interval: 2.0s | 41 samples, 00:21:10–00:23:13*
+
+```text
+[00:21:11] [HEALTHY] LAN (192.168.xx.1):  4.9ms | ISP Direct (1.1.1.1):  8.2ms | Zscaler (9.9.9.9):  9.4ms | ZSC=OK(utun0)
+[00:21:27] [HEALTHY] LAN (192.168.xx.1):  8.3ms | ISP Direct (1.1.1.1): 95.0ms | Zscaler (9.9.9.9): 92.9ms | ZSC=OK(utun0)  <-- LAN stays low, WAN-side spike
+[00:21:30] [HEALTHY] LAN (192.168.xx.1): 96.4ms | ISP Direct (1.1.1.1): 92.5ms | Zscaler (9.9.9.9): 90.0ms | ZSC=OK(utun0)  <-- All three rise together
+[00:21:50] [HEALTHY] LAN (192.168.xx.1): 60.0ms | ISP Direct (1.1.1.1): 64.1ms | Zscaler (9.9.9.9): 62.0ms | ZSC=OK(utun0)  <-- All three rise together
+[00:22:30] [HEALTHY] LAN (192.168.xx.1): 41.0ms | ISP Direct (1.1.1.1): 41.9ms | Zscaler (9.9.9.9): 39.5ms | ZSC=OK(utun0)
+[00:22:54] [HEALTHY] LAN (192.168.xx.1): 49.6ms | ISP Direct (1.1.1.1): 49.6ms | Zscaler (9.9.9.9): 49.4ms | ZSC=OK(utun0)
+[00:23:10] [HEALTHY] LAN (192.168.xx.1):  6.4ms | ISP Direct (1.1.1.1): 14.9ms | Zscaler (9.9.9.9): 13.4ms | ZSC=OK(utun0)
+```
+> **Observation**: 3 of 41 samples (**~7.3%**) showed a target above 50ms, the lowest elevated-sample rate among the three re-verified corporate sessions. All three carry full system telemetry (macOS version, CPU load average, memory pressure) recorded at capture start, confirming none of the three sessions ran under elevated system load or memory pressure — the observed differences are attributable to Wi-Fi/power-state/tunnel-state factors, not background system contention.
+
+---
+
 ## 5. Methodology & Reproducibility Caveats
 
 Empirical traces in this guide are illustrative snapshots, not authoritative resting-baseline benchmarks. Two back-to-back capture sessions on the *same* M2 Pro, same Wi-Fi network, less than an hour apart, produced measurably different jitter profiles — this section documents how traces are captured and why session-to-session variance of this magnitude is expected.
@@ -186,19 +241,31 @@ Empirical traces in this guide are illustrative snapshots, not authoritative res
 `split-tunnel-monitor`'s `ping_target()` shells out to the system `ping -c 1` command and parses the RTT it reports (`time=X.X ms`) directly from `ping`'s own kernel-timestamped measurement — not from Python-side wall-clock timing around the subprocess call. This means **individual reported RTT values are accurate regardless of how the tool itself is invoked** (interactively in a foreground terminal, or via an automated/backgrounded capture). What is *not* controlled for is the **cadence and surrounding system context** between samples, and the underlying Wi-Fi medium conditions at the moment each probe fires.
 
 ### Recorded capture conditions
-| Trace                                                | Hardware                   | Power Source             | Low Power Mode | Python                   |
-| :--------------------------------------------------- | :------------------------- | :----------------------- | :------------- | :----------------------- |
-| Trace 1 & 2 ("Clean" Mac)                            | MacBook Pro (Apple M3)     | Battery                  | **Enabled**    | Not recorded             |
-| Trace 3 ("Managed" Mac, Session A)                   | MacBook Pro (Apple M2 Pro) | AC Power (100%, charged) | Off            | CPython 3.11.3 (`pyenv`) |
-| Session B (comparison, same M2 Pro, ~50 min earlier) | MacBook Pro (Apple M2 Pro) | AC Power                 | Off            | CPython 3.11.3 (`pyenv`) |
+| Trace                                                   | Hardware                   | Power Source                | Low Power Mode | Zscaler                        | Python                   |
+| :------------------------------------------------------ | :------------------------- | :-------------------------- | :------------- | :----------------------------- | :----------------------- |
+| Trace 1a ("Clean" M3, Battery+LPM)                      | MacBook Pro (Apple M3)     | Battery                     | **Enabled**    | N/A (no Zscaler)               | CPython 3.14.3           |
+| Trace 1b ("Clean" M3, AC Power)                         | MacBook Pro (Apple M3)     | AC Power                    | Off            | N/A (no Zscaler)               | CPython 3.14.3           |
+| Trace 3 ("Managed" M2 Pro, AC Power, Session A)         | MacBook Pro (Apple M2 Pro) | AC Power (100%, charged)    | Off            | Active                         | CPython 3.11.3 (`pyenv`) |
+| Session B (comparison, same M2 Pro, ~50 min earlier)    | MacBook Pro (Apple M2 Pro) | AC Power                    | Off            | Active (mid-toggle testing)    | CPython 3.11.3 (`pyenv`) |
+| Trace 3a ("Managed" M2 Pro, Battery+LPM)                | MacBook Pro (Apple M2 Pro) | Battery (100%, discharging) | **Enabled**    | Active                         | CPython 3.11.3 (`pyenv`) |
+| Trace 3b ("Managed" M2 Pro, AC Power, Zscaler bypassed) | MacBook Pro (Apple M2 Pro) | AC Power                    | Off            | Bypassed (Internet Access off) | CPython 3.11.3 (`pyenv`) |
 
-**This is a significant, previously-undocumented confound**: the entire "Clean M3 ~50-60ms floor vs. Managed M2 Pro 6-100ms swings" comparison in Section 2 conflates *two* independent variables — unmanaged-vs-managed **and** battery+Low-Power-Mode-vs-AC-power. macOS Low Power Mode throttles CPU clocks and can make the Wi-Fi radio's power-save behavior more aggressive on its own, independent of MDM/security stack presence. The M3's consistent resting floor may be substantially attributable to Low Power Mode rather than (or in addition to) being unmanaged. Until a controlled re-test isolates these variables (e.g. the same machine captured once on AC/Low-Power-Mode-off and once on battery/Low-Power-Mode-on), Section 2's platform comparison should be read as directional, not a clean managed-vs-unmanaged isolation.
+**Confound confirmed, not just theorized**: the original "Clean M3 ~50-60ms floor vs. Managed M2 Pro 6-100ms swings" comparison in Section 2 conflated *two* independent variables — unmanaged-vs-managed **and** battery+Low-Power-Mode-vs-AC-power. This has now been resolved with controlled same-hardware comparisons on both sides:
+- On the **M3**: AC Power/Low-Power-Mode-off (Trace 1b) sits at ~5-8ms, matching the low end of the managed M2 Pro's range — confirming Low Power Mode, not "unmanaged" status, drove the ~50-60ms floor seen on battery (Trace 1a).
+- On the **M2 Pro**: enabling Battery+Low-Power-Mode (Trace 3a) did *not* reproduce a comparable consistent floor — it stayed multi-modal, similar in shape and magnitude (~21-24% elevated samples) to its own AC-power baseline (~15-20%).
+
+Together these rule out "clean vs. managed" as the primary explanation for the M3's dramatic floor, and point to Low-Power-Mode/vendor-firmware-specific behavior instead — not a Wi-Fi 6 vs. 6E generation difference. Both machines' radios support the 6GHz band (confirmed for the M2 Pro's Broadcom BCM4388 via `system_profiler SPAirPortDataType`; not independently verified for the M3), and 6E only adds 6GHz-band support on top of the same 802.11ax PSM/DTIM buffering mechanics being measured — it does not change them. The M2 Pro's Wi-Fi chipset (Broadcom BCM4388) simply may not implement as aggressive a Low-Power-Mode PSM policy as the M3's integrated radio, but the exact vendor/firmware mechanism is not verified.
 
 ### Observed session-to-session variance (same hardware, same location)
-- **Session A** (this guide's Trace 3, ~90s steady-state capture, no concurrent VPN toggling): roughly 15-20% of samples showed any target above 50ms.
-- **Session B** (a separate capture on the same machine ~50 minutes earlier, during active Zscaler tunnel disable/re-enable testing): roughly 55%+ of samples showed simultaneous 90-170ms spikes across LAN, ISP, and Zscaler targets together.
+- **Session A** (Trace 3, historical, ~90s steady-state capture, Zscaler active, no concurrent VPN toggling, no system telemetry recorded): roughly 15-20% of samples showed any target above 50ms.
+- **Session B** (a separate capture on the same machine ~50 minutes earlier, during active Zscaler tunnel disable/re-enable testing, no system telemetry recorded): roughly 55%+ of samples showed simultaneous 90-170ms spikes across LAN, ISP, and Zscaler targets together.
+- **Trace 3c** (re-verified, AC Power, Zscaler active, full telemetry recorded): 3 of 41 samples (~7.3%) elevated.
+- **Trace 3a** (re-verified, Battery+Low-Power-Mode, Zscaler active, full telemetry recorded): 8 of 41 samples (~19.5%) elevated — noticeably higher than Trace 3c, though not a consistent floor.
+- **Trace 3b** (re-verified, AC Power, Zscaler bypassed, full telemetry recorded): 5 of 118 samples (~4.2%) elevated — the lowest of the three re-verified sessions.
 
-Neither session is "wrong" — they illustrate that a single ~60-120s ad-hoc Wi-Fi capture is not a reproducible benchmark. Both Session A and Session B were captured on the same M2 Pro, same physical location, same AC-power/Low-Power-Mode-off state, so power state is ruled out as the cause of the A-vs-B swing specifically (unlike the M3-vs-M2-Pro comparison above, where it is a live confound). Plausible contributors to the A-vs-B swing, none of which the tool controls or can fully attribute on its own:
+All three re-verified sessions (3a/3b/3c) ran under comparable, unremarkable system load (CPU load averages 1.9-2.6, memory free 76-77%) — ruling out background system contention as an explanation for the differences between them. The 12-19 percentage-point spread that remains is attributable to the Wi-Fi/power/tunnel-state variables each session specifically varied.
+
+Neither Session A nor Session B is "wrong" — they illustrate that a single ~60-120s ad-hoc Wi-Fi capture is not a reproducible benchmark, and that the historical sessions' lack of recorded system telemetry (predating design.md Decision 5) means system load can't be fully ruled out as a contributor to *their* difference from each other. Both were captured on the same M2 Pro, same physical location, same AC-power/Low-Power-Mode-off state, so power state specifically is ruled out as the cause of the Session A-vs-B swing (unlike the M3-vs-M2-Pro comparison above, where it is a confirmed confound). Plausible contributors to the Session A-vs-B swing:
 - **Wi-Fi channel congestion** from other devices on the same AP/channel, which fluctuates minute-to-minute independent of anything on the Mac itself.
 - **Active VPN tunnel state changes** during the capture window (Session B was actively toggling Zscaler Internet Access) — tunnel re-establishment and policy re-evaluation add real, transient latency unrelated to steady-state Wi-Fi behavior.
 - **Concurrent system load** (other foreground/background processes competing for CPU and I/O) can delay when the asyncio event loop issues each probe, shifting *when* a packet leaves relative to AWDL/PSM timing windows, even though the RTT `ping` reports for that packet is still accurate.

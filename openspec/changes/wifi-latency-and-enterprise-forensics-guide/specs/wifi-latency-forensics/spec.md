@@ -21,7 +21,22 @@ The repository SHALL include a dedicated technical guide documenting macOS Wi-Fi
 #### Scenario: Guide documents measurement methodology and reproducibility caveats
 
 - **WHEN** an engineer reads the empirical traces section of the guide
-- **THEN** the guide documents how each trace was captured (execution context, power source, Low Power Mode state, Python interpreter version, and what the underlying `ping` measurement source is), and states that single ad-hoc Wi-Fi captures are illustrative, not authoritative resting-baseline benchmarks, since channel congestion, concurrent system load, power state, and physical position are not controlled between sessions
+- **THEN** the guide documents how each trace was captured (execution context, power source, Low Power Mode state, macOS version, CPU load average, memory pressure, Python interpreter version, and what the underlying `ping` measurement source is), and states that single ad-hoc Wi-Fi captures are illustrative, not authoritative resting-baseline benchmarks, since channel congestion, concurrent system load, power state, and physical position are not controlled between sessions
+
+#### Scenario: System load conditions are recorded per capture, not assumed idle
+
+- **WHEN** a trace is captured for this guide
+- **THEN** the guide records the macOS version (`sw_vers`), CPU load averages (`uptime`), and system-wide memory free percentage (`memory_pressure`) at the time of capture, so a future reader can assess whether elevated jitter coincided with elevated system load rather than assuming the machine was idle
+
+#### Scenario: Hardware capability claims are independently verified, not assumed
+
+- **WHEN** the guide states a specific Wi-Fi chipset, standard (e.g. Wi-Fi 6 vs. 6E), or other hardware capability for a machine used in a comparison
+- **THEN** the claim is either verified via a system command (e.g. `system_profiler SPAirPortDataType`) and the guide states how it was verified, or the guide explicitly marks the claim as "not independently verified" rather than presenting an assumption as fact
+
+#### Scenario: Guide's comparison methodology supports adding future sessions without restructuring
+
+- **WHEN** a new hardware, OS version, or configuration comparison is added later
+- **THEN** it can be recorded using the same reusable structure already established in the guide — a numbered Trace entry in Section 4 (hardware, power source, Low Power Mode state, Python version, targets, interval) and a corresponding row in the Section 5 "Recorded capture conditions" table — without needing to redesign the document's format
 
 ### Requirement: Cross-Platform Power-State Benchmark Matrix
 
@@ -32,6 +47,10 @@ The forensics guide SHALL provide a 2x2 comparison matrix documenting latency be
 - **WHEN** comparing platform latency metrics
 - **THEN** the guide includes empirical benchmark traces for Personal M3 on AC power, Personal M3 on Battery power, Corporate M2 Pro on AC power, and Corporate M2 Pro on Battery power
 
+#### Scenario: Tunnel-state isolation trace
+
+- **WHEN** isolating enterprise MDM/EDR background overhead from Zscaler tunnel/encryption overhead specifically
+- **THEN** the guide includes an empirical trace captured with the Zscaler tunnel bypassed (Internet Access disabled, process still running) under the same power conditions as the corporate AC-power baseline, and compares its elevated-sample rate against the tunnel-active baseline
 
 ### Requirement: Reference Guide Discoverability
 
