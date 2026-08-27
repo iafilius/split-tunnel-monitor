@@ -14,3 +14,11 @@
 - [x] 3.1 Add a "Methodology & Reproducibility Caveats" section documenting exactly how each trace was captured (command, execution context, what `ping_target()` actually measures), and what is/isn't controlled between ad-hoc Wi-Fi capture sessions (channel congestion, concurrent system load, physical position, time-of-day).
 - [x] 3.2 Document the concrete session-to-session variance observed on this same machine/location: a same-day capture taken ~50 minutes earlier during active tunnel-toggle testing showed roughly 55%+ of samples with simultaneous 90-170ms spikes across all three targets, versus ~15-20% in the steady-state Trace 3 capture — underscoring that single ad-hoc captures are illustrative, not authoritative resting-baseline benchmarks.
 - [x] 3.3 Record power source, Low Power Mode state, and Python interpreter version for each capture, and flag the discovered confound: Section 2's "Clean M3 vs Managed M2 Pro" comparison mixes unmanaged-vs-managed with battery+Low-Power-Mode-enabled (M3) vs AC-power+Low-Power-Mode-off (M2 Pro) — a real, previously undocumented variable that could independently explain much of the M3's consistent resting floor.
+
+## 4. Corporate M2 Pro Testing Protocol (To Execute on Corporate Laptop)
+
+- [x] 4.1 Capture controlled 35-sample trace on Corporate M2 Pro on AC Power (Low Power Mode OFF) with Zscaler ACTIVE.
+- [ ] 4.2 Capture controlled 35-sample trace on Corporate M2 Pro on Battery Power (Low Power Mode ON) with Zscaler ACTIVE to complete the 2x2 power matrix.
+- [ ] 4.3 Capture controlled 35-sample trace on Corporate M2 Pro with Zscaler Tunnel INACTIVE / BYPASSED to isolate MDM/EDR background overhead from Zscaler encryption.
+- [ ] 4.4 Update `docs/macos_wifi_latency_and_enterprise_forensics.md` with the finalized corporate battery & bypass trace data.
+
