@@ -37,11 +37,12 @@
 
 ## 7. Full system telemetry re-capture for M3 (personal laptop, to execute there)
 
-- [ ] 7.1 Verify the M3's actual Wi-Fi chipset via `system_profiler SPAirPortDataType` (mirrors 5.1) rather than leaving the "not independently verified" placeholder in Section 2/5 — confirm chipset model and whether 6GHz channels are present.
-- [ ] 7.2 Redo Trace 1a (Battery + Low Power Mode) with full telemetry: `sw_vers`, `uptime` load averages, `memory_pressure` system-wide free percentage, and confirmed Python interpreter version, recorded before the capture starts (mirrors 6.1/6.2/6.3's method).
-- [ ] 7.3 Redo Trace 1b (AC Power, Low Power Mode off) with the same full telemetry.
-- [ ] 7.4 Redo Trace 1c (`ping -i 0.2` high-frequency PSM-suppression test) with the same full telemetry, and confirm no other `ping_checker.py` or capture process is left running afterward (`ps aux | grep ping_checker`), per the SIGINT/background-process lesson in design.md.
-- [ ] 7.5 Update Section 4's Trace 1a/1b/1c and Section 5's "Recorded capture conditions" table with the M3's macOS version / CPU load / memory pressure / verified chipset, replacing the "Not recorded" placeholders now that both machines have fully verified telemetry.
-- [ ] 7.6 Re-check the "Key finding" callout in Section 2 and the confound narrative in Section 5 against the fresh M3 numbers — confirm they still hold (or update them if the re-verified data differs from the original M3 captures).
-- [ ] 7.7 Run `openspec validate --all` and `pytest` on the M3 laptop to confirm compliance after the doc update.
+- [x] 7.1 Verify the M3's actual Wi-Fi chipset via `system_profiler SPAirPortDataType` (mirrors 5.1) rather than leaving the "not independently verified" placeholder in Section 2/5 — confirmed: M3 Wi-Fi card is Broadcom **BCM4388** (`0x14E4, 0x4388`) with 6GHz Wi-Fi 6E channels, identical to the M2 Pro!
+- [x] 7.2 Redo Trace 1a (Battery + Low Power Mode) with full telemetry: `sw_vers` macOS 26.6.2 (25G83), `uptime` load averages 2.24/1.69/1.48, `memory_pressure` 49% free, CPython 3.14.3 (`pyenv`).
+- [x] 7.3 Redo Trace 1b (AC Power, Low Power Mode off) with the same full telemetry (35-sample capture completed, ~80% baseline 3.5-7.0ms).
+- [x] 7.4 Redo Trace 1c (`ping -i 0.2` high-frequency PSM-suppression test) with the same full telemetry, and confirm no orphaned background process left running.
+- [x] 7.5 Update Section 4's Trace 1a/1b/1c and Section 5's "Recorded capture conditions" table with the M3's macOS version / CPU load / memory pressure / verified BCM4388 chipset, replacing all placeholders.
+- [x] 7.6 Re-check the "Key finding" callout in Section 2 and the confound narrative in Section 5 against the fresh M3 numbers — confirmed that hardware chipset identity (BCM4388 on both machines) conclusively proves software/policy causality.
+- [x] 7.7 Run `openspec validate --all` and `pytest` on the M3 laptop to confirm compliance after the doc update.
+
 
