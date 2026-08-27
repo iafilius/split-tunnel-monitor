@@ -77,6 +77,24 @@ class TestGetLanGateway:
             gw = NetworkDiscovery.get_lan_gateway("en0")
         assert gw == "192.168.1.1"
 
+    def test_fallback_route_query_is_ifscoped_to_interface(self, fixtures_dir):
+        """Fallback must be scoped to the physical interface so it can't silently
+        resolve via a VPN tunnel that owns the unscoped default route."""
+        route_fixture = load_fixture(fixtures_dir, "route_get_direct.txt")
+        captured_cmd = []
+
+        def side_effect(cmd):
+            captured_cmd.append(cmd)
+            if "ipconfig" in cmd:
+                return _popen_mock("")
+            return _popen_mock(route_fixture)
+
+        with patch("os.popen", side_effect=side_effect):
+            NetworkDiscovery.get_lan_gateway("en6")
+
+        route_cmd = next(c for c in captured_cmd if "1.1.1.1" in c)
+        assert "-ifscope en6" in route_cmd
+
 
 class TestGetZscalerInfo:
     def test_active_when_utun_has_100_64_address(self, fixtures_dir):
@@ -173,3 +191,57 @@ class TestInterfaceExists:
     def test_false_on_exception(self):
         with patch("subprocess.run", side_effect=OSError("boom")):
             assert NetworkDiscovery.interface_exists("en0") is False
+
+
+class TestDiscoverAllGatewaySanityCheck:
+    """discover_all() must discard a LAN gateway that turns out to equal the
+    Zscaler tunnel's virtual next-hop, regardless of how it was derived."""
+
+    def _patched(self, *, iface="en0", local_ip="192.168.1.42", gw_ip, zscaler_info):
+        return patch.multiple(
+            NetworkDiscovery,
+            get_physical_interface=MagicMock(return_value=iface),
+            get_local_ip=MagicMock(return_value=local_ip),
+            get_lan_gateway=MagicMock(return_value=gw_ip),
+            get_zscaler_info=MagicMock(return_value=zscaler_info),
+            get_ip_assignment_mode=MagicMock(return_value="dhcp"),
+        )
+
+    def test_gateway_matching_zscaler_vgw_is_discarded(self):
+        with self._patched(
+            gw_ip="192.168.178.1",
+            zscaler_info={"is_active": True, "gateway_ip": "192.168.178.1"},
+        ):
+            info = NetworkDiscovery.discover_all()
+        assert info["gateway_ip"] == ""
+
+    def test_gateway_differing_from_zscaler_vgw_is_kept(self):
+        with self._patched(
+            gw_ip="192.168.1.1",
+            zscaler_info={"is_active": True, "gateway_ip": "100.64.0.1"},
+        ):
+            info = NetworkDiscovery.discover_all()
+        assert info["gateway_ip"] == "192.168.1.1"
+
+    def test_gateway_matching_vgw_kept_when_zscaler_not_active(self):
+        """Coincidental equality is fine when Zscaler isn't reported active — only
+        discard the value when it's genuinely a VPN-owned default route."""
+        with self._patched(
+            gw_ip="192.168.178.1",
+            zscaler_info={"is_active": False, "gateway_ip": "192.168.178.1"},
+        ):
+            info = NetworkDiscovery.discover_all()
+        assert info["gateway_ip"] == "192.168.178.1"
+
+    def test_real_world_regression_ssid_switch_scenario(self):
+        """Reconstructed from an actual session log after a Wi-Fi SSID switch:
+        local_ip empty, LAN gateway fallback resolved to the Zscaler vgw
+        (100.64.0.1). The gateway must come out empty, not the tunnel address."""
+        with self._patched(
+            local_ip="",
+            gw_ip="100.64.0.1",
+            zscaler_info={"is_active": True, "gateway_ip": "100.64.0.1"},
+        ):
+            info = NetworkDiscovery.discover_all()
+        assert info["local_ip"] == ""
+        assert info["gateway_ip"] == ""

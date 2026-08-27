@@ -1,11 +1,7 @@
-## Purpose
-
-Dynamically discovers the macOS physical network interface, local IP, LAN gateway, and VPN tunnel presence; probes all three network paths concurrently; classifies the failure domain when connectivity degrades.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Dynamic Network Interface and Gateway Discovery
-The system SHALL dynamically discover the primary active physical network interface, local IPv4 address, and default LAN gateway on macOS without requiring hardcoded configuration or manual user parameters. The system SHALL detect when the previously-discovered physical interface has disappeared or become invalid and SHALL immediately trigger fresh discovery rather than waiting for the next periodic discovery cycle. Subprocess errors produced while querying a stale or vanished interface SHALL be suppressed from the console and SHALL NOT be printed as raw, unhandled shell error text. LAN gateway discovery SHALL be scoped to the active physical interface at every step, including fallback lookups, so it cannot resolve to a VPN tunnel's virtual gateway. A discovered gateway value that matches the active VPN tunnel's virtual next-hop SHALL be treated as unknown rather than presented as the LAN gateway.
+The system SHALL dynamically discover the primary active physical network interface, local IPv4 address, and default LAN gateway on macOS without requiring hardcoded configuration or manual user parameters. LAN gateway discovery SHALL be scoped to the active physical interface at every step, including fallback lookups, so it cannot resolve to a VPN tunnel's virtual gateway. A discovered gateway value that matches the active VPN tunnel's virtual next-hop SHALL be treated as unknown rather than presented as the LAN gateway.
 
 #### Scenario: Dynamic discovery on standard Wi-Fi connection
 - **WHEN** the user launches the ping checker on a corporate Mac connected to Wi-Fi with Zscaler active
@@ -14,14 +10,6 @@ The system SHALL dynamically discover the primary active physical network interf
 #### Scenario: Dynamic interface change mid-run
 - **WHEN** the active network interface changes during execution (e.g. switching from Wi-Fi to Ethernet)
 - **THEN** the system re-runs discovery, updates the physical interface binding target, and resumes probing without crashing or requiring a restart.
-
-#### Scenario: Interface disappears mid-run (cable unplugged)
-- **WHEN** the physical interface used for the current iteration's routing/ifscope lookups no longer exists (e.g. a docking cable is unplugged and the wired interface vanishes)
-- **THEN** the system detects the lookup failure for that interface immediately, triggers a fresh discovery cycle without waiting for the next periodic re-discovery, and does not print raw shell error text (such as `route: bad interface name`) to the console.
-
-#### Scenario: Repeated interface flapping
-- **WHEN** the user repeatedly plugs and unplugs a docking cable, causing the active interface to alternate between wired and Wi-Fi in quick succession
-- **THEN** the system re-discovers the correct interface, local IP, and gateway on each transition without leaking shell errors and without requiring a restart.
 
 #### Scenario: LAN gateway fallback lookup does not inherit the VPN tunnel's gateway
 - **WHEN** the primary LAN gateway lookup (`ipconfig getoption <interface> router`) fails to return a value (e.g. the interface has not yet received a DHCP lease after a Wi-Fi SSID change) and a fallback route lookup is used
@@ -45,17 +33,6 @@ The system SHALL distinguish "physical interface present but no local IPv4 addre
 #### Scenario: Local IP recovers after brief DHCP renewal
 - **WHEN** the local IPv4 address becomes available again after a period of being unassigned
 - **THEN** the system resumes normal LAN/ISP/Zscaler classification using the freshly discovered local IP and LAN gateway.
-
-### Requirement: Concurrent Multi-Path Probing
-The system SHALL perform ICMP ping probes concurrently across three isolated paths: Local LAN Next Hop, ISP Direct (bypassing Zscaler via interface binding), and Zscaler Tunneled Destination (routed through the default virtual adapter).
-
-#### Scenario: Concurrent path probing execution
-- **WHEN** a probe iteration is triggered
-- **THEN** the system sends ICMP echo requests simultaneously to the dynamic LAN gateway, the direct public ISP endpoint bound to the physical local IP via `ping -S <local_ip>`, and the tunneled endpoint routed via `utun`.
-
-#### Scenario: Virtual tunnel next-hop is non-pingable
-- **WHEN** route discovery identifies a Zscaler virtual tunnel gateway/next-hop IP (for example `100.64.x.x`) that does not respond to ICMP
-- **THEN** the system MUST continue to evaluate tunneled health using routed public tunnel probe targets and MUST NOT classify a Zscaler outage based solely on virtual next-hop ICMP failure.
 
 ### Requirement: Outage Domain Classification Matrix
 The system SHALL evaluate the results of the three concurrent probes against an outage matrix to classify connection state into exact failure domains: Healthy, Local Network Issue, ISP Issue, or Zscaler Issue. The system SHALL track, per session, whether the LAN gateway has answered ICMP at least once, and SHALL use that history to distinguish a LAN gateway that has never responded this session from one that was responding and has since gone silent. A LAN gateway that has never responded this session, while ISP and Zscaler are both healthy, is NOT a degradation and SHALL be classified as `INFO`, not `DEGRADED`.
@@ -106,55 +83,3 @@ The system SHALL detect when the discovered LAN gateway address changes mid-sess
 #### Scenario: Transient empty gateway reading does not trigger a reset
 - **WHEN** the discovered LAN gateway address is temporarily empty (e.g. during a brief re-discovery window) and then returns to the same value as before
 - **THEN** the system SHALL NOT treat this as a gateway identity change or reset the baseline.
-
-### Requirement: Startup Tool Availability Check
-The system SHALL verify at startup that all required external CLI tools are available on the host and SHALL print a named availability summary. If `traceroute` is absent, background traceroute verification SHALL be automatically disabled with a printed notice.
-
-#### Scenario: All tools present
-- **WHEN** the ping checker starts on a macOS host with all required tools installed
-- **THEN** the system prints a single-line `Tool Check: OK (<tool list>)` confirmation before starting probing.
-
-#### Scenario: traceroute absent
-- **WHEN** the ping checker starts on a host where `traceroute` is not installed
-- **THEN** the system prints a `WARNING: Missing tools: traceroute` message, states that trace verification is disabled, and continues probing using route-based verification.
-
-### Requirement: Route-Based Path Verification
-The system SHALL perform a routing-layer verification each probe iteration and display a per-line indicator (DIRECT=OK/UNCERTAIN, ZSC=OK/UNCERTAIN) confirming that the direct probe is routing via the physical interface and the Zscaler probe is routing via a `utun` interface with Zscaler process active. When the active tunnel interface changes, path verification SHALL be re-run immediately using the new interface before the next console line is emitted.
-
-#### Scenario: Direct path routing confirmed
-- **WHEN** a probe iteration runs and `route -n get -ifscope <interface>` confirms the ISP target resolves via the physical interface
-- **THEN** the console line displays `DIRECT=OK(<interface>)`.
-
-#### Scenario: Zscaler routing confirmed
-- **WHEN** a probe iteration runs and route lookup confirms the Zscaler target resolves via a `utun` interface AND Zscaler process is detected
-- **THEN** the console line displays `ZSC=OK(<utun_interface>)`.
-
-#### Scenario: Verification updates immediately after tunnel change
-- **WHEN** a tunnel interface change is detected mid-run
-- **THEN** path verification is recalculated using the new `utun` interface within the same iteration, so the very next probe line reflects the new tunnel state
-
-### Requirement: ICMP Traceroute Background Path Verification
-The system SHALL run ICMP-mode traceroute (`traceroute -I`) as a background task every 30 probe iterations to supplement route-based checks with stronger hop-level evidence. Results SHALL appear as `TRACE(D=OK,Z=OK)` or `TRACE(D=OK,Z=UNCERTAIN)` in the console line once available, and as `TRACE(PENDING)` while the first result is outstanding. Trace verification SHALL be on by default and MAY be disabled with `--no-trace-verify`.
-
-#### Scenario: Direct trace verified
-- **WHEN** ICMP traceroute to the ISP target resolves hop1 to the LAN gateway IP or to the target itself
-- **THEN** direct trace is reported as verified (`D=OK`).
-
-#### Scenario: Zscaler trace verified via hop2
-- **WHEN** ICMP traceroute to the Zscaler target shows hop1=`*` (virtual gateway suppresses ICMP TTL-exceeded by policy) AND hop2 resolves to a real IP address
-- **THEN** Zscaler trace is reported as verified (`Z=OK`), confirming traffic entered Zscaler infrastructure.
-
-#### Scenario: traceroute disabled at startup
-- **WHEN** `traceroute` is not installed OR the user passes `--no-trace-verify`
-- **THEN** no `TRACE(...)` indicator appears in console output.
-
-### Requirement: Structured Logging and ISO Timestamped Output
-The system SHALL output real-time compact status line updates to the terminal console and append structured log records containing local ISO 8601 dates, timestamps, round-trip times (RTT), and outage classifications to a uniquely named logfile per session run.
-
-#### Scenario: Logfile initialization
-- **WHEN** the ping checker starts
-- **THEN** it generates a unique logfile named with the format `ping_checker_YYYYMMDD_HHMMSS.log` containing headers and timestamps.
-
-#### Scenario: Outage record logging
-- **WHEN** a failure or status state change occurs
-- **THEN** the system writes an entry to the logfile including the exact date, time, target IPs, packet loss, RTTs, and failure domain label.

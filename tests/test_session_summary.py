@@ -101,6 +101,22 @@ class TestSessionSummary:
         assert "DEGRADED" in output
         assert "OUTAGE" in output
 
+    def test_info_bucket_shown_with_correct_percentage(self):
+        """LAN gateway silent-by-design (e.g. iPhone hotspot) time is tracked in
+        its own INFO bucket, distinct from DEGRADED/OUTAGE."""
+        counts = {"HEALTHY": 60, "DEGRADED": 10, "OUTAGE": 10, "INFO": 20}
+        output = _run_summary(status_counts=counts)
+        assert "INFO" in output
+        assert " 20.0%" in output
+        assert "(20 samples)" in output
+
+    def test_info_bucket_defaults_to_zero_when_absent(self):
+        """Older/partial status_counts dicts without an INFO key must not crash."""
+        counts = {"HEALTHY": 100, "DEGRADED": 0, "OUTAGE": 0}
+        output = _run_summary(status_counts=counts)
+        assert "INFO" in output
+        assert "(0 samples)" in output
+
     def test_single_closed_incident_shown(self):
         start = datetime.now() - timedelta(minutes=2)
         end = datetime.now() - timedelta(minutes=1)

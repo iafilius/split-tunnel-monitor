@@ -9,7 +9,16 @@ main()'s loop calls) across a scripted sequence of iterations and interface stat
 import io
 from contextlib import redirect_stdout
 from unittest.mock import patch, MagicMock
-from ping_checker import should_rediscover, format_local_ip_line, NetworkDiscovery, get_route_info
+from ping_checker import (
+    should_rediscover,
+    format_local_ip_line,
+    NetworkDiscovery,
+    get_route_info,
+    determine_status_and_fault,
+    advance_incident_lifecycle,
+    lan_gateway_identity_changed,
+    ProbeResult,
+)
 
 
 class TestCableFlapSimulation:
@@ -105,3 +114,208 @@ class TestStaticDhcpBannerSimulation:
         """Simulates unplugging a static-configured dock and falling back to DHCP Wi-Fi."""
         assert format_local_ip_line("192.168.50.7", "static") == "192.168.50.7 (static)"
         assert format_local_ip_line("192.168.1.42", "dhcp") == "192.168.1.42 (dhcp)"
+
+
+class TestNoLocalIpSimulation:
+    """Simulates the SSID-switch scenario: interface present but no IPv4 assigned yet."""
+
+    def test_no_local_ip_and_nothing_works_short_circuits_before_classify_outage(self):
+        """When local_ip is empty AND both ISP and Zscaler also fail, there's no
+        evidence any path works — surface a distinct fault rather than a
+        fault-matrix result derived from a possibly-meaningless LAN target."""
+        status, fault = determine_status_and_fault(
+            "",
+            ProbeResult("192.168.178.1", False, -1.0, "Timeout"),
+            ProbeResult("1.1.1.1", False, -1.0, "Timeout"),
+            ProbeResult("9.9.9.9", False, -1.0, "Timeout"),
+        )
+        assert status == "DEGRADED"
+        assert fault == "Local Interface Has No IP Address (DHCP Pending)"
+
+    def test_no_local_ip_does_not_fabricate_lan_fault_from_substituted_gateway(self):
+        """Reconstructed regression: LAN probe against a substituted/wrong gateway
+        would normally fail and read as a LAN/local-network fault — the short-circuit
+        must pre-empt that misleading classification when nothing else works either."""
+        status, fault = determine_status_and_fault(
+            "",
+            ProbeResult("100.64.0.1", False, -1.0, "Timeout"),
+            ProbeResult("1.1.1.1", False, -1.0, "Timeout"),
+            ProbeResult("9.9.9.9", False, -1.0, "Timeout"),
+        )
+        assert status == "DEGRADED"
+        assert "No IP Address" in fault
+        assert "Local Network" not in fault
+
+    def test_no_local_ip_but_isp_or_zscaler_working_falls_through_to_matrix(self):
+        """Reconstructed from the iPhone Personal Hotspot / IPv6-only CLAT session:
+        local_ip is permanently empty by design, but ISP and Zscaler succeed via
+        NAT64. The "no local IP" fault must NOT fire here — it would misleadingly
+        imply a temporary, resolvable problem when this is normal, working behavior."""
+        status, fault = determine_status_and_fault(
+            "",
+            ProbeResult("192.0.0.1", False, -1.0, "Timeout"),
+            ProbeResult("1.1.1.1", True, 60.0),
+            ProbeResult("9.9.9.9", True, 65.0),
+        )
+        assert status == "DEGRADED"
+        assert "No IP Address" not in fault
+        assert "Local Gateway" in fault
+
+    def test_no_local_ip_but_only_isp_working_falls_through_to_matrix(self):
+        """Partial connectivity (only ISP succeeds) with no local IP still isn't
+        "nothing works" — falls through rather than short-circuiting."""
+        status, fault = determine_status_and_fault(
+            "",
+            ProbeResult("192.0.0.1", False, -1.0, "Timeout"),
+            ProbeResult("1.1.1.1", True, 60.0),
+            ProbeResult("9.9.9.9", False, -1.0, "Timeout"),
+        )
+        assert "No IP Address" not in fault
+
+    def test_classification_resumes_normally_once_local_ip_recovers(self):
+        """Once local_ip is populated again, normal classify_outage() behavior resumes."""
+        # Still empty, and nothing else works: short-circuited.
+        status, fault = determine_status_and_fault(
+            "",
+            ProbeResult("192.168.1.1", False, -1.0, "Timeout"),
+            ProbeResult("1.1.1.1", False, -1.0, "Timeout"),
+            ProbeResult("9.9.9.9", False, -1.0, "Timeout"),
+        )
+        assert status == "DEGRADED" and "No IP Address" in fault
+
+        # Recovered: falls through to classify_outage()'s normal HEALTHY case.
+        status, fault = determine_status_and_fault(
+            "192.168.1.42",
+            ProbeResult("192.168.1.1", True, 10.0),
+            ProbeResult("1.1.1.1", True, 20.0),
+            ProbeResult("9.9.9.9", True, 25.0),
+        )
+        assert status == "HEALTHY"
+        assert fault == "None"
+
+
+class TestLanGatewayBaselineSimulation:
+    """Replicates the main loop's session-scoped `lan_gateway_ever_responded`
+    tracking across a scripted iteration sequence, without running main()."""
+
+    def _run(self, sequence):
+        """sequence: list of (lan_ok, isp_ok, zsc_ok) per iteration.
+        Returns the list of (status, fault) results, updating the baseline
+        flag exactly as the main loop does."""
+        ever_responded = False
+        results = []
+        for lan_ok, isp_ok, zsc_ok in sequence:
+            lan_res = ProbeResult("192.168.1.1", lan_ok, 10.0 if lan_ok else -1.0)
+            isp_res = ProbeResult("1.1.1.1", isp_ok, 10.0 if isp_ok else -1.0)
+            zsc_res = ProbeResult("9.9.9.9", zsc_ok, 10.0 if zsc_ok else -1.0)
+            status, fault = determine_status_and_fault(
+                "192.168.1.42", lan_res, isp_res, zsc_res,
+                lan_gateway_ever_responded=ever_responded
+            )
+            if lan_res.success:
+                ever_responded = True
+            results.append((status, fault))
+        return results
+
+    def test_gateway_silent_from_iteration_one_reports_never_responded(self):
+        """CLAT/iPhone-hotspot-style gateway: silent from the very first iteration."""
+        sequence = [(False, True, True)] * 4
+        results = self._run(sequence)
+        for status, fault in results:
+            assert status == "INFO"
+            assert fault == "Local Gateway Silent (No Response Observed This Session)"
+
+    def test_gateway_responds_then_goes_silent_reports_stopped_responding(self):
+        """Gateway answers for the first 3 iterations, then goes silent on the 4th."""
+        sequence = [(True, True, True), (True, True, True), (True, True, True), (False, True, True)]
+        results = self._run(sequence)
+        assert results[0][0] == "HEALTHY"
+        assert results[1][0] == "HEALTHY"
+        assert results[2][0] == "HEALTHY"
+        assert results[3] == ("DEGRADED", "Local Gateway Stopped Responding (Previously Reachable)")
+
+    def test_gateway_recovers_after_going_silent_reports_healthy_again(self):
+        sequence = [(True, True, True), (False, True, True), (True, True, True)]
+        results = self._run(sequence)
+        assert results[0][0] == "HEALTHY"
+        assert results[1] == ("DEGRADED", "Local Gateway Stopped Responding (Previously Reachable)")
+        assert results[2][0] == "HEALTHY"
+
+
+class TestIncidentLifecycleWithInfoStatus:
+    """INFO must behave like HEALTHY for incident open/close purposes: never
+    opens an incident, and closes an already-open one instead of leaving it
+    open indefinitely (e.g. after a network switch settles into a permanently
+    silent — but otherwise healthy — LAN gateway)."""
+
+    def test_info_does_not_open_an_incident(self):
+        current_incident, incident_count, closed, should_notify = advance_incident_lifecycle(
+            "INFO", "Local Gateway Silent (No Response Observed This Session)", None, 0
+        )
+        assert current_incident is None
+        assert incident_count == 0
+        assert closed is None
+        assert should_notify is False
+
+    def test_degraded_opens_an_incident_and_notifies(self):
+        current_incident, incident_count, closed, should_notify = advance_incident_lifecycle(
+            "DEGRADED", "Local Gateway Stopped Responding (Previously Reachable)", None, 0
+        )
+        assert current_incident is not None
+        assert current_incident["worst_status"] == "DEGRADED"
+        assert incident_count == 1
+        assert closed is None
+        assert should_notify is True
+
+    def test_info_closes_an_already_open_incident_like_healthy(self):
+        """Reconstructed scenario: a real OUTAGE incident opens during a network
+        transition, then settles into INFO (LAN gateway never responds on the
+        new network, but ISP/Zscaler are fine) — the incident must close, not
+        stay open indefinitely."""
+        current_incident, incident_count, _, _ = advance_incident_lifecycle(
+            "OUTAGE", "Local Network Issue (LAN Gateway Unreachable)", None, 0
+        )
+        assert current_incident is not None
+
+        current_incident, incident_count, closed, should_notify = advance_incident_lifecycle(
+            "INFO", "Local Gateway Silent (No Response Observed This Session)", current_incident, incident_count
+        )
+        assert current_incident is None
+        assert closed is not None
+        assert closed["worst_status"] == "OUTAGE"
+        assert should_notify is False
+
+    def test_outage_promotes_worst_status_of_open_degraded_incident(self):
+        current_incident, incident_count, _, _ = advance_incident_lifecycle(
+            "DEGRADED", "Partial Path Failure / Packet Loss", None, 0
+        )
+        current_incident, incident_count, closed, should_notify = advance_incident_lifecycle(
+            "OUTAGE", "Local Network Issue (LAN Gateway Unreachable)", current_incident, incident_count
+        )
+        assert current_incident["worst_status"] == "OUTAGE"
+        assert incident_count == 1
+        assert closed is None
+        assert should_notify is False
+
+
+class TestLanGatewayIdentityChangeSimulation:
+    """Reconstructed from the real Wi-Fi → iPhone Personal Hotspot session log:
+    the LAN gateway address itself changes mid-session (192.168.178.1 → 192.0.0.1)."""
+
+    def test_real_world_wifi_to_hotspot_switch_is_detected(self):
+        assert lan_gateway_identity_changed("192.168.178.1", "192.0.0.1") is True
+
+    def test_same_gateway_is_not_a_change(self):
+        assert lan_gateway_identity_changed("192.168.1.1", "192.168.1.1") is False
+
+    def test_transient_empty_new_reading_does_not_trigger_reset(self):
+        """A momentary empty gateway reading (e.g. mid re-discovery) must not be
+        treated as a gateway identity change."""
+        assert lan_gateway_identity_changed("192.168.1.1", "") is False
+
+    def test_no_prior_gateway_does_not_trigger_reset(self):
+        """First discovery ever (no prior gateway to compare against) is not a change."""
+        assert lan_gateway_identity_changed("", "192.168.1.1") is False
+
+    def test_both_empty_is_not_a_change(self):
+        assert lan_gateway_identity_changed("", "") is False

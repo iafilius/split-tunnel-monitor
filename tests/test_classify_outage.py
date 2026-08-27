@@ -21,7 +21,7 @@ def _make(success: bool, target: str = "1.1.1.1") -> ProbeResult:
     # T,T,F — virtual-gateway probe: DEGRADED, not OUTAGE
     (True,  True,  False, True,  "DEGRADED", "Virtual Tunnel"),
     # F,T,T — LAN ICMP suppressed by gateway policy; both public paths work
-    (False, True,  True,  False, "DEGRADED", "Local Gateway ICMP Unresponsive"),
+    (False, True,  True,  False, "DEGRADED", "Local Gateway"),
     # F,T,F — LAN ICMP silent AND Zscaler down; ISP direct fine → real Zscaler outage
     #          Previously misclassified as "Local Gateway ICMP Unresponsive" (bug)
     (False, True,  False, False, "OUTAGE",   "Zscaler Issue"),
@@ -41,6 +41,44 @@ def test_classify_outage(lan, isp, zsc, virtual, expected_status, expected_fault
     assert expected_fault_contains.lower() in fault.lower(), (
         f"Expected fault containing {expected_fault_contains!r}, got {fault!r}"
     )
+
+
+class TestLanGatewayBaselineResponsiveness:
+    """F,T,T case: distinguish a LAN gateway that has never responded this
+    session (permanent characteristic, e.g. CLAT/iPhone Personal Hotspot) from
+    one that was responding and has gone silent (a genuine state change)."""
+
+    def test_never_responded_this_session(self):
+        lan_r = _make(False, "192.0.0.1")
+        isp_r = _make(True, "1.1.1.1")
+        zsc_r = _make(True, "9.9.9.9")
+
+        status, fault = classify_outage(lan_r, isp_r, zsc_r, lan_gateway_ever_responded=False)
+
+        assert status == "INFO"
+        assert fault == "Local Gateway Silent (No Response Observed This Session)"
+
+    def test_previously_responded_then_went_silent(self):
+        lan_r = _make(False, "192.168.1.1")
+        isp_r = _make(True, "1.1.1.1")
+        zsc_r = _make(True, "9.9.9.9")
+
+        status, fault = classify_outage(lan_r, isp_r, zsc_r, lan_gateway_ever_responded=True)
+
+        assert status == "DEGRADED"
+        assert fault == "Local Gateway Stopped Responding (Previously Reachable)"
+
+    def test_default_assumes_previously_reachable(self):
+        """Default (no baseline info supplied) matches the more common case:
+        a gateway that answers normally, coincidentally quiet this iteration."""
+        lan_r = _make(False, "192.168.1.1")
+        isp_r = _make(True, "1.1.1.1")
+        zsc_r = _make(True, "9.9.9.9")
+
+        status, fault = classify_outage(lan_r, isp_r, zsc_r)
+
+        assert status == "DEGRADED"
+        assert fault == "Local Gateway Stopped Responding (Previously Reachable)"
 
 
 def test_classify_outage_virtual_gateway_requires_lan_isp_ok():

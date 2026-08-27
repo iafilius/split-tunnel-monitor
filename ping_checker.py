@@ -130,8 +130,8 @@ class NetworkDiscovery:
             if gw and re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", gw):
                 return gw
 
-            # Fallback route query
-            proc = os.popen("route -n get 1.1.1.1 2>/dev/null")
+            # Fallback route query — ifscope'd so it can't inherit a VPN tunnel's gateway
+            proc = os.popen(f"route -n get -ifscope {interface} 1.1.1.1 2>/dev/null")
             route_out = proc.read()
             proc.close()
             match = re.search(r"gateway:\s*(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})", route_out)
@@ -213,6 +213,12 @@ class NetworkDiscovery:
         zscaler_info = cls.get_zscaler_info()
         ip_assignment_mode = cls.get_ip_assignment_mode(iface)
 
+        # Defense in depth: a "LAN gateway" identical to the VPN tunnel's virtual
+        # next-hop is not a real, pingable LAN router — treat it as unknown.
+        zsc_vgw = zscaler_info.get("gateway_ip", "")
+        if zscaler_info.get("is_active") and gw_ip and zsc_vgw and gw_ip == zsc_vgw:
+            gw_ip = ""
+
         return {
             "interface": iface,
             "local_ip": local_ip,
@@ -263,6 +269,16 @@ def format_local_ip_line(local_ip: str, ip_assignment_mode: str) -> str:
     """Render the 'Detected Local IPv4' banner value, appending (dhcp)/(static) when known."""
     suffix = f" ({ip_assignment_mode})" if ip_assignment_mode else ""
     return f"{local_ip or 'Searching...'}{suffix}"
+
+
+def lan_gateway_identity_changed(current_gw_ip: str, new_gw_ip: str) -> bool:
+    """Decide whether a re-discovery result represents a genuine LAN gateway
+    identity change (e.g. switching from home Wi-Fi to a phone hotspot), as
+    opposed to a transient empty reading. Only a non-empty value replacing a
+    different, non-empty value counts — this deliberately mirrors the same
+    non-empty-and-different guard already used for tunnel-interface-change
+    detection, so a momentary empty gateway reading never triggers a reset."""
+    return bool(new_gw_ip) and bool(current_gw_ip) and new_gw_ip != current_gw_ip
 
 
 def should_rediscover(iteration: int, network_info: dict) -> bool:
@@ -472,7 +488,8 @@ def classify_outage(
     lan_res: ProbeResult,
     isp_res: ProbeResult,
     zsc_res: ProbeResult,
-    zsc_target_is_virtual_gateway: bool = False
+    zsc_target_is_virtual_gateway: bool = False,
+    lan_gateway_ever_responded: bool = True
 ) -> tuple:
     """
     Evaluates 3-way probe matrix to determine root cause failure domain.
@@ -505,10 +522,14 @@ def classify_outage(
         return ("OUTAGE", "Zscaler Issue (VPN tunnel ICMP unresponsive)")
 
     # Case F,T,T — LAN gateway does not answer ICMP, but both public paths are fine.
-    # Many home/corporate gateways suppress ICMP TTL-exceeded and echo-reply by policy;
-    # traffic still flows.  No evidence of a real outage.
+    # Distinguish a gateway that has never responded this session (e.g. a CLAT/
+    # IPv6-only gateway on iPhone Personal Hotspot, or a policy that always
+    # suppresses ICMP — a permanent, non-degraded characteristic) from one that
+    # was responding and has gone silent (a genuine local-network state change).
     elif not lan_ok and isp_ok and zsc_ok:
-        return ("DEGRADED", "Local Gateway ICMP Unresponsive (ISP and Zscaler Active)")
+        if lan_gateway_ever_responded:
+            return ("DEGRADED", "Local Gateway Stopped Responding (Previously Reachable)")
+        return ("INFO", "Local Gateway Silent (No Response Observed This Session)")
 
     # Case F,T,F — LAN gateway silent AND Zscaler tunnel down, but ISP direct path works.
     # ISP connectivity is confirmed; Zscaler failure is real.  The silent LAN gateway
@@ -526,6 +547,67 @@ def classify_outage(
     # (Zscaler response arrived before the link fully dropped).
     else:
         return ("DEGRADED", "Partial Path Failure / Packet Loss")
+
+
+def determine_status_and_fault(
+    local_ip: str,
+    lan_res: ProbeResult,
+    isp_res: ProbeResult,
+    zsc_res: ProbeResult,
+    zsc_target_is_virtual_gateway: bool = False,
+    lan_gateway_ever_responded: bool = True
+) -> tuple:
+    """
+    Decide (status, fault) for one iteration. Short-circuits to a distinct
+    "no local IP" fault only when the interface has no assigned IPv4 AND no
+    other path works either (e.g. mid-DHCP renewal after a Wi-Fi SSID switch
+    with no confirmed connectivity). If ISP or Zscaler succeed despite the
+    missing local IP (e.g. an IPv6-only network such as iPhone Personal
+    Hotspot using 464XLAT/CLAT, which never assigns a local IPv4 by design),
+    falls through to classify_outage() instead of reporting a misleading
+    "DHCP Pending" state for what is actually working, permanent behavior.
+    """
+    if not local_ip and not isp_res.success and not zsc_res.success:
+        return ("DEGRADED", "Local Interface Has No IP Address (DHCP Pending)")
+    return classify_outage(
+        lan_res, isp_res, zsc_res,
+        zsc_target_is_virtual_gateway=zsc_target_is_virtual_gateway,
+        lan_gateway_ever_responded=lan_gateway_ever_responded
+    )
+
+
+def advance_incident_lifecycle(status: str, fault: str, current_incident, incident_count: int) -> tuple:
+    """
+    Decide how one iteration's (status, fault) affects incident lifecycle.
+    HEALTHY and INFO are treated identically: neither opens a new incident, and
+    either one closes an already-open incident — INFO represents no genuine
+    ongoing problem (e.g. a LAN gateway that simply never responds on this
+    network), so an incident must not be left open indefinitely once the state
+    that caused it has resolved.
+    Returns (current_incident, incident_count, closed_incident_or_None, should_notify).
+    """
+    if status not in ("HEALTHY", "INFO"):
+        if current_incident is None:
+            incident_count += 1
+            current_incident = {
+                "number": incident_count,
+                "start": datetime.now(),
+                "domain": fault,
+                "worst_status": status,
+            }
+            return current_incident, incident_count, None, True
+        if status == "OUTAGE" and current_incident["worst_status"] == "DEGRADED":
+            current_incident["worst_status"] = "OUTAGE"
+        return current_incident, incident_count, None, False
+    elif current_incident is not None:
+        end_time = datetime.now()
+        dur_secs = int((end_time - current_incident["start"]).total_seconds())
+        dur_str = _fmt_duration(dur_secs)
+        closed_incident = dict(current_incident)
+        closed_incident["end_time"] = end_time
+        closed_incident["duration_str"] = dur_str
+        return None, incident_count, closed_incident, False
+    return current_incident, incident_count, None, False
 
 
 def _compress_logfile_background(path: str) -> None:
@@ -743,8 +825,8 @@ def _print_session_summary(
     print(f" Samples:     {total:,}")
     print()
 
-    for s_name in ("HEALTHY", "DEGRADED", "OUTAGE"):
-        count = status_counts[s_name]
+    for s_name in ("HEALTHY", "DEGRADED", "OUTAGE", "INFO"):
+        count = status_counts.get(s_name, 0)
         pct = (count / total * 100) if total else 0.0
         print(f"   {s_name:<10} {pct:5.1f}%  ({count:,} samples)")
     print()
@@ -894,9 +976,11 @@ async def main():
     last_heartbeat_time = time.time()           # for --silent heartbeat
     current_log_date = datetime.now().date()    # for --rotate-daily
     current_zsc_iface = network_info['zscaler'].get('interface', '')  # for tunnel change detection
+    current_gw_ip = network_info['gateway_ip']   # for LAN gateway identity change detection
+    lan_gateway_ever_responded = False           # session baseline: has the LAN gateway ever answered ICMP?
     # Session tracking (incident lifecycle, exit summary, notifications)
     session_start = datetime.now()
-    status_counts: dict = {"HEALTHY": 0, "DEGRADED": 0, "OUTAGE": 0}
+    status_counts: dict = {"HEALTHY": 0, "DEGRADED": 0, "OUTAGE": 0, "INFO": 0}
     incidents: list = []                        # closed incidents
     current_incident = None                     # open incident dict or None
     incident_count = 0
@@ -952,6 +1036,21 @@ async def main():
                     current_zsc_iface = new_zsc_iface
                 # ─────────────────────────────────────────────────────────────
 
+                # ── LAN gateway identity change detection ─────────────────────
+                new_gw_ip = fresh_info['gateway_ip']
+                if lan_gateway_identity_changed(current_gw_ip, new_gw_ip):
+                    old_gw_ip = current_gw_ip
+                    print(f"[{_ts()}] [LAN CHANGE] {old_gw_ip} → {new_gw_ip} | baseline reset", flush=True)
+                    # Reset baselines — a different gateway has its own, independent history
+                    lan_gateway_ever_responded = False
+                    overhead = OverheadStats(window_size=args.overhead_window)
+                    silent_healthy_count = 0
+                    last_heartbeat_time = time.time()
+                    network_info = fresh_info
+                if new_gw_ip:
+                    current_gw_ip = new_gw_ip
+                # ─────────────────────────────────────────────────────────────
+
             gw_ip = network_info['gateway_ip']
             local_ip = network_info['local_ip']
             zsc_target = args.zscaler_target
@@ -991,12 +1090,16 @@ async def main():
             zsc_virtual_gateway = network_info.get("zscaler", {}).get("gateway_ip", "")
             zsc_target_is_virtual_gateway = bool(zsc_virtual_gateway and zsc_target == zsc_virtual_gateway)
 
-            status, fault = classify_outage(
+            status, fault = determine_status_and_fault(
+                local_ip,
                 lan_res,
                 isp_res,
                 zsc_res,
-                zsc_target_is_virtual_gateway=zsc_target_is_virtual_gateway
+                zsc_target_is_virtual_gateway=zsc_target_is_virtual_gateway,
+                lan_gateway_ever_responded=lan_gateway_ever_responded
             )
+            if lan_res.success:
+                lan_gateway_ever_responded = True
 
             # Update overhead statistics
             overhead.add_sample(isp_res, zsc_res)
@@ -1009,42 +1112,25 @@ async def main():
 
             # ── Incident lifecycle ────────────────────────────────────────────
             status_counts[status] += 1
-            incident_just_closed = None
 
-            if status != "HEALTHY":
-                if current_incident is None:
-                    # Open new incident
-                    incident_count += 1
-                    current_incident = {
-                        "number": incident_count,
-                        "start": datetime.now(),
-                        "domain": fault,
-                        "worst_status": status,
-                    }
-                    _notify(
-                        "⚠ ping_checker",
-                        f"{'Outage' if status == 'OUTAGE' else 'Degraded'}: {fault}",
-                        not args.no_notify,
-                    )
-                elif status == "OUTAGE" and current_incident["worst_status"] == "DEGRADED":
-                    current_incident["worst_status"] = "OUTAGE"
-            elif current_incident is not None:
-                # Close incident on HEALTHY recovery
-                end_time = datetime.now()
-                dur_secs = int((end_time - current_incident["start"]).total_seconds())
-                dur_str = _fmt_duration(dur_secs)
-                incident_just_closed = dict(current_incident)
-                incident_just_closed["end_time"] = end_time
-                incident_just_closed["duration_str"] = dur_str
+            current_incident, incident_count, incident_just_closed, should_notify = advance_incident_lifecycle(
+                status, fault, current_incident, incident_count
+            )
+            if should_notify:
+                _notify(
+                    "⚠ ping_checker",
+                    f"{'Outage' if status == 'OUTAGE' else 'Degraded'}: {fault}",
+                    not args.no_notify,
+                )
+            if incident_just_closed is not None:
                 incidents.append(incident_just_closed)
-                current_incident = None
             # ─────────────────────────────────────────────────────────────────
 
-            # Track status transitions for silent mode
-            if status != "HEALTHY":
+            # Track status transitions for silent mode — INFO is treated like HEALTHY
+            if status not in ("HEALTHY", "INFO"):
                 silent_healthy_count = 0
-                if prev_status == "HEALTHY" and args.silent:
-                    # First non-healthy iteration — prefix with a transition marker
+                if prev_status in ("HEALTHY", "INFO") and args.silent:
+                    # First non-healthy-like iteration — prefix with a transition marker
                     print(f"[{_ts()}] [STATUS CHANGE] HEALTHY → {status}", flush=True)
             else:
                 silent_healthy_count += 1
@@ -1058,6 +1144,8 @@ async def main():
 
             if status == "HEALTHY":
                 status_color = "\033[92m[HEALTHY]\033[0m"
+            elif status == "INFO":
+                status_color = "\033[96m[INFO]\033[0m"
             elif status == "DEGRADED":
                 status_color = "\033[93m[DEGRADED]\033[0m"
             else:
