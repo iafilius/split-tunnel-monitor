@@ -295,7 +295,9 @@ def assess_path_verification(network_info: dict, isp_target: str, zsc_target: st
     This is routing-based assurance, not packet-capture-level proof.
     """
     physical_iface = network_info.get("interface", "")
-    zsc_process_running = network_info.get("zscaler", {}).get("process_running", False)
+    zsc_info = network_info.get("zscaler", {})
+    zsc_active = zsc_info.get("is_active", False)
+    zsc_process_running = zsc_info.get("process_running", False)
 
     direct_route = get_route_info(isp_target, ifscope=physical_iface) if physical_iface else get_route_info(isp_target)
     zsc_route = get_route_info(zsc_target)
@@ -309,8 +311,13 @@ def assess_path_verification(network_info: dict, isp_target: str, zsc_target: st
         direct_reason = "ifscope route not pinned to physical interface"
 
     if zsc_verified:
+        zsc_status = "OK"
         zsc_reason = f"route via {zsc_route['interface']} with Zscaler process active"
+    elif not zsc_active and not zsc_process_running and not zsc_route["interface"].startswith("utun"):
+        zsc_status = "INACTIVE"
+        zsc_reason = "Zscaler inactive; standard route via physical interface"
     else:
+        zsc_status = "UNCERTAIN"
         zsc_reason = "route/process check did not confirm utun traversal"
 
     return {
@@ -319,6 +326,7 @@ def assess_path_verification(network_info: dict, isp_target: str, zsc_target: st
         "direct_route_interface": direct_route["interface"] or "N/A",
         "direct_route_gateway": direct_route["gateway"] or "N/A",
         "zsc_verified": zsc_verified,
+        "zsc_status": zsc_status,
         "zsc_reason": zsc_reason,
         "zsc_route_interface": zsc_route["interface"] or "N/A",
         "zsc_route_gateway": zsc_route["gateway"] or "N/A"
@@ -392,9 +400,11 @@ def assess_traceroute_verification(network_info: dict, isp_target: str, zsc_targ
     Direct path: verified when hop1 matches LAN gateway.
     Zscaler path: verified when hop1 is suppressed (*) as expected from virtual next-hop
                   AND hop2 is a real IP (traffic is entering Zscaler infrastructure).
+                  When Zscaler is inactive, marked as DIRECT when standard physical hops resolve.
     """
     local_ip = network_info.get("local_ip", "")
     gateway_ip = network_info.get("gateway_ip", "")
+    zsc_active = network_info.get("zscaler", {}).get("is_active", False)
 
     direct_trace = get_traceroute_first_hop(isp_target, source_ip=local_ip)
     zsc_trace = get_traceroute_first_hop(zsc_target)
@@ -413,14 +423,25 @@ def assess_traceroute_verification(network_info: dict, isp_target: str, zsc_targ
     zsc_hop2_present = bool(zsc_trace.get("second_hop"))
     zsc_trace_verified = bool(zsc_hop1_suppressed and zsc_hop2_present)
 
-    zsc_display = zsc_trace.get("second_hop") or zsc_trace.get("first_hop") or "N/A"
-    zsc_note = "hop1=*(suppressed),hop2=" + zsc_display if zsc_trace_verified else zsc_trace.get("note") or "N/A"
+    if zsc_trace_verified:
+        zsc_trace_status = "OK"
+        zsc_display = zsc_trace.get("second_hop") or "N/A"
+        zsc_note = f"hop1=*(suppressed),hop2={zsc_display}"
+    elif not zsc_active:
+        zsc_trace_status = "DIRECT"
+        zsc_display = zsc_trace.get("first_hop") or zsc_trace.get("second_hop") or "N/A"
+        zsc_note = "Zscaler inactive; standard traceroute path"
+    else:
+        zsc_trace_status = "UNCERTAIN"
+        zsc_display = zsc_trace.get("second_hop") or zsc_trace.get("first_hop") or "N/A"
+        zsc_note = zsc_trace.get("note") or "N/A"
 
     return {
         "direct_trace_verified": direct_trace_verified,
         "direct_trace_first_hop": direct_trace.get("first_hop") or "N/A",
         "direct_trace_note": direct_trace.get("note") or "N/A",
         "zsc_trace_verified": zsc_trace_verified,
+        "zsc_trace_status": zsc_trace_status,
         "zsc_trace_first_hop": zsc_display,
         "zsc_trace_note": zsc_note
     }
@@ -717,9 +738,9 @@ def log_entry(filename: str, info: dict, lan: ProbeResult, isp: ProbeResult, zsc
         p95 = overhead.rolling_p95()
         bl = overhead.baseline_p50
         ld = overhead.loss_delta_pct()
-        ovh_p50 = f"+{p50:.1f}ms" if p50 is not None else "N/A"
-        ovh_p95 = f"+{p95:.1f}ms" if p95 is not None else "N/A"
-        ovh_base = f"+{bl:.1f}ms" if bl is not None else "N/A"
+        ovh_p50 = f"{p50:+.1f}ms" if p50 is not None else "N/A"
+        ovh_p95 = f"{p95:+.1f}ms" if p95 is not None else "N/A"
+        ovh_base = f"{bl:+.1f}ms" if bl is not None else "N/A"
         ovh_loss = f"{ld:+.1f}%" if ld is not None else "N/A"
         ovh_alert = "WARN" if (overhead is not None and p50 is not None and bl is not None and overhead.is_alerting(0)) else "OK"
     else:
@@ -851,11 +872,11 @@ def _print_session_summary(
     if overhead.baseline_p50 is not None:
         p50 = overhead.rolling_p50()
         p95 = overhead.rolling_p95()
-        p50_str = f"+{p50:.1f}ms" if p50 is not None else "N/A"
-        p95_str = f"+{p95:.1f}ms" if p95 is not None else "N/A"
-        peak_str = (f"+{peak_ovh:.1f}ms at {peak_ovh_time.strftime('%Y-%m-%d %H:%M:%S')}"
+        p50_str = f"{p50:+.1f}ms" if p50 is not None else "N/A"
+        p95_str = f"{p95:+.1f}ms" if p95 is not None else "N/A"
+        peak_str = (f"{peak_ovh:+.1f}ms at {peak_ovh_time.strftime('%Y-%m-%d %H:%M:%S')}"
                     if peak_ovh is not None else "N/A")
-        print(f"   baseline p50=+{overhead.baseline_p50:.1f}ms  "
+        print(f"   baseline p50={overhead.baseline_p50:+.1f}ms  "
               f"current p50={p50_str}  p95={p95_str}  peak={peak_str}")
     else:
         print("   N/A (baseline not yet established)")
@@ -934,8 +955,9 @@ async def main():
     print(f"Zscaler Virtual Next-Hop:  {z_vgw}")
     print(f"ISP Direct Target:         {args.isp_target}")
     print(f"Zscaler Target:            {zscaler_target}")
+    zsc_v_tag = "VERIFIED" if startup_pathv.get("zsc_status") == "OK" else startup_pathv.get("zsc_status", "UNCERTAIN")
     print(f"Direct Path Verification:  {'VERIFIED' if startup_pathv['direct_verified'] else 'UNCERTAIN'} ({startup_pathv['direct_reason']})")
-    print(f"Zscaler Verification:      {'VERIFIED' if startup_pathv['zsc_verified'] else 'UNCERTAIN'} ({startup_pathv['zsc_reason']})")
+    print(f"Zscaler Verification:      {zsc_v_tag} ({startup_pathv['zsc_reason']})")
 
     trace_verify_every = 30
     trace_verify_task = None
@@ -1110,7 +1132,7 @@ async def main():
             overhead.add_sample(isp_res, zsc_res)
             baseline_just_set = overhead.maybe_set_baseline(args.overhead_baseline_samples)
             if baseline_just_set:
-                print(f"\n[{_ts()}] [BASELINE] Overhead baseline established: p50=+{overhead.baseline_p50:.1f}ms (after {args.overhead_baseline_samples} samples)")
+                print(f"\n[{_ts()}] [BASELINE] Overhead baseline established: p50={overhead.baseline_p50:+.1f}ms (after {args.overhead_baseline_samples} samples)")
 
             # Log to file (always, regardless of silent mode)
             log_entry(logfile, network_info, lan_res, isp_res, zsc_res, status, fault, overhead=overhead)
@@ -1159,13 +1181,14 @@ async def main():
             fault_str = f" ==> {fault}" if fault != "None" else ""
             pathv = network_info.get("path_verification", {})
             direct_tag = f"DIRECT={'OK' if pathv.get('direct_verified') else 'UNCERTAIN'}({pathv.get('direct_route_interface', 'N/A')})"
-            zsc_tag = f"ZSC={'OK' if pathv.get('zsc_verified') else 'UNCERTAIN'}({pathv.get('zsc_route_interface', 'N/A')})"
+            zsc_status_tag = pathv.get("zsc_status", "OK" if pathv.get("zsc_verified") else "UNCERTAIN")
+            zsc_tag = f"ZSC={zsc_status_tag}({pathv.get('zsc_route_interface', 'N/A')})"
             trace_tag = ""
             if args.trace_verify:
                 tracev = network_info.get("trace_verification", {})
                 if tracev:
                     d_trace = "OK" if tracev.get("direct_trace_verified") else "UNCERTAIN"
-                    z_trace = "OK" if tracev.get("zsc_trace_verified") else "UNCERTAIN"
+                    z_trace = tracev.get("zsc_trace_status", "OK" if tracev.get("zsc_trace_verified") else "UNCERTAIN")
                     trace_tag = f" | TRACE(D={d_trace},Z={z_trace})"
                 elif trace_verify_task is not None:
                     trace_tag = " | TRACE(PENDING)"
@@ -1178,10 +1201,10 @@ async def main():
             if p50 is not None:
                 ld = overhead.loss_delta_pct()
                 ld_str = f" Δloss={ld:+.1f}%" if ld is not None else ""
-                ovh_tag = f" | OVH: p50=+{p50:.1f}ms p95=+{p95:.1f}ms{ld_str}"
+                ovh_tag = f" | OVH: p50={p50:+.1f}ms p95={p95:+.1f}ms{ld_str}"
                 if overhead.is_alerting(args.overhead_alert_ms) and overhead.baseline_p50 is not None:
                     above = p50 - overhead.baseline_p50
-                    ovh_tag += f" \033[93m[OVERHEAD-WARN: +{above:.1f}ms above baseline]\033[0m"
+                    ovh_tag += f" \033[93m[OVERHEAD-WARN: {above:+.1f}ms above baseline]\033[0m"
                     is_ovh_warn = True
                 # Track session peak
                 if peak_ovh is None or p50 > peak_ovh:
@@ -1190,9 +1213,9 @@ async def main():
 
             # Overhead-warn transition notifications (fire once on entry/exit, not every iteration)
             if is_ovh_warn and not prev_ovh_warn:
-                _notify("⚠ ping_checker", f"Overhead warn: p50=+{p50:.1f}ms above baseline", not args.no_notify)
+                _notify("⚠ ping_checker", f"Overhead warn: p50={p50:+.1f}ms above baseline", not args.no_notify)
             elif not is_ovh_warn and prev_ovh_warn:
-                p50_disp = f"+{p50:.1f}ms" if p50 is not None else "N/A"
+                p50_disp = f"{p50:+.1f}ms" if p50 is not None else "N/A"
                 _notify("✓ ping_checker", f"Overhead normal: p50={p50_disp}", not args.no_notify)
             prev_ovh_warn = is_ovh_warn
 

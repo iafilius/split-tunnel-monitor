@@ -153,3 +153,14 @@ class TestLossDelta:
         zsc = ProbeResult(target="", success=False)
         s.add_sample(isp, zsc)
         assert s.loss_delta_pct() is None
+
+    def test_negative_overhead_when_zsc_is_faster(self):
+        """When Zscaler path is faster than ISP path, overhead is negative."""
+        s = OverheadStats()
+        for _ in range(10):
+            s.add_sample(_ok(15.0), _ok(10.0))  # ISP=15ms, ZSC=10ms -> overhead = -5.0ms
+        p50 = s.rolling_p50()
+        assert p50 is not None
+        assert p50 < 0
+        assert f"{p50:+.1f}ms" == "-5.0ms"
+

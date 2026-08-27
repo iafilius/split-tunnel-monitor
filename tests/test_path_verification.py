@@ -139,3 +139,36 @@ class TestAssessTracerouteVerification:
             result = assess_traceroute_verification(net, "1.1.1.1", "9.9.9.9")
 
         assert result["direct_trace_verified"] is False
+
+    def test_zsc_status_inactive_when_no_zscaler(self):
+        net = {
+            "interface": "en0",
+            "local_ip": "192.168.31.125",
+            "gateway_ip": "192.168.31.1",
+            "zscaler": {"process_running": False, "interface": "", "is_active": False}
+        }
+        direct_route = _route_info(interface="en0")
+        zsc_route = _route_info(interface="en0")
+
+        with patch("ping_checker.get_route_info", side_effect=[direct_route, zsc_route]):
+            result = assess_path_verification(net, "1.1.1.1", "9.9.9.9")
+
+        assert result["zsc_verified"] is False
+        assert result["zsc_status"] == "INACTIVE"
+
+    def test_zsc_trace_status_direct_when_zscaler_inactive(self):
+        net = {
+            "interface": "en0",
+            "local_ip": "192.168.31.125",
+            "gateway_ip": "192.168.31.1",
+            "zscaler": {"process_running": False, "interface": "", "is_active": False}
+        }
+        direct_trace = _trace_result(first_hop="192.168.31.1")
+        zsc_trace = _trace_result(first_hop="192.168.31.1", second_hop="1.1.1.1")
+
+        with patch("ping_checker.get_traceroute_first_hop", side_effect=[direct_trace, zsc_trace]):
+            result = assess_traceroute_verification(net, "1.1.1.1", "9.9.9.9")
+
+        assert result["zsc_trace_verified"] is False
+        assert result["zsc_trace_status"] == "DIRECT"
+
