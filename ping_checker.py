@@ -289,6 +289,50 @@ def should_rediscover(iteration: int, network_info: dict) -> bool:
     )
 
 
+def should_trigger_trace_recheck(iteration: int, trace_verify_every: int, zsc_status_changed: bool) -> bool:
+    """Decide whether to kick off a new background trace re-check this iteration:
+    the fixed periodic cadence, or a route-based zsc_status transition — the latter
+    fires immediately so `TRACE(...)` doesn't lag behind a fresh `ZSC=` reading for
+    up to a full cadence cycle. Caller is still responsible for the "no task already
+    in flight" guard."""
+    return iteration % trace_verify_every == 1 or zsc_status_changed
+
+
+_ZSC_ROUTE_TO_TRACE_STATUS = {
+    "OK": "OK",
+    "BYPASSED": "BYPASSED",
+    "INACTIVE": "DIRECT",
+    "UNCERTAIN": "UNCERTAIN",
+}
+
+
+def trace_status_matches_route_status(zsc_status: str, zsc_trace_status: str) -> bool:
+    """Decide whether a completed trace re-check's Zscaler category agrees with the
+    current iteration's route-based zsc_status (mapping INACTIVE (route) to DIRECT
+    (trace) — same "no tunnel" condition under each check's own terminology). A
+    disagreement means the trace evidence hasn't caught up yet (e.g. the tunnel was
+    still settling when the check ran) and is worth an immediate retry. Unmapped or
+    missing values are treated as agreeing, so an unrecognized value never causes
+    indefinite retries."""
+    expected = _ZSC_ROUTE_TO_TRACE_STATUS.get(zsc_status)
+    if expected is None or zsc_trace_status is None:
+        return True
+    return expected == zsc_trace_status
+
+
+def decide_reconciliation_retry(categories_match: bool, attempts: int, max_attempts: int) -> tuple:
+    """Decide whether to retry a trace re-check immediately after a disagreeing
+    result, and return the updated consecutive-attempt count. Agreement resets the
+    counter to 0; disagreement increments it and requests a retry until the cap is
+    reached, at which point retries stop (falls back to the normal cadence) rather
+    than retrying a persistent disagreement forever."""
+    if categories_match:
+        return False, 0
+    if attempts < max_attempts:
+        return True, attempts + 1
+    return False, attempts
+
+
 def assess_path_verification(network_info: dict, isp_target: str, zsc_target: str) -> dict:
     """
     Build path-verification evidence so displayed labels match actual routing behavior.
@@ -296,7 +340,6 @@ def assess_path_verification(network_info: dict, isp_target: str, zsc_target: st
     """
     physical_iface = network_info.get("interface", "")
     zsc_info = network_info.get("zscaler", {})
-    zsc_active = zsc_info.get("is_active", False)
     zsc_process_running = zsc_info.get("process_running", False)
 
     direct_route = get_route_info(isp_target, ifscope=physical_iface) if physical_iface else get_route_info(isp_target)
@@ -313,9 +356,13 @@ def assess_path_verification(network_info: dict, isp_target: str, zsc_target: st
     if zsc_verified:
         zsc_status = "OK"
         zsc_reason = f"route via {zsc_route['interface']} with Zscaler process active"
-    elif not zsc_active and not zsc_process_running and not zsc_route["interface"].startswith("utun"):
-        zsc_status = "INACTIVE"
-        zsc_reason = "Zscaler inactive; standard route via physical interface"
+    elif zsc_route["interface"] and not zsc_route["interface"].startswith("utun"):
+        if zsc_process_running:
+            zsc_status = "BYPASSED"
+            zsc_reason = f"route via {zsc_route['interface']}; Zscaler process running but not tunneling this traffic"
+        else:
+            zsc_status = "INACTIVE"
+            zsc_reason = "Zscaler inactive; standard route via physical interface"
     else:
         zsc_status = "UNCERTAIN"
         zsc_reason = "route/process check did not confirm utun traversal"
@@ -404,7 +451,7 @@ def assess_traceroute_verification(network_info: dict, isp_target: str, zsc_targ
     """
     local_ip = network_info.get("local_ip", "")
     gateway_ip = network_info.get("gateway_ip", "")
-    zsc_active = network_info.get("zscaler", {}).get("is_active", False)
+    zsc_process_running = network_info.get("zscaler", {}).get("process_running", False)
 
     direct_trace = get_traceroute_first_hop(isp_target, source_ip=local_ip)
     zsc_trace = get_traceroute_first_hop(zsc_target)
@@ -427,10 +474,14 @@ def assess_traceroute_verification(network_info: dict, isp_target: str, zsc_targ
         zsc_trace_status = "OK"
         zsc_display = zsc_trace.get("second_hop") or "N/A"
         zsc_note = f"hop1=*(suppressed),hop2={zsc_display}"
-    elif not zsc_active:
-        zsc_trace_status = "DIRECT"
+    elif zsc_trace.get("first_hop"):
+        if zsc_process_running:
+            zsc_trace_status = "BYPASSED"
+            zsc_note = "Zscaler process running but not tunneling this traffic; standard traceroute path"
+        else:
+            zsc_trace_status = "DIRECT"
+            zsc_note = "Zscaler inactive; standard traceroute path"
         zsc_display = zsc_trace.get("first_hop") or zsc_trace.get("second_hop") or "N/A"
-        zsc_note = "Zscaler inactive; standard traceroute path"
     else:
         zsc_trace_status = "UNCERTAIN"
         zsc_display = zsc_trace.get("second_hop") or zsc_trace.get("first_hop") or "N/A"
@@ -1012,6 +1063,9 @@ async def main():
     current_log_date = datetime.now().date()    # for --rotate-daily
     current_zsc_iface = network_info['zscaler'].get('interface', '')  # for tunnel change detection
     current_gw_ip = network_info['gateway_ip']   # for LAN gateway identity change detection
+    previous_zsc_status = startup_pathv.get('zsc_status')  # for immediate trace re-check on status change
+    trace_reconcile_attempts = 0         # consecutive disagreeing re-checks since last transition
+    trace_reconcile_max_attempts = 20    # cap on reconciliation retries per transition (~60s; real tunnel re-establishment observed taking up to ~12s)
     lan_gateway_ever_responded = False           # session baseline: has the LAN gateway ever answered ICMP?
     # Session tracking (incident lifecycle, exit summary, notifications)
     session_start = datetime.now()
@@ -1103,11 +1157,22 @@ async def main():
             local_ip = network_info['local_ip']
             zsc_target = args.zscaler_target
             network_info["path_verification"] = assess_path_verification(network_info, args.isp_target, zsc_target)
+            zsc_status = network_info["path_verification"].get("zsc_status")
+            zsc_status_changed = previous_zsc_status is not None and zsc_status != previous_zsc_status
+            if zsc_status_changed:
+                trace_reconcile_attempts = 0
+            previous_zsc_status = zsc_status
 
+            reconcile_retry_needed = False
             if args.trace_verify:
                 if trace_verify_task and trace_verify_task.done():
                     try:
                         network_info["trace_verification"] = trace_verify_task.result()
+                        tv = network_info["trace_verification"]
+                        categories_match = trace_status_matches_route_status(zsc_status, tv.get("zsc_trace_status"))
+                        reconcile_retry_needed, trace_reconcile_attempts = decide_reconciliation_retry(
+                            categories_match, trace_reconcile_attempts, trace_reconcile_max_attempts
+                        )
                     except Exception as exc:
                         network_info["trace_verification"] = {
                             "direct_trace_verified": False,
@@ -1119,7 +1184,7 @@ async def main():
                         }
                     trace_verify_task = None
 
-                if trace_verify_task is None and (iteration % trace_verify_every == 1):
+                if trace_verify_task is None and should_trigger_trace_recheck(iteration, trace_verify_every, zsc_status_changed or reconcile_retry_needed):
                     trace_info_snapshot = dict(network_info)
                     trace_verify_task = asyncio.create_task(
                         asyncio.to_thread(assess_traceroute_verification, trace_info_snapshot, args.isp_target, zsc_target)

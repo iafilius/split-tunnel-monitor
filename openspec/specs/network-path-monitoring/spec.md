@@ -119,7 +119,7 @@ The system SHALL verify at startup that all required external CLI tools are avai
 - **THEN** the system prints a `WARNING: Missing tools: traceroute` message, states that trace verification is disabled, and continues probing using route-based verification.
 
 ### Requirement: Route-Based Path Verification
-The system SHALL perform a routing-layer verification each probe iteration and display a per-line indicator (`DIRECT=OK/UNCERTAIN`, `ZSC=OK/INACTIVE/UNCERTAIN`) confirming that the direct probe is routing via the physical interface and the Zscaler probe is routing via a `utun` interface with Zscaler process active, or clearly marking the tunnel as `INACTIVE` when no tunnel or process exists. When the active tunnel interface changes, path verification SHALL be re-run immediately using the new interface before the next console line is emitted.
+The system SHALL perform a routing-layer verification each probe iteration and display a per-line indicator (`DIRECT=OK/UNCERTAIN`, `ZSC=OK/BYPASSED/INACTIVE/UNCERTAIN`) confirming that the direct probe is routing via the physical interface and the Zscaler probe is routing via a `utun` interface with Zscaler process active. The Zscaler status SHALL be derived from the current iteration's own route lookup for the Zscaler target, not from a cached system-wide adapter-existence flag. When the current iteration's route lookup clearly resolves to a non-`utun` interface, the system SHALL report a confident status — `BYPASSED` when the Zscaler process is still running, or `INACTIVE` when it is not — rather than falling back to `UNCERTAIN`. `UNCERTAIN` SHALL be reserved for iterations where the route lookup itself fails to resolve any interface. When the active tunnel interface changes, path verification SHALL be re-run immediately using the new interface before the next console line is emitted.
 
 #### Scenario: Direct path routing confirmed
 - **WHEN** a probe iteration runs and `route -n get -ifscope <interface>` confirms the ISP target resolves via the physical interface
@@ -129,20 +129,28 @@ The system SHALL perform a routing-layer verification each probe iteration and d
 - **WHEN** a probe iteration runs and route lookup confirms the Zscaler target resolves via a `utun` interface AND Zscaler process is detected
 - **THEN** the console line displays `ZSC=OK(<utun_interface>)`.
 
+#### Scenario: Zscaler traffic bypassed while client is still running
+- **WHEN** the current iteration's route lookup for the Zscaler target resolves to a non-`utun` interface AND the Zscaler process is detected as running (e.g. the user disabled "Internet Access" in Zscaler Client Connector without quitting the app)
+- **THEN** the console line displays `ZSC=BYPASSED(<interface>)`, confidently indicating this traffic is not currently tunneled, distinct from a genuine routing anomaly.
+
 #### Scenario: Zscaler tunnel inactive on direct host
-- **WHEN** no `utun` interface is active and no Zscaler process is running
+- **WHEN** the current iteration's route lookup for the Zscaler target resolves to a non-`utun` interface AND no Zscaler process is detected
 - **THEN** the console line displays `ZSC=INACTIVE(<physical_interface>)`, indicating the secondary target is reaching the destination over the standard direct route.
 
 #### Scenario: Zscaler route bypassed or process missing when tunnel configured
-- **WHEN** Zscaler tunnel is supposed to be active but the route resolves over a non-`utun` interface or the process is not detected
-- **THEN** the console line displays `ZSC=UNCERTAIN(<interface>)`.
+- **WHEN** the current iteration's route lookup for the Zscaler target resolves to a non-`utun` interface
+- **THEN** the system reports a confident status distinguishing whether the Zscaler process is still running (`ZSC=BYPASSED(<interface>)`) or not (`ZSC=INACTIVE(<interface>)`), rather than a generic `ZSC=UNCERTAIN(<interface>)`.
+
+#### Scenario: Zscaler route lookup itself is ambiguous
+- **WHEN** the current iteration's route lookup for the Zscaler target does not resolve to any recognizable interface
+- **THEN** the console line displays `ZSC=UNCERTAIN(<interface-or-N/A>)`.
 
 #### Scenario: Verification updates immediately after tunnel change
 - **WHEN** a tunnel interface change is detected mid-run
 - **THEN** path verification is recalculated using the new `utun` interface within the same iteration, so the very next probe line reflects the new tunnel state
 
 ### Requirement: ICMP Traceroute Background Path Verification
-The system SHALL run ICMP-mode traceroute (`traceroute -I`) as a background task every 30 probe iterations to supplement route-based checks with stronger hop-level evidence. Results SHALL appear as `TRACE(D=OK,Z=OK)`, `TRACE(D=OK,Z=DIRECT)`, or `TRACE(D=OK,Z=UNCERTAIN)` in the console line once available, and as `TRACE(PENDING)` while the first result is outstanding. Trace verification SHALL be on by default and MAY be disabled with `--no-trace-verify`.
+The system SHALL run ICMP-mode traceroute (`traceroute -I`) as a background task every 30 probe iterations to supplement route-based checks with stronger hop-level evidence, and SHALL additionally trigger an immediate background re-check when the route-based `zsc_status` changes value between iterations, so the two indicators do not display contradictory information for longer than necessary. If a re-check's result still disagrees with the current iteration's `zsc_status` (e.g. because the tunnel had not yet finished settling when the check ran), the system SHALL trigger a further re-check immediately, up to a bounded number of consecutive attempts, rather than only reacting to the original transition instant. Results SHALL appear as `TRACE(D=OK,Z=OK)`, `TRACE(D=OK,Z=BYPASSED)`, `TRACE(D=OK,Z=DIRECT)`, or `TRACE(D=OK,Z=UNCERTAIN)` in the console line once available, and as `TRACE(PENDING)` while the first result is outstanding. The Zscaler trace status SHALL be derived from the current iteration's own hop evidence for the Zscaler target, not from a cached system-wide adapter-existence flag. Trace verification SHALL be on by default and MAY be disabled with `--no-trace-verify`.
 
 #### Scenario: Direct trace verified
 - **WHEN** ICMP traceroute to the ISP target resolves hop1 to the LAN gateway IP or to the target itself
@@ -152,9 +160,33 @@ The system SHALL run ICMP-mode traceroute (`traceroute -I`) as a background task
 - **WHEN** ICMP traceroute to the Zscaler target shows hop1=`*` (virtual gateway suppresses ICMP TTL-exceeded by policy) AND hop2 resolves to a real IP address
 - **THEN** Zscaler trace is reported as verified (`Z=OK`), confirming traffic entered Zscaler infrastructure.
 
+#### Scenario: Zscaler trace shows traffic bypassed while client is still running
+- **WHEN** ICMP traceroute to the Zscaler target resolves hop1 to a real (non-suppressed) address, indicating standard physical-path hops, AND the Zscaler process is detected as running
+- **THEN** Zscaler trace is reported as `Z=BYPASSED`, confidently indicating this traffic is not currently tunneled.
+
 #### Scenario: Zscaler trace when tunnel is inactive
-- **WHEN** Zscaler tunnel is inactive and traceroute to the secondary target resolves over standard physical network hops
+- **WHEN** ICMP traceroute to the Zscaler target resolves hop1 to a real (non-suppressed) address, indicating standard physical-path hops, AND no Zscaler process is detected
 - **THEN** Zscaler trace is reported as `Z=DIRECT`.
+
+#### Scenario: Zscaler trace evidence itself is ambiguous
+- **WHEN** the traceroute hop evidence for the Zscaler target does not clearly match either the tunneled pattern (hop1 suppressed, hop2 present) or the direct pattern (hop1 resolved)
+- **THEN** Zscaler trace is reported as `Z=UNCERTAIN`.
+
+#### Scenario: Immediate re-check when route-based Zscaler status changes
+- **WHEN** the route-based `zsc_status` (e.g. `OK`, `BYPASSED`, `INACTIVE`, `UNCERTAIN`) changes value from the previous iteration, and no trace check is currently already in progress
+- **THEN** the system triggers a new background traceroute re-check immediately on that iteration, rather than waiting for the next fixed 30-iteration cadence boundary.
+
+#### Scenario: No redundant re-check when status is unchanged
+- **WHEN** the route-based `zsc_status` is the same as the previous iteration
+- **THEN** the system does not trigger an extra trace re-check beyond the existing fixed 30-iteration cadence.
+
+#### Scenario: Re-check result still disagrees with current route status (tunnel still settling)
+- **WHEN** a trace re-check completes and its Zscaler trace category (mapping `INACTIVE`↔`DIRECT`, others 1:1) does not match the current iteration's route-based `zsc_status`, AND fewer than 20 consecutive reconciliation attempts have been made for this transition, AND no trace check is currently in progress
+- **THEN** the system triggers another background re-check immediately, without waiting for the next fixed 30-iteration cadence boundary.
+
+#### Scenario: Reconciliation attempts are capped
+- **WHEN** 20 consecutive reconciliation re-checks have completed and the Zscaler trace category still disagrees with the current route-based `zsc_status`
+- **THEN** the system stops triggering further immediate re-checks for that transition and falls back to the existing fixed 30-iteration cadence, leaving the disagreement visible rather than retrying indefinitely.
 
 #### Scenario: traceroute disabled at startup
 - **WHEN** `traceroute` is not installed OR the user passes `--no-trace-verify`

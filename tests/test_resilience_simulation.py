@@ -11,6 +11,9 @@ from contextlib import redirect_stdout
 from unittest.mock import patch, MagicMock
 from ping_checker import (
     should_rediscover,
+    should_trigger_trace_recheck,
+    trace_status_matches_route_status,
+    decide_reconciliation_retry,
     format_local_ip_line,
     NetworkDiscovery,
     get_route_info,
@@ -94,6 +97,79 @@ class TestCableFlapSimulation:
         assert route_result["ok"] is False
         assert "bad interface name" not in buf.getvalue()
         assert mock_subproc.call_args[0][0] == ["route", "-n", "get", "-ifscope", "en6", "1.1.1.1"]
+
+
+class TestTraceRecheckTrigger:
+    """Drives should_trigger_trace_recheck() directly (the same function main()'s
+    loop calls to decide whether to kick off a background trace re-check)."""
+
+    def test_periodic_cadence_fires_on_schedule(self):
+        assert should_trigger_trace_recheck(1, 30, zsc_status_changed=False) is True
+        assert should_trigger_trace_recheck(31, 30, zsc_status_changed=False) is True
+        assert should_trigger_trace_recheck(2, 30, zsc_status_changed=False) is False
+        assert should_trigger_trace_recheck(30, 30, zsc_status_changed=False) is False
+
+    def test_status_change_triggers_immediately_mid_cycle(self):
+        """Reconstructed regression: ZSC flipped BYPASSED -> OK at iteration 73,
+        but the next scheduled trace check wasn't until iteration 91 — this must
+        now fire the same iteration the status changes, regardless of cadence."""
+        assert should_trigger_trace_recheck(73, 30, zsc_status_changed=True) is True
+
+    def test_no_redundant_trigger_when_status_unchanged_mid_cycle(self):
+        assert should_trigger_trace_recheck(45, 30, zsc_status_changed=False) is False
+
+
+class TestTraceReconciliation:
+    """Drives trace_status_matches_route_status() directly — the equivalence check
+    used to decide whether a completed trace re-check's category still disagrees
+    with the current route-based zsc_status (the live-test regression: route
+    flipped to OK before the tunnel had actually resumed carrying traffic, so the
+    trace re-check landed mid-settling and still read BYPASSED)."""
+
+    def test_matching_categories_agree(self):
+        assert trace_status_matches_route_status("OK", "OK") is True
+        assert trace_status_matches_route_status("BYPASSED", "BYPASSED") is True
+        assert trace_status_matches_route_status("UNCERTAIN", "UNCERTAIN") is True
+
+    def test_inactive_route_maps_to_direct_trace(self):
+        assert trace_status_matches_route_status("INACTIVE", "DIRECT") is True
+
+    def test_disagreement_reported_reconstructed_regression(self):
+        """Route already flipped to OK; trace re-check still measured BYPASSED
+        because the tunnel had not yet resumed carrying traffic."""
+        assert trace_status_matches_route_status("OK", "BYPASSED") is False
+
+    def test_unmapped_or_missing_values_treated_as_agreeing(self):
+        """Unrecognized status values must never cause indefinite retries."""
+        assert trace_status_matches_route_status("SOMETHING_NEW", "OK") is True
+        assert trace_status_matches_route_status("OK", None) is True
+
+    def test_agreement_resets_attempt_counter(self):
+        retry_needed, attempts = decide_reconciliation_retry(categories_match=True, attempts=2, max_attempts=3)
+        assert retry_needed is False
+        assert attempts == 0
+
+    def test_disagreement_requests_retry_and_increments_counter(self):
+        retry_needed, attempts = decide_reconciliation_retry(categories_match=False, attempts=0, max_attempts=3)
+        assert retry_needed is True
+        assert attempts == 1
+
+    def test_disagreement_stops_retrying_once_cap_reached(self):
+        """After 3 consecutive disagreeing re-checks, stop retrying immediately and
+        fall back to the normal cadence rather than retrying forever."""
+        retry_needed, attempts = decide_reconciliation_retry(categories_match=False, attempts=3, max_attempts=3)
+        assert retry_needed is False
+        assert attempts == 3
+
+    def test_full_reconciliation_sequence_across_consecutive_disagreements(self):
+        attempts = 0
+        for _ in range(3):
+            retry_needed, attempts = decide_reconciliation_retry(categories_match=False, attempts=attempts, max_attempts=3)
+            assert retry_needed is True
+        # 4th consecutive disagreement: cap reached, no further retry
+        retry_needed, attempts = decide_reconciliation_retry(categories_match=False, attempts=attempts, max_attempts=3)
+        assert retry_needed is False
+        assert attempts == 3
 
 
 class TestStaticDhcpBannerSimulation:

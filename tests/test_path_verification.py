@@ -156,6 +156,36 @@ class TestAssessTracerouteVerification:
         assert result["zsc_verified"] is False
         assert result["zsc_status"] == "INACTIVE"
 
+    def test_zsc_status_bypassed_when_process_running_but_route_not_utun(self):
+        """Reconstructed corporate-laptop scenario: ZCC still running (Internet
+        Access disabled without quitting the app), route resolves via en0."""
+        net = {
+            "interface": "en0",
+            "local_ip": "192.168.31.161",
+            "gateway_ip": "192.168.31.1",
+            "zscaler": {"process_running": True, "interface": "utun0", "is_active": True}
+        }
+        direct_route = _route_info(interface="en0")
+        zsc_route = _route_info(interface="en0")
+
+        with patch("ping_checker.get_route_info", side_effect=[direct_route, zsc_route]):
+            result = assess_path_verification(net, "1.1.1.1", "9.9.9.9")
+
+        assert result["zsc_verified"] is False
+        assert result["zsc_status"] == "BYPASSED"
+
+    def test_zsc_status_uncertain_when_route_lookup_unresolved(self):
+        """Genuine ambiguity: route lookup itself didn't resolve any interface."""
+        net = _network_info(iface="en0", process_running=True)
+        direct_route = _route_info(interface="en0")
+        zsc_route = _route_info(interface="", ok=False)
+
+        with patch("ping_checker.get_route_info", side_effect=[direct_route, zsc_route]):
+            result = assess_path_verification(net, "1.1.1.1", "9.9.9.9")
+
+        assert result["zsc_verified"] is False
+        assert result["zsc_status"] == "UNCERTAIN"
+
     def test_zsc_trace_status_direct_when_zscaler_inactive(self):
         net = {
             "interface": "en0",
@@ -171,4 +201,35 @@ class TestAssessTracerouteVerification:
 
         assert result["zsc_trace_verified"] is False
         assert result["zsc_trace_status"] == "DIRECT"
+
+    def test_zsc_trace_status_bypassed_when_process_running_and_hop1_resolved(self):
+        """Reconstructed corporate-laptop scenario: ZCC still running, hop1
+        resolves to a real address (standard, non-tunneled path)."""
+        net = {
+            "interface": "en0",
+            "local_ip": "192.168.31.161",
+            "gateway_ip": "192.168.31.1",
+            "zscaler": {"process_running": True, "interface": "utun0", "is_active": True}
+        }
+        direct_trace = _trace_result(first_hop="192.168.31.1")
+        zsc_trace = _trace_result(first_hop="192.168.31.1", second_hop="1.1.1.1")
+
+        with patch("ping_checker.get_traceroute_first_hop", side_effect=[direct_trace, zsc_trace]):
+            result = assess_traceroute_verification(net, "1.1.1.1", "9.9.9.9")
+
+        assert result["zsc_trace_verified"] is False
+        assert result["zsc_trace_status"] == "BYPASSED"
+
+    def test_zsc_trace_status_uncertain_when_neither_pattern_matches(self):
+        """Genuine ambiguity: hop1 suppressed but hop2 also absent (no tunneled
+        pattern), and hop1 itself never resolved (no direct pattern either)."""
+        net = _network_info(process_running=True)
+        direct_trace = _trace_result(first_hop="192.168.1.1")
+        zsc_trace = _trace_result(first_hop="", second_hop="")
+
+        with patch("ping_checker.get_traceroute_first_hop", side_effect=[direct_trace, zsc_trace]):
+            result = assess_traceroute_verification(net, "1.1.1.1", "9.9.9.9")
+
+        assert result["zsc_trace_verified"] is False
+        assert result["zsc_trace_status"] == "UNCERTAIN"
 
