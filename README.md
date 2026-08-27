@@ -314,6 +314,12 @@ Full investigation guide including ZCC log correlation, timeline building, and t
 
 ---
 
+## Technical Guides & Forensics
+
+- **[macOS Wi-Fi Latency Forensics (PSM, AWDL & Enterprise Stacks)](docs/macos_wifi_latency_and_enterprise_forensics.md)**: A detailed technical reference explaining why macOS Wi-Fi ICMP latency behaves counter-intuitively across different Apple Silicon hardware (M2 Pro vs. M3), 802.11 Power Save Mode (PSM) DTIM buffering, AWDL AirDrop social-channel scanning spikes, and corporate MDM/Zscaler/EDR packet filter jitter.
+
+---
+
 ## License
 
 GNU General Public License v3.0 (GPLv3)
