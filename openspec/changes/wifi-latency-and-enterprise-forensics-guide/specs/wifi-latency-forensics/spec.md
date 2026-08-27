@@ -1,0 +1,28 @@
+## Purpose
+
+Documents macOS Wi-Fi latency characteristics, Power Save Mode (PSM) buffering, Apple Wireless Direct Link (AWDL) scanning, and enterprise MDM/Zscaler stack overhead to enable accurate network diagnostics.
+
+## ADDED Requirements
+
+### Requirement: Wi-Fi Latency Forensics Documentation
+
+The repository SHALL include a dedicated technical guide documenting macOS Wi-Fi latency dynamics, platform comparisons, and diagnostic protocols.
+
+#### Scenario: Guide covers PSM and AWDL mechanics
+
+- **WHEN** an engineer reads the forensics documentation
+- **THEN** the guide explains 802.11 Power Save Mode (PSM) DTIM buffering, the 21-second rediscovery wakeup cycle, and AWDL off-channel scanning
+
+#### Scenario: Guide provides empirical traces and diagnostic playbook
+
+- **WHEN** a user follows the troubleshooting playbook in the guide
+- **THEN** the guide provides rapid-ping commands (`ping -i 0.2`) to suppress PSM, AWDL interface isolation steps (`sudo ifconfig awdl0 down`), and comparative reference traces
+
+### Requirement: Reference Guide Discoverability
+
+The repository README SHALL link to the Wi-Fi latency and enterprise forensics guide.
+
+#### Scenario: Documentation link in README
+
+- **WHEN** browsing the project README
+- **THEN** a link to `docs/macos_wifi_latency_and_enterprise_forensics.md` is present under the technical guides section
