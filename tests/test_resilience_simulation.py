@@ -85,15 +85,15 @@ class TestCableFlapSimulation:
         with patch.object(NetworkDiscovery, "interface_exists", return_value=False):
             rediscover_now = should_rediscover(3, network_info)
 
-        with redirect_stdout(buf), patch("os.popen") as mock_popen:
-            mock_popen.return_value = MagicMock(read=MagicMock(return_value=""), close=MagicMock())
+        with redirect_stdout(buf), patch("subprocess.run") as mock_subproc:
+            mock_subproc.return_value = MagicMock(stdout="", returncode=1)
             route_result = get_route_info("1.1.1.1", ifscope="en6")
             print(f"Detected Local IPv4:       {format_local_ip_line(network_info['local_ip'], '')}")
 
         assert rediscover_now is True
         assert route_result["ok"] is False
         assert "bad interface name" not in buf.getvalue()
-        assert "2>/dev/null" in mock_popen.call_args[0][0]
+        assert mock_subproc.call_args[0][0] == ["route", "-n", "get", "-ifscope", "en6", "1.1.1.1"]
 
 
 class TestStaticDhcpBannerSimulation:

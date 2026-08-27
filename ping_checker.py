@@ -27,6 +27,8 @@ import time
 import asyncio
 import argparse
 import subprocess
+import shutil
+import signal
 import statistics as _stats
 import collections
 from datetime import datetime
@@ -47,9 +49,8 @@ class NetworkDiscovery:
         """Find active physical network interface (e.g. en0, en1) using scutil --nwi or route."""
         try:
             # Method 1: scutil --nwi
-            proc = os.popen("scutil --nwi 2>/dev/null")
-            output = proc.read()
-            proc.close()
+            res = subprocess.run(["scutil", "--nwi"], capture_output=True, text=True, timeout=2)
+            output = res.stdout
             match = re.search(r"Network interfaces:\s*(\w+)", output)
             if match:
                 iface = match.group(1)
@@ -57,9 +58,8 @@ class NetworkDiscovery:
                     return iface
 
             # Method 2: route -n get 1.1.1.1
-            proc = os.popen("route -n get 1.1.1.1 2>/dev/null")
-            route_out = proc.read()
-            proc.close()
+            res = subprocess.run(["route", "-n", "get", "1.1.1.1"], capture_output=True, text=True, timeout=2)
+            route_out = res.stdout
             match = re.search(r"interface:\s*(\w+)", route_out)
             if match:
                 iface = match.group(1)
@@ -90,9 +90,8 @@ class NetworkDiscovery:
     def get_local_ip(interface: str) -> str:
         """Get assigned IPv4 address for physical interface using ipconfig getifaddr."""
         try:
-            proc = os.popen(f"ipconfig getifaddr {interface} 2>/dev/null")
-            ip = proc.read().strip()
-            proc.close()
+            res = subprocess.run(["ipconfig", "getifaddr", interface], capture_output=True, text=True, timeout=2)
+            ip = res.stdout.strip()
             if ip and re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", ip):
                 return ip
         except Exception:
@@ -105,9 +104,8 @@ class NetworkDiscovery:
         if not interface:
             return ""
         try:
-            proc = os.popen(f"ipconfig getpacket {interface} 2>/dev/null")
-            output = proc.read()
-            proc.close()
+            res = subprocess.run(["ipconfig", "getpacket", interface], capture_output=True, text=True, timeout=2)
+            output = res.stdout
             stripped = output.strip()
             if not stripped:
                 return "static"
@@ -124,16 +122,14 @@ class NetworkDiscovery:
         """Get default router LAN IP using ipconfig getoption or route query."""
         try:
             # Primary macOS option query
-            proc = os.popen(f"ipconfig getoption {interface} router 2>/dev/null")
-            gw = proc.read().strip()
-            proc.close()
+            res = subprocess.run(["ipconfig", "getoption", interface, "router"], capture_output=True, text=True, timeout=2)
+            gw = res.stdout.strip()
             if gw and re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", gw):
                 return gw
 
             # Fallback route query — ifscope'd so it can't inherit a VPN tunnel's gateway
-            proc = os.popen(f"route -n get -ifscope {interface} 1.1.1.1 2>/dev/null")
-            route_out = proc.read()
-            proc.close()
+            res = subprocess.run(["route", "-n", "get", "-ifscope", interface, "1.1.1.1"], capture_output=True, text=True, timeout=2)
+            route_out = res.stdout
             match = re.search(r"gateway:\s*(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})", route_out)
             if match:
                 return match.group(1)
@@ -156,9 +152,8 @@ class NetworkDiscovery:
 
         # 1. Check if Zscaler Client Connector process is running
         try:
-            proc = os.popen("pgrep -fi Zscaler 2>/dev/null")
-            pids = proc.read().strip()
-            proc.close()
+            res = subprocess.run(["pgrep", "-fi", "Zscaler"], capture_output=True, text=True, timeout=2)
+            pids = res.stdout.strip()
             if pids:
                 z_info["process_running"] = True
         except Exception:
@@ -166,9 +161,8 @@ class NetworkDiscovery:
 
         # 2. Inspect route to standard public IP (e.g. 8.8.8.8) to see if it routes via utun
         try:
-            proc = os.popen("route -n get 8.8.8.8 2>/dev/null")
-            route_out = proc.read()
-            proc.close()
+            res = subprocess.run(["route", "-n", "get", "8.8.8.8"], capture_output=True, text=True, timeout=2)
+            route_out = res.stdout
 
             iface_match = re.search(r"interface:\s*(utun\d+)", route_out)
             gw_match = re.search(r"gateway:\s*(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})", route_out)
@@ -183,9 +177,8 @@ class NetworkDiscovery:
 
         # 3. Scan ifconfig for IPv4 utun interfaces (e.g., inet 100.64.X.X -> 100.64.Y.Y)
         try:
-            proc = os.popen("ifconfig 2>/dev/null")
-            ifconfig_out = proc.read()
-            proc.close()
+            res = subprocess.run(["ifconfig"], capture_output=True, text=True, timeout=2)
+            ifconfig_out = res.stdout
 
             utun_blocks = re.findall(r"utun\d+:.*?\n(?=\S|\Z)", ifconfig_out, re.DOTALL)
             for block in utun_blocks:
@@ -242,13 +235,13 @@ def get_route_info(target_ip: str, ifscope: str = "") -> dict:
         return info
 
     try:
-        cmd = f"route -n get {target_ip} 2>/dev/null"
+        cmd = ["route", "-n", "get"]
         if ifscope:
-            cmd = f"route -n get -ifscope {ifscope} {target_ip} 2>/dev/null"
+            cmd.extend(["-ifscope", ifscope])
+        cmd.append(target_ip)
 
-        proc = os.popen(cmd)
-        output = proc.read()
-        proc.close()
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
+        output = proc.stdout or ""
 
         info["raw"] = output
         iface_match = re.search(r"interface:\s*(\w+)", output)
@@ -761,9 +754,7 @@ def check_required_tools() -> dict:
     }
     results = {}
     for tool, purpose in required.items():
-        proc = os.popen(f"command -v {tool} 2>/dev/null")
-        path = proc.read().strip()
-        proc.close()
+        path = shutil.which(tool) or ""
         results[tool] = {"ok": bool(path), "path": path or "NOT FOUND", "purpose": purpose}
     return results
 
@@ -987,6 +978,20 @@ async def main():
     peak_ovh = None                             # highest rolling p50 seen this session
     peak_ovh_time = None
     prev_ovh_warn = False                       # for overhead-warn transition detection
+
+    # Register signal handling for clean daemon / launchd / Ctrl+C teardown
+    loop = asyncio.get_running_loop()
+    main_task = asyncio.current_task()
+
+    def _sig_handler():
+        if main_task and not main_task.done():
+            main_task.cancel()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, _sig_handler)
+        except (NotImplementedError, RuntimeError):
+            pass
     try:
         while True:
             iteration += 1

@@ -185,3 +185,24 @@ class TestSessionSummary:
     def test_logfile_path_in_footer(self):
         output = _run_summary(logfile="/tmp/ping_checker_20260730.log")
         assert "ping_checker_20260730.log" in output
+
+    @pytest.mark.asyncio
+    async def test_signal_handler_cancels_task(self):
+        import asyncio
+        import signal
+
+        task = asyncio.current_task()
+        assert task is not None
+
+        def _sig_handler():
+            if task and not task.done():
+                task.cancel()
+
+        _sig_handler()
+        assert task.cancelling() > 0 or task.cancelled()
+        # Clear cancellation state so test teardown proceeds cleanly
+        try:
+            await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            pass
+

@@ -1,26 +1,25 @@
 """
-Tests for NetworkDiscovery — all os.popen calls are mocked.
+Tests for NetworkDiscovery — all subprocess.run calls are mocked.
 Fixture files in tests/fixtures/ supply realistic macOS CLI output.
 """
-import os
 import pytest
 from unittest.mock import patch, MagicMock
 from ping_checker import NetworkDiscovery
 from tests.helpers import load_fixture
 
 
-def _popen_mock(output: str) -> MagicMock:
-    """Return a MagicMock that behaves like os.popen(cmd) result."""
+def _subproc_mock(stdout: str, returncode: int = 0) -> MagicMock:
+    """Return a MagicMock that behaves like subprocess.run result."""
     m = MagicMock()
-    m.read.return_value = output
-    m.close.return_value = None
+    m.stdout = stdout
+    m.returncode = returncode
     return m
 
 
 class TestGetPhysicalInterface:
     def test_returns_en0_from_scutil(self, fixtures_dir):
         fixture = load_fixture(fixtures_dir, "scutil_nwi_normal.txt")
-        with patch("os.popen", return_value=_popen_mock(fixture)):
+        with patch("subprocess.run", return_value=_subproc_mock(fixture)):
             iface = NetworkDiscovery.get_physical_interface()
         assert iface == "en0"
 
@@ -29,13 +28,13 @@ class TestGetPhysicalInterface:
         route_fixture = load_fixture(fixtures_dir, "route_get_direct.txt")
 
         call_count = [0]
-        def side_effect(cmd):
+        def side_effect(cmd, **kwargs):
             call_count[0] += 1
             if call_count[0] == 1:
-                return _popen_mock(utun_fixture)
-            return _popen_mock(route_fixture)
+                return _subproc_mock(utun_fixture)
+            return _subproc_mock(route_fixture)
 
-        with patch("os.popen", side_effect=side_effect):
+        with patch("subprocess.run", side_effect=side_effect):
             iface = NetworkDiscovery.get_physical_interface()
         # Should fall back to route and return "en0" from route_get_direct.txt
         assert iface == "en0"
@@ -43,37 +42,37 @@ class TestGetPhysicalInterface:
 
 class TestGetLocalIp:
     def test_returns_ip_from_ipconfig(self):
-        with patch("os.popen", return_value=_popen_mock("192.168.1.42\n")):
+        with patch("subprocess.run", return_value=_subproc_mock("192.168.1.42\n")):
             ip = NetworkDiscovery.get_local_ip("en0")
         assert ip == "192.168.1.42"
 
     def test_returns_empty_on_invalid_output(self):
-        with patch("os.popen", return_value=_popen_mock("not-an-ip\n")):
+        with patch("subprocess.run", return_value=_subproc_mock("not-an-ip\n")):
             ip = NetworkDiscovery.get_local_ip("en0")
         assert ip == ""
 
     def test_returns_empty_on_blank_output(self):
-        with patch("os.popen", return_value=_popen_mock("")):
+        with patch("subprocess.run", return_value=_subproc_mock("")):
             ip = NetworkDiscovery.get_local_ip("en0")
         assert ip == ""
 
 
 class TestGetLanGateway:
     def test_returns_gateway_from_ipconfig(self):
-        with patch("os.popen", return_value=_popen_mock("192.168.1.1\n")):
+        with patch("subprocess.run", return_value=_subproc_mock("192.168.1.1\n")):
             gw = NetworkDiscovery.get_lan_gateway("en0")
         assert gw == "192.168.1.1"
 
     def test_falls_back_to_route(self, fixtures_dir):
         route_fixture = load_fixture(fixtures_dir, "route_get_direct.txt")
         call_count = [0]
-        def side_effect(cmd):
+        def side_effect(cmd, **kwargs):
             call_count[0] += 1
             if call_count[0] == 1:
-                return _popen_mock("")  # ipconfig returns empty
-            return _popen_mock(route_fixture)
+                return _subproc_mock("")  # ipconfig returns empty
+            return _subproc_mock(route_fixture)
 
-        with patch("os.popen", side_effect=side_effect):
+        with patch("subprocess.run", side_effect=side_effect):
             gw = NetworkDiscovery.get_lan_gateway("en0")
         assert gw == "192.168.1.1"
 
@@ -83,17 +82,18 @@ class TestGetLanGateway:
         route_fixture = load_fixture(fixtures_dir, "route_get_direct.txt")
         captured_cmd = []
 
-        def side_effect(cmd):
+        def side_effect(cmd, **kwargs):
             captured_cmd.append(cmd)
             if "ipconfig" in cmd:
-                return _popen_mock("")
-            return _popen_mock(route_fixture)
+                return _subproc_mock("")
+            return _subproc_mock(route_fixture)
 
-        with patch("os.popen", side_effect=side_effect):
+        with patch("subprocess.run", side_effect=side_effect):
             NetworkDiscovery.get_lan_gateway("en6")
 
         route_cmd = next(c for c in captured_cmd if "1.1.1.1" in c)
-        assert "-ifscope en6" in route_cmd
+        assert "-ifscope" in route_cmd
+        assert "en6" in route_cmd
 
 
 class TestGetZscalerInfo:
@@ -101,18 +101,16 @@ class TestGetZscalerInfo:
         ifconfig_fixture = load_fixture(fixtures_dir, "ifconfig_zscaler_active.txt")
         route_fixture = load_fixture(fixtures_dir, "route_get_zscaler.txt")
 
-        call_count = [0]
-        def side_effect(cmd):
-            call_count[0] += 1
+        def side_effect(cmd, **kwargs):
             if "pgrep" in cmd:
-                return _popen_mock("12345\n")
+                return _subproc_mock("12345\n")
             if "route" in cmd:
-                return _popen_mock(route_fixture)
+                return _subproc_mock(route_fixture)
             if "ifconfig" in cmd:
-                return _popen_mock(ifconfig_fixture)
-            return _popen_mock("")
+                return _subproc_mock(ifconfig_fixture)
+            return _subproc_mock("")
 
-        with patch("os.popen", side_effect=side_effect):
+        with patch("subprocess.run", side_effect=side_effect):
             info = NetworkDiscovery.get_zscaler_info()
 
         assert info["is_active"] is True
@@ -122,16 +120,16 @@ class TestGetZscalerInfo:
         ifconfig_fixture = load_fixture(fixtures_dir, "ifconfig_no_zscaler.txt")
         route_fixture = "   route to: 9.9.9.9\ndestination: default\n   interface: en0\n"
 
-        def side_effect(cmd):
+        def side_effect(cmd, **kwargs):
             if "pgrep" in cmd:
-                return _popen_mock("")
+                return _subproc_mock("")
             if "route" in cmd:
-                return _popen_mock(route_fixture)
+                return _subproc_mock(route_fixture)
             if "ifconfig" in cmd:
-                return _popen_mock(ifconfig_fixture)
-            return _popen_mock("")
+                return _subproc_mock(ifconfig_fixture)
+            return _subproc_mock("")
 
-        with patch("os.popen", side_effect=side_effect):
+        with patch("subprocess.run", side_effect=side_effect):
             info = NetworkDiscovery.get_zscaler_info()
 
         assert info["is_active"] is False
@@ -145,22 +143,22 @@ class TestGetIpAssignmentMode:
             "yiaddr = 192.168.1.42\n"
             "server_identifier = 192.168.1.1\n"
         )
-        with patch("os.popen", return_value=_popen_mock(dhcp_output)):
+        with patch("subprocess.run", return_value=_subproc_mock(dhcp_output)):
             mode = NetworkDiscovery.get_ip_assignment_mode("en0")
         assert mode == "dhcp"
 
     def test_static_when_no_packet_present(self):
-        with patch("os.popen", return_value=_popen_mock("no packet\n")):
+        with patch("subprocess.run", return_value=_subproc_mock("no packet\n")):
             mode = NetworkDiscovery.get_ip_assignment_mode("en6")
         assert mode == "static"
 
     def test_static_when_output_empty(self):
-        with patch("os.popen", return_value=_popen_mock("")):
+        with patch("subprocess.run", return_value=_subproc_mock("")):
             mode = NetworkDiscovery.get_ip_assignment_mode("en6")
         assert mode == "static"
 
     def test_unknown_on_ambiguous_output(self):
-        with patch("os.popen", return_value=_popen_mock("garbled unexpected output\n")):
+        with patch("subprocess.run", return_value=_subproc_mock("garbled unexpected output\n")):
             mode = NetworkDiscovery.get_ip_assignment_mode("en0")
         assert mode == ""
 
@@ -168,7 +166,7 @@ class TestGetIpAssignmentMode:
         assert NetworkDiscovery.get_ip_assignment_mode("") == ""
 
     def test_unknown_on_exception(self):
-        with patch("os.popen", side_effect=OSError("boom")):
+        with patch("subprocess.run", side_effect=OSError("boom")):
             mode = NetworkDiscovery.get_ip_assignment_mode("en0")
         assert mode == ""
 
@@ -245,3 +243,27 @@ class TestDiscoverAllGatewaySanityCheck:
             info = NetworkDiscovery.discover_all()
         assert info["local_ip"] == ""
         assert info["gateway_ip"] == ""
+
+
+class TestCheckRequiredTools:
+    def test_all_tools_found(self):
+        from ping_checker import check_required_tools
+        with patch("shutil.which", return_value="/usr/bin/tool"):
+            tools = check_required_tools()
+        assert len(tools) == 7
+        assert all(v["ok"] is True for v in tools.values())
+        assert all(v["path"] == "/usr/bin/tool" for v in tools.values())
+
+    def test_missing_tool_reported(self):
+        from ping_checker import check_required_tools
+        def which_side_effect(cmd):
+            if cmd == "traceroute":
+                return None
+            return f"/usr/bin/{cmd}"
+
+        with patch("shutil.which", side_effect=which_side_effect):
+            tools = check_required_tools()
+        assert tools["traceroute"]["ok"] is False
+        assert tools["traceroute"]["path"] == "NOT FOUND"
+        assert tools["ping"]["ok"] is True
+

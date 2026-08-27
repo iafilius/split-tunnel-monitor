@@ -1,8 +1,4 @@
-## Purpose
-
-Prints a human-readable session report to stdout when the user stops monitoring with Ctrl+C, giving an at-a-glance summary suitable for pasting into a helpdesk ticket or Teams message.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Exit summary prints on Ctrl+C
 
@@ -36,12 +32,3 @@ When the monitoring loop is interrupted (`KeyboardInterrupt`, `asyncio.Cancelled
 
 - **WHEN** the session ends while an incident is still open (status was non-HEALTHY at termination)
 - **THEN** the open incident is shown in the summary with duration up to the moment of exit and marked as `[ongoing at exit]`
-
-### Requirement: Logfile path shown in summary footer
-
-The summary SHALL end with the path to the current logfile so users can locate it for attachment.
-
-#### Scenario: Logfile path in footer
-
-- **WHEN** session summary is printed
-- **THEN** the last line of the summary is `Log: <absolute path to logfile>`

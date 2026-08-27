@@ -276,7 +276,6 @@ python3 ping_checker.py [OPTIONS]
 | Option                        | Default   | Description                                                                |
 | ----------------------------- | --------- | -------------------------------------------------------------------------- |
 | `-i`, `--interval`            | `2.0`     | Ping interval in seconds                                                   |
-| `-i`, `--interval`            | `2.0`     | Ping interval in seconds                                                   |
 | `--isp-target`                | `1.1.1.1` | Direct ISP probe target IP                                                 |
 | `--zscaler-target`            | `9.9.9.9` | Zscaler tunnel probe target IP                                             |
 | `--no-trace-verify`           | off       | Disable background ICMP traceroute verification                            |
