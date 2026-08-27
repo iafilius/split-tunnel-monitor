@@ -34,7 +34,15 @@ Users running `split-tunnel-monitor` on macOS need clear explanations for latenc
 - **Rationale**: A capture's jitter could plausibly be influenced by system-level resource contention (CPU load from other processes, memory pressure triggering swapping/compression) as much as by Wi-Fi/power-state factors already documented. Recording `sw_vers` (macOS version/build), `uptime` (1/5/15-minute load averages), and `memory_pressure`'s system-wide free percentage at the start of each capture gives future testers — and future comparisons against different macOS versions or under different system load — a verified baseline instead of an assumed-idle system. All prior corporate M2 Pro captures (4.1–4.3) predate this decision and did not record this data; they are being redone to backfill it and confirm no elevated load coincided with the earlier observations.
 - **Alternative**: Only capture this retroactively/best-effort for future sessions and leave the existing traces without it (rejected: the user explicitly asked to redo the captures so *all* data is verified, not partially verified).
 
+### Decision 6: Three-Pillar Path Analysis (LAN Wi-Fi, Direct ISP 1.1.1.1, Zscaler 9.9.9.9)
+- **Rationale**: While local Wi-Fi / LAN gateway (`192.168.xx.1`) latency is the primary focus, the guide explicitly separates and analyzes the other two concurrent targets (`1.1.1.1` for Direct ISP underlay and `9.9.9.9` for Zscaler tunnel encapsulation). This enables unambiguous multi-path fault domain triangulation:
+  1. If LAN, ISP, and Zscaler all spike together $\rightarrow$ 100% Local Wi-Fi / PHY / AWDL event.
+  2. If LAN is low (4–8ms) and ISP/Zscaler spike $\rightarrow$ Upstream ISP / WAN bufferbloat event.
+  3. If LAN and ISP are low (4–8ms) and only Zscaler spikes $\rightarrow$ VPN `utun` / Cloud Edge event.
+- **Alternative**: Focus exclusively on LAN gateway pings and omit WAN/VPN paths (rejected: loses the core triangulation value of `split-tunnel-monitor`).
+
 ## Risks / Trade-offs
+
 
 - **[Risk: Stale OS/Hardware specifics as macOS updates]** → Document macOS version and hardware chipset context (e.g. Apple Silicon Wi-Fi 6/6E, Sonoma/Sequoia).
 - **[Risk: Confusion on AWDL disabling]** → Explicitly document that `sudo ifconfig awdl0 down` is a temporary diagnostic tool and disables AirDrop/Sidecar until restored.

@@ -52,6 +52,34 @@ The forensics guide SHALL provide a 2x2 comparison matrix documenting latency be
 - **WHEN** isolating enterprise MDM/EDR background overhead from Zscaler tunnel/encryption overhead specifically
 - **THEN** the guide includes an empirical trace captured with the Zscaler tunnel bypassed (Internet Access disabled, process still running) under the same power conditions as the corporate AC-power baseline, and compares its elevated-sample rate against the tunnel-active baseline
 
+### Requirement: Three-Target Multi-Path Forensics Analysis
+
+The forensics guide SHALL provide dedicated, in-depth technical analysis for all three monitored network paths:
+
+#### Scenario: Local LAN Gateway Path Forensics (`192.168.xx.1`)
+
+- **WHEN** diagnosing local Wi-Fi behavior
+- **THEN** the guide details 802.11 PSM DTIM beacon buffering (~50ms resting floor on battery), AWDL off-channel scanning (periodic 30–96ms spikes every 10–22s), and enterprise EDR (Defender ATP / Falcon) DriverKit socket queueing causing LAN spikes up to 100–170ms+
+
+#### Scenario: Direct ISP Path Forensics (`1.1.1.1` via `-S local_ip`)
+
+- **WHEN** diagnosing WAN underlay performance
+- **THEN** the guide explains how source-bound probing bypasses the VPN default route, isolates upstream bufferbloat and DOCSIS/fiber ISP jitter (8–12ms baseline jumping to 90–100ms when LAN remains at 4ms)
+
+#### Scenario: Zscaler Tunnel Path & Overhead Forensics (`9.9.9.9` & `OVH`)
+
+- **WHEN** evaluating VPN performance tax
+- **THEN** the guide details `utun` virtual next-hop encapsulation, TLS proxy inspection, ZIA cloud edge routing (9–15ms baseline jumping to 92–102ms), and the mathematical rolling overhead calculation $(RTT_{ZSC} - RTT_{ISP})$ across p50 and p95 percentiles
+
+#### Scenario: Multi-Path Fault Domain Triangulation
+
+- **WHEN** analyzing a network event across all three targets
+- **THEN** the guide provides the authoritative 3-way fault domain matrix:
+  1. Local Wi-Fi Event: LAN, ISP Direct, and Zscaler all rise together within 1–2ms.
+  2. Upstream WAN Event: LAN remains low (4–8ms) while ISP Direct and Zscaler spike together (85–100ms+).
+  3. VPN / Cloud-Edge Event: LAN and ISP Direct remain low (4–8ms) while only Zscaler spikes (90–102ms+).
+
+
 ### Requirement: Reference Guide Discoverability
 
 The repository README SHALL link to the Wi-Fi latency and enterprise forensics guide.

@@ -38,11 +38,20 @@
 ## 7. Full system telemetry re-capture for M3 (personal laptop, to execute there)
 
 - [x] 7.1 Verify the M3's actual Wi-Fi chipset via `system_profiler SPAirPortDataType` (mirrors 5.1) rather than leaving the "not independently verified" placeholder in Section 2/5 — confirmed: M3 Wi-Fi card is Broadcom **BCM4388** (`0x14E4, 0x4388`) with 6GHz Wi-Fi 6E channels, identical to the M2 Pro!
-- [x] 7.2 Redo Trace 1a (Battery + Low Power Mode) with full telemetry: `sw_vers` macOS 26.6.2 (25G83), `uptime` load averages 2.24/1.69/1.48, `memory_pressure` 49% free, CPython 3.14.3 (`pyenv`).
-- [x] 7.3 Redo Trace 1b (AC Power, Low Power Mode off) with the same full telemetry (35-sample capture completed, ~80% baseline 3.5-7.0ms).
-- [x] 7.4 Redo Trace 1c (`ping -i 0.2` high-frequency PSM-suppression test) with the same full telemetry, and confirm no orphaned background process left running.
+- [x] 7.2 Redo Trace 1a (Battery + Low Power Mode) with full telemetry: `sw_vers` macOS 26.6.2 (25G83), `uptime` load averages 1.57/1.71/1.55, `memory_pressure` 53% free, CPython 3.14.3 (`pyenv`), 41 samples.
+- [x] 7.3 Redo Trace 1b (AC Power, Low Power Mode off) with the same full telemetry: `sw_vers` macOS 26.6.2 (25G83), load averages 1.76/1.76/1.54, memory free 50%, CPython 3.14.3 (`pyenv`), 41 samples.
+- [x] 7.4 Redo Trace 1c (`ping -c 41 -i 0.2`) with the same full telemetry, and confirm no orphaned background process left running.
 - [x] 7.5 Update Section 4's Trace 1a/1b/1c and Section 5's "Recorded capture conditions" table with the M3's macOS version / CPU load / memory pressure / verified BCM4388 chipset, replacing all placeholders.
 - [x] 7.6 Re-check the "Key finding" callout in Section 2 and the confound narrative in Section 5 against the fresh M3 numbers — confirmed that hardware chipset identity (BCM4388 on both machines) conclusively proves software/policy causality.
 - [x] 7.7 Run `openspec validate --all` and `pytest` on the M3 laptop to confirm compliance after the doc update.
+
+## 8. Three-Pillar Multi-Path Triangulation Enhancement (LAN, 1.1.1.1, 9.9.9.9)
+
+- [x] 8.1 Structure Section 3 into a dedicated Three-Pillar Path Forensics framework:
+  1. Pillar 1: Local LAN Gateway (`192.168.xx.1`) — 802.11 PSM, DTIM buffering, AWDL social hopping, and Enterprise EDR DriverKit socket queueing.
+  2. Pillar 2: Direct ISP Underlay (`1.1.1.1` via `-S local_ip`) — Source-bound WAN underlay probing, isolating bufferbloat and upstream ISP jitter.
+  3. Pillar 3: Zscaler Tunnel Path (`9.9.9.9` & `OVH: p50/p95`) — `utun` virtual next-hop encapsulation, TLS proxy inspection, ZIA cloud edge routing, and mathematical rolling overhead calculation.
+- [x] 8.2 Incorporate the authoritative 3-way fault domain triangulation matrix into the documentation and knowledge base.
+
 
 

@@ -6,14 +6,15 @@ A technical reference and diagnostic guide explaining why macOS Wi-Fi ICMP laten
 
 ## 1. Executive Summary
 
-When diagnosing Wi-Fi and VPN latency on macOS, engineers frequently observe puzzling ping patterns:
-* A personal Mac might sit at a rock-solid **~50–60ms** resting ping on home Wi-Fi, dropping to **~4–7ms** at exact periodic intervals.
-* A corporate-managed Mac on the *exact same Wi-Fi network* may swing wildly between **6ms and 100ms+**.
+When diagnosing network performance and VPN split-tunneling on macOS, engineers frequently observe puzzling ICMP ping patterns across local and remote destinations:
+* **The LAN Gateway Paradox**: Pinging the local home router (`192.168.xx.1`) only 1 meter away does not sit at a flat 1ms. On battery with Low Power Mode ON, it can appear stuck at a "stable" **~50–60ms** floor (an artifact of 802.11 PSM DTIM beacon buffering), while dropping to **~4–8ms** during active use.
+* **Periodic Wi-Fi Jitter**: On both personal and corporate Macs, local LAN pings periodically spike to **45ms – 96ms** every 10–22 seconds due to Apple Wireless Direct Link (AWDL) off-channel social discovery scans.
+* **Enterprise Multi-Modal Swings**: On a corporate-managed Mac, local LAN pings can stretch up to **100ms – 170ms+** during background EDR inspection (Microsoft Defender ATP / Falcon), while Zscaler tunnel targets (`9.9.9.9`) exhibit independent **90ms – 102ms** spikes even when local Wi-Fi and direct ISP paths are idle.
 
-These behaviors are **not** caused by ISP congestion or router hardware faults. They are deterministic artifacts of:
-1. **IEEE 802.11 Power Save Mode (PSM)** and Access Point DTIM beacon intervals.
-2. **Apple Wireless Direct Link (AWDL)** background off-channel scanning for AirDrop/Universal Control.
-3. **Enterprise Management & Security Overhead**: Zscaler Client Connector (`utun` user-space NetworkExtension routing), MDM profiles, and EDR packet filters.
+These behaviors are deterministic physical and OS-level artifacts across three distinct network tiers:
+1. **Local Wi-Fi Tier**: IEEE 802.11 Power Save Mode (PSM) DTIM beacon buffering and AWDL off-channel scanning.
+2. **Direct WAN Underlay Tier**: Upstream ISP DOCSIS/fiber bufferbloat isolated via source-bound probing (`1.1.1.1` via `-S local_ip`).
+3. **Enterprise Overlay Tier**: Zscaler Client Connector (`utun` user-space NetworkExtension routing), MDM compliance syncs, and EDR packet filters.
 
 ---
 
@@ -34,33 +35,72 @@ These behaviors are **not** caused by ISP congestion or router hardware faults. 
 
 ---
 
-## 3. Core Mechanics & Technical Root Causes
+## 3. Three-Pillar Path Forensics & Root Causes
 
-### A. IEEE 802.11 Power Save Mode (PSM) & macOS Low Power Mode
-* **How it works**: When on battery power with macOS Low Power Mode enabled, macOS drastically reduces background radio polling. Solitary packets spaced 2 seconds apart cause the Wi-Fi PHY to remain in deep 802.11 Power Save Mode (PSM).
-* **The AP Queue**: The Access Point buffers downstream ICMP replies in its hardware queue until the next **Delivery Traffic Indication Message (DTIM)** beacon frame.
-* **The Latency Effect**: Packets wait **40–60ms** inside the AP buffer before being delivered over the air.
-* **AC Power / Normal Mode Difference**: When plugged into AC power with Low Power Mode disabled, the radio stays in normal power state, yielding a **5–8ms** resting floor.
+To definitively isolate where latency originates, `split-tunnel-monitor` concurrently probes three distinct network pillars:
 
 ```
-[Mac on Battery / Low Power Mode] ──(2s idle)──> [AP Buffers Reply] ──(Wait for DTIM Beacon ~50ms)──> [Frame Delivered]
+┌─────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                           THREE-PILLAR MULTI-PATH ARCHITECTURE                                  │
+├───────────────────────────────┬─────────────────────────────────┬───────────────────────────────┤
+│ PILLAR 1: LOCAL LAN GATEWAY   │ PILLAR 2: DIRECT ISP UNDERLAY   │ PILLAR 3: ZSCALER TUNNEL PATH │
+│ (Target: 192.168.xx.1)        │ (Target: 1.1.1.1 via -S local)  │ (Target: 9.9.9.9 via utun0)   │
+├───────────────────────────────┼─────────────────────────────────┼───────────────────────────────┤
+│ • Broadcom BCM4388 Wi-Fi PHY  │ • Local Wi-Fi PHY Hop           │ • Local Wi-Fi PHY Hop         │
+│ • 802.11 PSM DTIM Buffering   │ • Home Gateway NAT / Router     │ • Home Gateway NAT / Router   │
+│ • AWDL Off-Channel Scan       │ • ISP Cable/Fiber Modem         │ • ISP WAN Transport           │
+│ • EDR DriverKit Socket Hooks  │ • ISP Core & Cloudflare Edge    │ • Zscaler utun Encapsulation  │
+│                               │                                 │ • TLS Proxy Inspection        │
+│                               │                                 │ • ZIA Cloud Edge Gateway      │
+└───────────────────────────────┴─────────────────────────────────┴───────────────────────────────┘
 ```
 
-### B. The 21-Second Subprocess Wakeup Rhythm
-In network monitoring tools like `split-tunnel-monitor`, periodic rediscovery checks trigger system calls (`scutil`, `route -n get`, and background `traceroute -I`) every 10 iterations ($\approx 21\text{s}$). 
-* On battery/Low Power Mode, this burst of OS system calls immediately transitions the Wi-Fi radio from **Power Save (D3/Sleep)** into **Active (D0/High Power)**.
-* For that single iteration, round-trip time drops instantly from 55ms down to **4–7ms**, before decaying back to the 50ms PSM resting state.
+### Pillar 1: Local LAN Gateway Path (`192.168.xx.1`)
+Probing the local router isolates the first physical hop (macOS kernel $\rightarrow$ Wi-Fi radio $\rightarrow$ Access Point):
 
-### C. Apple Wireless Direct Link (AWDL) Social Channel Scanning
-* **How it works**: macOS maintains peer-to-peer Wi-Fi networks for AirDrop, AirPlay, Sidecar, and Universal Control over a virtual interface (`awdl0`).
-* **The Channel Hop**: Approximately every **1.0 to 1.5 seconds**, the Wi-Fi radio momentarily hops off the connected AP channel to 5GHz social channels (such as Channel 44 or 149) to exchange synchronization beacons.
-* **The Latency Effect**: Any frame transmitted or received during the off-channel window is queued for **20–85ms**, creating periodic latency spikes visible on both AC power and battery.
+1. **IEEE 802.11 Power Save Mode (PSM) & DTIM Buffering**:
+   * On battery with Low Power Mode ON, macOS puts the radio into deep PSM sleep between 2s probes.
+   * The AP buffers downstream ICMP replies until the next **Delivery Traffic Indication Message (DTIM)** beacon frame, holding packets for **40–60ms**.
+   * On AC power (or when active apps hold power assertions), the radio stays in active D0 state, immediately restoring a **3.5ms – 7.0ms** resting baseline.
+2. **Apple Wireless Direct Link (AWDL) Social Channel Scanning**:
+   * Every **10 to 22 seconds**, macOS hops the radio off the home AP channel (e.g. Channel 100) to 5GHz social channels (e.g. Channel 44/149) for AirDrop/Continuity beacons.
+   * All outbound frames during this 80ms window are queued, creating periodic **48ms – 96ms spikes** to the LAN gateway.
+3. **Enterprise EDR Socket Hooks (Defender ATP / Falcon)**:
+   * On corporate-managed Macs, endpoint security agents hook raw socket creation. Under background disk or network load, DriverKit queueing delays can push LAN gateway pings up to **100ms – 170ms+**.
 
-### D. Enterprise Security & VPN Stack Jitter (Corporate Macs)
-* **Zscaler Client Connector (`utun`)**: Traps outbound packets via Apple's user-space `NetworkExtension` provider. Thread scheduling, context switching, and TLS/DTLS encapsulation add variable microsecond-to-millisecond delays.
-* **Endpoint Detection & Response (EDR)**: Tools like CrowdStrike Falcon or Microsoft Defender ATP hook socket creation and network buffers. Telemetry reporting and process introspection introduce stochastic latency spikes up to 100ms+.
+### Pillar 2: Direct ISP Underlay Path (`1.1.1.1` via `-S local_ip`)
+Probing `1.1.1.1` with source IP binding (`ping -S <local_ip> 1.1.1.1`) bypasses the VPN default route, measuring the clean WAN underlay:
+
+1. **Underlay Latency Baseline**:
+   * On a healthy fiber/cable connection, Direct ISP sits at **7.0ms – 10.0ms** (Local Wi-Fi hop ~4ms + ISP transport ~4ms).
+2. **Isolating WAN Bufferbloat & Upstream Jitter**:
+   * If `1.1.1.1` spikes to **90ms – 102ms** while LAN gateway remains flat at **4.2ms**, the issue is 100% upstream on the ISP/WAN hop, ruling out local Wi-Fi.
+
+### Pillar 3: Zscaler Tunnel Path & Overhead (`9.9.9.9` & `OVH`)
+Probing `9.9.9.9` via the default route exercises the enterprise secure access layer:
+
+1. **Virtual Next-Hop Routing (`utun`)**:
+   * Packets are intercepted by Zscaler Client Connector via macOS `NetworkExtension`, encapsulated, encrypted, and routed to the nearest Zscaler Internet Access (ZIA) Public Service Edge.
+2. **Tunnel & Cloud Edge Latency**:
+   * Normal tunnel baseline sits at **9.0ms – 14.0ms**. Under cloud edge re-routing or TLS proxy re-evaluation, Zscaler pings spike to **92ms – 102ms** even when LAN and Direct ISP are low.
+3. **Mathematical Path Overhead (`OVH: p50/p95`)**:
+   * `split-tunnel-monitor` tracks rolling percentiles: $\Delta = RTT_{\text{Zscaler}} - RTT_{\text{Direct}}$.
+   * **Direct Routing Baseline**: Flat at $p50 = +0.3\text{ms to } +0.6\text{ms}$.
+   * **Zscaler Tunnel Tax**: Typically adds $+5\text{ms to } +15\text{ms}$ on $p50$, and $+30\text{ms to } +80\text{ms}$ on $p95$ during cloud edge contention.
 
 ---
+
+### Authoritative Multi-Path Fault Domain Triangulation
+
+| Monitored Pattern | LAN (`192.168.xx.1`) | ISP Direct (`1.1.1.1`) | Zscaler (`9.9.9.9`) | Root Cause / Fault Domain |
+| :--- | :--- | :--- | :--- | :--- |
+| **All Three Rise Together** | **Elevated (48–96ms)** | **Elevated (48–97ms)** | **Elevated (44–95ms)** | **Local Wi-Fi PHY / AWDL / PSM Event** (Hop 0) |
+| **WAN-Side Upstream Spike** | **Low (3.5–7.0ms)** | **Elevated (90–102ms)** | **Elevated (90–100ms)** | **Upstream ISP / WAN Bufferbloat** (Hop 1+) |
+| **Zscaler Tunnel Spike** | **Low (3.5–7.0ms)** | **Low (7.0–10.0ms)** | **Elevated (92–102ms)** | **Zscaler `utun` / ZIA Cloud Edge Event** (VPN Overlay) |
+| **Complete Outage** | **TIMEOUT / FAIL** | **TIMEOUT / FAIL** | **TIMEOUT / FAIL** | **Local Interface / Wi-Fi Disconnect** |
+
+---
+
 
 ### Trace 1a: Personal Mac (Apple M3) — Battery + Low Power Mode (PSM & AWDL Jitter) [re-verified]
 *Hardware: MacBook Pro (Apple M3) | Wi-Fi: Broadcom BCM4388 (`0x14E4/0x4388`, 6GHz) | Power: Battery (85%, discharging), Low Power Mode ON | macOS: 26.6.2 (Build 25G83) | CPU load avg (1/5/15min): 1.57 / 1.71 / 1.55 | Memory free: 53% | Python: CPython 3.14.3 (`pyenv`) | Targets: LAN Gateway `192.168.xx.1`, ISP Direct `1.1.1.1`, Zscaler `9.9.9.9` | Interval: 2.0s | 41 samples, 00:45:59–00:47:19*
