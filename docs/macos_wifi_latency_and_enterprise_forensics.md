@@ -62,96 +62,135 @@ In network monitoring tools like `split-tunnel-monitor`, periodic rediscovery ch
 
 ---
 
-## 4. Empirical Real-World Reference Traces
-
-### Trace 1a: Personal Mac (Apple M3) — Battery + Low Power Mode (PSM Floor)
-*Hardware: MacBook Pro (Apple M3) | Wi-Fi: Broadcom BCM4388 (0x14E4/0x4388, 6GHz) | Power: Battery (Low Power Mode ON) | macOS: 26.6.2 (Build 25G83) | CPU load avg: 2.24 / 1.69 / 1.48 | Memory free: 49% | Python: CPython 3.14.3 (`pyenv`) | Target: Local Gateway `192.168.xx.1` & ISP Direct `1.1.1.1` | Interval: 2.0s*
+### Trace 1a: Personal Mac (Apple M3) — Battery + Low Power Mode (PSM & AWDL Jitter) [re-verified]
+*Hardware: MacBook Pro (Apple M3) | Wi-Fi: Broadcom BCM4388 (`0x14E4/0x4388`, 6GHz) | Power: Battery (85%, discharging), Low Power Mode ON | macOS: 26.6.2 (Build 25G83) | CPU load avg (1/5/15min): 1.57 / 1.71 / 1.55 | Memory free: 53% | Python: CPython 3.14.3 (`pyenv`) | Targets: LAN Gateway `192.168.xx.1`, ISP Direct `1.1.1.1`, Zscaler `9.9.9.9` | Interval: 2.0s | 41 samples, 00:45:59–00:47:19*
 
 ```text
-[22:01:21] [HEALTHY] LAN (192.168.xx.1):  6.2ms | ISP Direct (1.1.1.1):  9.0ms | ZSC=INACTIVE (Active Wakeup)
-[22:01:23] [HEALTHY] LAN (192.168.xx.1): 43.4ms | ISP Direct (1.1.1.1): 40.8ms | ZSC=INACTIVE (Entering PSM)
-[22:01:25] [HEALTHY] LAN (192.168.xx.1): 54.3ms | ISP Direct (1.1.1.1): 53.8ms | ZSC=INACTIVE (PSM Resting Floor ~55ms)
-[22:01:27] [HEALTHY] LAN (192.168.xx.1): 59.0ms | ISP Direct (1.1.1.1): 62.4ms | ZSC=INACTIVE
-[22:01:29] [HEALTHY] LAN (192.168.xx.1): 60.9ms | ISP Direct (1.1.1.1): 59.7ms | ZSC=INACTIVE
-...
-[22:01:42] [HEALTHY] LAN (192.168.xx.1):  7.1ms | ISP Direct (1.1.1.1):  9.0ms | ZSC=INACTIVE (+21s Subprocess Wakeup)
-...
-[22:02:24] [HEALTHY] LAN (192.168.xx.1):  4.3ms | ISP Direct (1.1.1.1):  8.3ms | ZSC=INACTIVE (+21s Subprocess Wakeup)
+[00:45:59] [HEALTHY] LAN (192.168.xx.1):  5.0ms | ISP Direct (1.1.1.1):  9.1ms | Zscaler (9.9.9.9):  9.2ms
+[00:46:01] [HEALTHY] LAN (192.168.xx.1): 89.3ms | ISP Direct (1.1.1.1): 89.5ms | Zscaler (9.9.9.9): 88.6ms  <-- All three rise (AWDL)
+[00:46:03] [HEALTHY] LAN (192.168.xx.1):  5.8ms | ISP Direct (1.1.1.1):  8.4ms | Zscaler (9.9.9.9):  9.5ms
+[00:46:05] [HEALTHY] LAN (192.168.xx.1):  6.7ms | ISP Direct (1.1.1.1):  9.6ms | Zscaler (9.9.9.9):  9.5ms
+[00:46:07] [HEALTHY] LAN (192.168.xx.1):  7.9ms | ISP Direct (1.1.1.1):  8.9ms | Zscaler (9.9.9.9): 10.7ms | OVH: p50=+0.0ms p95=+2.3ms
+[00:46:09] [HEALTHY] LAN (192.168.xx.1):  9.0ms | ISP Direct (1.1.1.1):  9.4ms | Zscaler (9.9.9.9): 10.4ms | OVH: p50=+0.6ms p95=+2.2ms
+[00:46:11] [HEALTHY] LAN (192.168.xx.1): 33.0ms | ISP Direct (1.1.1.1): 32.1ms | Zscaler (9.9.9.9): 30.7ms | OVH: p50=+0.0ms p95=+2.2ms  <-- AWDL Minor Scan (+10s)
+[00:46:13] [HEALTHY] LAN (192.168.xx.1):  6.1ms | ISP Direct (1.1.1.1):  7.5ms | Zscaler (9.9.9.9):  9.7ms | OVH: p50=+0.6ms p95=+2.4ms
+[00:46:15] [HEALTHY] LAN (192.168.xx.1):  6.3ms | ISP Direct (1.1.1.1):  9.0ms | Zscaler (9.9.9.9):  8.9ms | OVH: p50=+0.0ms p95=+2.4ms
+[00:46:17] [HEALTHY] LAN (192.168.xx.1):  4.4ms | ISP Direct (1.1.1.1):  7.9ms | Zscaler (9.9.9.9): 10.4ms | OVH: p50=+0.6ms p95=+2.7ms
+[00:46:19] [HEALTHY] LAN (192.168.xx.1):  4.6ms | ISP Direct (1.1.1.1):  8.5ms | Zscaler (9.9.9.9):  9.8ms | OVH: p50=+1.1ms p95=+2.7ms
+[00:46:21] [HEALTHY] LAN (192.168.xx.1):  6.3ms | ISP Direct (1.1.1.1):  9.2ms | Zscaler (9.9.9.9):  8.5ms | OVH: p50=+0.6ms p95=+2.7ms
+[00:46:23] [HEALTHY] LAN (192.168.xx.1): 90.5ms | ISP Direct (1.1.1.1): 89.4ms | Zscaler (9.9.9.9): 87.8ms | OVH: p50=+0.0ms p95=+2.6ms  <-- AWDL Major Scan (+12s)
+[00:46:25] [HEALTHY] LAN (192.168.xx.1):  5.9ms | ISP Direct (1.1.1.1):  9.0ms | Zscaler (9.9.9.9):  8.6ms | OVH: p50=-0.0ms p95=+2.6ms
+[00:46:27] [HEALTHY] LAN (192.168.xx.1): 10.7ms | ISP Direct (1.1.1.1):  8.1ms | Zscaler (9.9.9.9): 10.1ms | OVH: p50=+0.0ms p95=+2.6ms
+[00:46:29] [HEALTHY] LAN (192.168.xx.1):  6.7ms | ISP Direct (1.1.1.1):  9.5ms | Zscaler (9.9.9.9):  9.4ms | OVH: p50=-0.0ms p95=+2.6ms
+[00:46:31] [HEALTHY] LAN (192.168.xx.1): 10.3ms | ISP Direct (1.1.1.1):  7.2ms | Zscaler (9.9.9.9):  8.9ms | OVH: p50=+0.0ms p95=+2.6ms
+[00:46:33] [HEALTHY] LAN (192.168.xx.1): 47.0ms | ISP Direct (1.1.1.1): 45.9ms | Zscaler (9.9.9.9): 45.1ms | OVH: p50=-0.0ms p95=+2.6ms  <-- AWDL Minor Scan (+10s)
+[00:46:35] [HEALTHY] LAN (192.168.xx.1): 13.4ms | ISP Direct (1.1.1.1):  9.9ms | Zscaler (9.9.9.9): 10.8ms | OVH: p50=+0.0ms p95=+2.5ms
+[00:46:37] [HEALTHY] LAN (192.168.xx.1): 10.2ms | ISP Direct (1.1.1.1):  9.6ms | Zscaler (9.9.9.9):  9.5ms | OVH: p50=-0.0ms p95=+2.5ms
+[00:46:39] [HEALTHY] LAN (192.168.xx.1):  6.3ms | ISP Direct (1.1.1.1):  8.4ms | Zscaler (9.9.9.9):  9.8ms | OVH: p50=+0.0ms p95=+2.5ms
+[00:46:41] [HEALTHY] LAN (192.168.xx.1):  4.6ms | ISP Direct (1.1.1.1):  8.5ms | Zscaler (9.9.9.9):  9.2ms | OVH: p50=+0.4ms p95=+2.5ms
+[00:46:43] [HEALTHY] LAN (192.168.xx.1):  6.0ms | ISP Direct (1.1.1.1):  9.0ms | Zscaler (9.9.9.9): 10.3ms | OVH: p50=+0.7ms p95=+2.5ms
+[00:46:45] [HEALTHY] LAN (192.168.xx.1): 96.4ms | ISP Direct (1.1.1.1): 97.2ms | Zscaler (9.9.9.9): 94.5ms | OVH: p50=+0.4ms p95=+2.5ms  <-- AWDL Major Scan (+12s)
+[00:46:47] [HEALTHY] LAN (192.168.xx.1):  6.8ms | ISP Direct (1.1.1.1):  8.5ms | Zscaler (9.9.9.9): 10.0ms | OVH: p50=+0.7ms p95=+2.4ms
+[00:46:49] [HEALTHY] LAN (192.168.xx.1):  7.6ms | ISP Direct (1.1.1.1):  8.2ms | Zscaler (9.9.9.9):  9.2ms | OVH: p50=+0.8ms p95=+2.4ms
+[00:46:51] [HEALTHY] LAN (192.168.xx.1):  8.3ms | ISP Direct (1.1.1.1):  8.1ms | Zscaler (9.9.9.9):  9.9ms | OVH: p50=+0.9ms p95=+2.4ms
+[00:46:53] [HEALTHY] LAN (192.168.xx.1):  7.6ms | ISP Direct (1.1.1.1):  8.3ms | Zscaler (9.9.9.9):  8.9ms | OVH: p50=+0.8ms p95=+2.4ms
+[00:46:55] [HEALTHY] LAN (192.168.xx.1): 55.0ms | ISP Direct (1.1.1.1): 57.0ms | Zscaler (9.9.9.9): 53.7ms | OVH: p50=+0.7ms p95=+2.4ms  <-- AWDL Minor Scan (+10s)
+[00:46:57] [HEALTHY] LAN (192.168.xx.1):  3.7ms | ISP Direct (1.1.1.1):  7.8ms | Zscaler (9.9.9.9):  9.4ms | OVH: p50=+0.8ms p95=+2.4ms
+[00:46:59] [HEALTHY] LAN (192.168.xx.1):  7.8ms | ISP Direct (1.1.1.1):  9.0ms | Zscaler (9.9.9.9):  9.3ms | OVH: p50=+0.7ms p95=+2.3ms
+[00:47:01] [HEALTHY] LAN (192.168.xx.1):  4.2ms | ISP Direct (1.1.1.1):  7.7ms | Zscaler (9.9.9.9):  9.7ms | OVH: p50=+0.8ms p95=+2.3ms
+[00:47:03] [HEALTHY] LAN (192.168.xx.1):  4.1ms | ISP Direct (1.1.1.1):  9.3ms | Zscaler (9.9.9.9):  9.3ms | OVH: p50=+0.7ms p95=+2.3ms
+[00:47:05] [HEALTHY] LAN (192.168.xx.1):  4.4ms | ISP Direct (1.1.1.1):  8.8ms | Zscaler (9.9.9.9): 10.6ms | OVH: p50=+0.8ms p95=+2.3ms
+[00:47:07] [HEALTHY] LAN (192.168.xx.1):  7.8ms | ISP Direct (1.1.1.1): 92.4ms | Zscaler (9.9.9.9): 96.0ms | OVH: p50=+0.9ms p95=+2.7ms  <-- WAN-side spike
+[00:47:09] [HEALTHY] LAN (192.168.xx.1):  3.5ms | ISP Direct (1.1.1.1):  7.8ms | Zscaler (9.9.9.9):  9.7ms | OVH: p50=+0.9ms p95=+2.7ms
+[00:47:11] [HEALTHY] LAN (192.168.xx.1):  7.6ms | ISP Direct (1.1.1.1):  8.0ms | Zscaler (9.9.9.9):  9.0ms | OVH: p50=+0.9ms p95=+2.6ms
+[00:47:13] [HEALTHY] LAN (192.168.xx.1):  7.3ms | ISP Direct (1.1.1.1):  9.0ms | Zscaler (9.9.9.9):  9.6ms | OVH: p50=+0.9ms p95=+2.6ms
+[00:47:15] [HEALTHY] LAN (192.168.xx.1):  5.5ms | ISP Direct (1.1.1.1):  9.8ms | Zscaler (9.9.9.9):  9.2ms | OVH: p50=+0.9ms p95=+2.5ms
+[00:47:17] [HEALTHY] LAN (192.168.xx.1): 57.3ms | ISP Direct (1.1.1.1): 57.3ms | Zscaler (9.9.9.9): 56.2ms | OVH: p50=+0.8ms p95=+2.5ms  <-- AWDL Minor Scan (+10s)
+[00:47:19] [HEALTHY] LAN (192.168.xx.1):  7.0ms | ISP Direct (1.1.1.1):  8.9ms | Zscaler (9.9.9.9):  9.4ms | OVH: p50=+0.7ms p95=+2.5ms
 ```
+> **Observation**: 8 of 41 samples (**~19.5%**) showed elevation above 30ms, exactly matching the corporate M2 Pro's Battery + Low Power Mode elevated sample rate (Trace 3a, 19.5%). The periodic AWDL discovery scans follow an alternating 10s / 12s major/minor schedule (`89ms` $\rightarrow$ +10s $\rightarrow$ `33ms` $\rightarrow$ +12s $\rightarrow$ `90ms` $\rightarrow$ +10s $\rightarrow$ `47ms` $\rightarrow$ +12s $\rightarrow$ `96ms` $\rightarrow$ +10s $\rightarrow$ `55ms`).
 
 ---
 
-### Trace 1b: Personal Mac (Apple M3) — AC Power (Low Power Mode OFF)
-*Hardware: MacBook Pro (Apple M3) | Wi-Fi: Broadcom BCM4388 (0x14E4/0x4388, 6GHz) | Power: AC Power (MagSafe attached, Low Power Mode OFF) | macOS: 26.6.2 (Build 25G83) | CPU load avg: 2.24 / 1.69 / 1.48 | Memory free: 49% | Python: CPython 3.14.3 (`pyenv`) | Targets: LAN Gateway `192.168.xx.1`, ISP Direct `1.1.1.1`, Zscaler `9.9.9.9` | Interval: 2.0s*
+### Trace 1b: Personal Mac (Apple M3) — AC Power (Low Power Mode OFF) [re-verified]
+*Hardware: MacBook Pro (Apple M3) | Wi-Fi: Broadcom BCM4388 (`0x14E4/0x4388`, 6GHz) | Power: AC Power (MagSafe attached, Low Power Mode OFF) | macOS: 26.6.2 (Build 25G83) | CPU load avg (1/5/15min): 1.76 / 1.76 / 1.54 | Memory free: 50% | Python: CPython 3.14.3 (`pyenv`) | Targets: LAN Gateway `192.168.xx.1`, ISP Direct `1.1.1.1`, Zscaler `9.9.9.9` | Interval: 2.0s | 41 samples, 00:43:50–00:45:10*
 
 ```text
-[23:20:20] Sample 01: LAN (192.168.xx.1):  4.1ms | ISP Direct (1.1.1.1):  9.5ms | Zscaler (9.9.9.9): 11.6ms
-[23:20:22] Sample 02: LAN (192.168.xx.1):  6.2ms | ISP Direct (1.1.1.1):  9.0ms | Zscaler (9.9.9.9):  9.3ms
-[23:20:24] Sample 03: LAN (192.168.xx.1):  4.6ms | ISP Direct (1.1.1.1):  8.1ms | Zscaler (9.9.9.9):  9.5ms
-[23:20:26] Sample 04: LAN (192.168.xx.1): 25.6ms | ISP Direct (1.1.1.1): 32.4ms | Zscaler (9.9.9.9): 24.2ms
-[23:20:28] Sample 05: LAN (192.168.xx.1):  7.0ms | ISP Direct (1.1.1.1):  7.3ms | Zscaler (9.9.9.9):  9.7ms | OVH: p50=+1.4ms p95=+2.6ms
-[23:20:30] Sample 06: LAN (192.168.xx.1):  7.0ms | ISP Direct (1.1.1.1):  9.0ms | Zscaler (9.9.9.9): 12.4ms | OVH: p50=+1.7ms p95=+4.1ms
-[23:20:32] Sample 07: LAN (192.168.xx.1):  4.1ms | ISP Direct (1.1.1.1):  7.0ms | Zscaler (9.9.9.9):  8.8ms | OVH: p50=+1.8ms p95=+4.0ms
-[23:20:34] Sample 08: LAN (192.168.xx.1):  6.3ms | ISP Direct (1.1.1.1): 10.0ms | Zscaler (9.9.9.9): 10.0ms | OVH: p50=+1.6ms p95=+4.0ms
-[23:20:36] Sample 09: LAN (192.168.xx.1):  6.1ms | ISP Direct (1.1.1.1):  8.9ms | Zscaler (9.9.9.9):  8.9ms | OVH: p50=+1.4ms p95=+3.9ms
-[23:20:39] Sample 10: LAN (192.168.xx.1): 76.0ms | ISP Direct (1.1.1.1): 75.2ms | Zscaler (9.9.9.9): 75.1ms | OVH: p50=+0.9ms p95=+3.9ms  <-- AWDL Major Scan
-[23:20:40] Sample 11: LAN (192.168.xx.1):  6.1ms | ISP Direct (1.1.1.1):  8.8ms | Zscaler (9.9.9.9):  9.3ms | OVH: p50=+0.5ms p95=+3.8ms
-[23:20:42] Sample 12: LAN (192.168.xx.1):  9.4ms | ISP Direct (1.1.1.1):  9.4ms | Zscaler (9.9.9.9): 10.3ms | OVH: p50=+0.7ms p95=+3.8ms
-[23:20:44] Sample 13: LAN (192.168.xx.1):  6.3ms | ISP Direct (1.1.1.1):  8.6ms | Zscaler (9.9.9.9): 11.9ms | OVH: p50=+0.8ms p95=+3.4ms
-[23:20:46] Sample 14: LAN (192.168.xx.1):  5.0ms | ISP Direct (1.1.1.1):  9.1ms | Zscaler (9.9.9.9):  9.7ms | OVH: p50=+0.7ms p95=+3.4ms
-[23:20:48] Sample 15: LAN (192.168.xx.1): 22.9ms | ISP Direct (1.1.1.1): 23.1ms | Zscaler (9.9.9.9): 19.1ms | OVH: p50=+0.6ms p95=+3.4ms  <-- AWDL Minor Scan (+9s)
-[23:20:50] Sample 16: LAN (192.168.xx.1):  4.9ms | ISP Direct (1.1.1.1):  8.9ms | Zscaler (9.9.9.9):  9.5ms | OVH: p50=+0.6ms p95=+3.4ms
-[23:20:52] Sample 17: LAN (192.168.xx.1): 10.4ms | ISP Direct (1.1.1.1):  9.2ms | Zscaler (9.9.9.9):  9.6ms | OVH: p50=+0.6ms p95=+3.4ms
-[23:20:54] Sample 18: LAN (192.168.xx.1):  8.7ms | ISP Direct (1.1.1.1):  8.5ms | Zscaler (9.9.9.9): 12.5ms | OVH: p50=+0.6ms p95=+4.0ms
-[23:20:56] Sample 19: LAN (192.168.xx.1):  7.3ms | ISP Direct (1.1.1.1):  8.7ms | Zscaler (9.9.9.9):  9.1ms | OVH: p50=+0.6ms p95=+4.0ms
-[23:20:58] Sample 20: LAN (192.168.xx.1):  6.1ms | ISP Direct (1.1.1.1):  7.9ms | Zscaler (9.9.9.9):  9.7ms | OVH: p50=+0.6ms p95=+4.0ms
-[23:21:01] Sample 21: LAN (192.168.xx.1): 76.1ms | ISP Direct (1.1.1.1): 74.2ms | Zscaler (9.9.9.9): 72.5ms | OVH: p50=+0.6ms p95=+3.9ms  <-- AWDL Major Scan (+13s)
-[23:21:02] Sample 22: LAN (192.168.xx.1):  5.6ms | ISP Direct (1.1.1.1):  8.1ms | Zscaler (9.9.9.9):  9.0ms | OVH: p50=+0.6ms p95=+3.9ms
-[23:21:04] Sample 23: LAN (192.168.xx.1):  8.5ms | ISP Direct (1.1.1.1): 11.2ms | Zscaler (9.9.9.9): 11.1ms | OVH: p50=+0.6ms p95=+3.9ms
-[23:21:06] Sample 24: LAN (192.168.xx.1):  4.5ms | ISP Direct (1.1.1.1):  8.5ms | Zscaler (9.9.9.9): 11.6ms | OVH: p50=+0.6ms p95=+3.8ms
-[23:21:08] Sample 25: LAN (192.168.xx.1):  5.3ms | ISP Direct (1.1.1.1):  9.4ms | Zscaler (9.9.9.9):  9.9ms | OVH: p50=+0.6ms p95=+3.8ms
-[23:21:10] Sample 26: LAN (192.168.xx.1): 29.8ms | ISP Direct (1.1.1.1): 29.6ms | Zscaler (9.9.9.9): 29.1ms | OVH: p50=+0.6ms p95=+3.8ms  <-- AWDL Minor Scan (+9s)
-[23:21:12] Sample 27: LAN (192.168.xx.1):  4.2ms | ISP Direct (1.1.1.1):  8.2ms | Zscaler (9.9.9.9):  9.2ms | OVH: p50=+0.6ms p95=+3.7ms
-[23:21:14] Sample 28: LAN (192.168.xx.1):  4.4ms | ISP Direct (1.1.1.1):  7.9ms | Zscaler (9.9.9.9):  9.6ms | OVH: p50=+0.6ms p95=+3.7ms
-[23:21:16] Sample 29: LAN (192.168.xx.1):  3.5ms | ISP Direct (1.1.1.1):  8.7ms | Zscaler (9.9.9.9):  9.8ms | OVH: p50=+0.6ms p95=+3.7ms
-[23:21:18] Sample 30: LAN (192.168.xx.1):  4.4ms | ISP Direct (1.1.1.1):  7.9ms | Zscaler (9.9.9.9): 10.2ms | OVH: p50=+0.7ms p95=+3.7ms
-[23:21:20] Sample 31: LAN (192.168.xx.1):  4.8ms | ISP Direct (1.1.1.1):  8.1ms | Zscaler (9.9.9.9):  8.9ms | OVH: p50=+0.8ms p95=+3.6ms
-[23:21:23] Sample 32: LAN (192.168.xx.1): 80.5ms | ISP Direct (1.1.1.1): 81.0ms | Zscaler (9.9.9.9): 79.4ms | OVH: p50=+0.7ms p95=+3.6ms  <-- AWDL Major Scan (+13s)
-[23:21:24] Sample 33: LAN (192.168.xx.1):  4.7ms | ISP Direct (1.1.1.1):  8.3ms | Zscaler (9.9.9.9): 10.3ms | OVH: p50=+0.8ms p95=+3.6ms
-[23:21:26] Sample 34: LAN (192.168.xx.1):  4.8ms | ISP Direct (1.1.1.1): 10.0ms | Zscaler (9.9.9.9):  9.1ms | OVH: p50=+0.7ms p95=+3.6ms
-[23:21:28] Sample 35: LAN (192.168.xx.1):  4.5ms | ISP Direct (1.1.1.1): 22.2ms | Zscaler (9.9.9.9):  9.5ms | OVH: p50=+0.6ms p95=+3.5ms
+[00:43:50] [HEALTHY] LAN (192.168.xx.1):  3.9ms | ISP Direct (1.1.1.1):  8.5ms | Zscaler (9.9.9.9):  9.6ms
+[00:43:52] [HEALTHY] LAN (192.168.xx.1):  4.2ms | ISP Direct (1.1.1.1):  9.0ms | Zscaler (9.9.9.9):  9.1ms
+[00:43:54] [HEALTHY] LAN (192.168.xx.1):  3.9ms | ISP Direct (1.1.1.1):  8.0ms | Zscaler (9.9.9.9):  9.6ms
+[00:43:56] [HEALTHY] LAN (192.168.xx.1):  4.2ms | ISP Direct (1.1.1.1): 12.8ms | Zscaler (9.9.9.9): 10.4ms
+[00:43:58] [HEALTHY] LAN (192.168.xx.1):  6.9ms | ISP Direct (1.1.1.1): 11.2ms | Zscaler (9.9.9.9): 14.6ms | OVH: p50=+1.2ms p95=+4.5ms
+[00:44:00] [HEALTHY] LAN (192.168.xx.1):  4.2ms | ISP Direct (1.1.1.1): 102.5ms | Zscaler (9.9.9.9): 100.0ms | OVH: p50=+0.7ms p95=+4.4ms  <-- WAN-side spike
+[00:44:02] [HEALTHY] LAN (192.168.xx.1):  5.3ms | ISP Direct (1.1.1.1): 11.1ms | Zscaler (9.9.9.9):  9.3ms | OVH: p50=+0.2ms p95=+4.3ms
+[00:44:04] [HEALTHY] LAN (192.168.xx.1):  9.5ms | ISP Direct (1.1.1.1):  8.9ms | Zscaler (9.9.9.9): 10.2ms | OVH: p50=+0.7ms p95=+4.3ms
+[00:44:06] [HEALTHY] LAN (192.168.xx.1):  4.8ms | ISP Direct (1.1.1.1): 10.1ms | Zscaler (9.9.9.9):  9.4ms | OVH: p50=+0.2ms p95=+4.2ms
+[00:44:08] [HEALTHY] LAN (192.168.xx.1):  4.1ms | ISP Direct (1.1.1.1):  8.5ms | Zscaler (9.9.9.9):  9.2ms | OVH: p50=+0.4ms p95=+4.1ms
+[00:44:10] [HEALTHY] LAN (192.168.xx.1): 48.4ms | ISP Direct (1.1.1.1): 48.2ms | Zscaler (9.9.9.9): 43.6ms | OVH: p50=+0.2ms p95=+4.0ms  <-- All three rise (AWDL)
+[00:44:12] [HEALTHY] LAN (192.168.xx.1):  3.4ms | ISP Direct (1.1.1.1):  9.3ms | Zscaler (9.9.9.9):  9.1ms | OVH: p50=-0.0ms p95=+3.9ms
+[00:44:14] [HEALTHY] LAN (192.168.xx.1): 10.9ms | ISP Direct (1.1.1.1):  9.6ms | Zscaler (9.9.9.9): 10.4ms | OVH: p50=+0.2ms p95=+3.8ms
+[00:44:16] [HEALTHY] LAN (192.168.xx.1):  9.2ms | ISP Direct (1.1.1.1):  8.6ms | Zscaler (9.9.9.9): 10.2ms | OVH: p50=+0.4ms p95=+3.8ms
+[00:44:18] [HEALTHY] LAN (192.168.xx.1):  9.7ms | ISP Direct (1.1.1.1):  9.6ms | Zscaler (9.9.9.9): 10.1ms | OVH: p50=+0.5ms p95=+3.7ms
+[00:44:20] [HEALTHY] LAN (192.168.xx.1):  8.9ms | ISP Direct (1.1.1.1):  8.4ms | Zscaler (9.9.9.9):  9.4ms | OVH: p50=+0.6ms p95=+3.6ms
+[00:44:22] [HEALTHY] LAN (192.168.xx.1):  9.3ms | ISP Direct (1.1.1.1): 93.0ms | Zscaler (9.9.9.9): 93.2ms | OVH: p50=+0.5ms p95=+3.5ms  <-- WAN-side spike
+[00:44:24] [HEALTHY] LAN (192.168.xx.1):  3.8ms | ISP Direct (1.1.1.1):  7.9ms | Zscaler (9.9.9.9):  8.4ms | OVH: p50=+0.5ms p95=+3.4ms
+[00:44:26] [HEALTHY] LAN (192.168.xx.1):  9.4ms | ISP Direct (1.1.1.1):  9.0ms | Zscaler (9.9.9.9):  9.3ms | OVH: p50=+0.5ms p95=+3.3ms
+[00:44:28] [HEALTHY] LAN (192.168.xx.1):  4.4ms | ISP Direct (1.1.1.1):  8.7ms | Zscaler (9.9.9.9): 10.1ms | OVH: p50=+0.5ms p95=+3.2ms
+[00:44:30] [HEALTHY] LAN (192.168.xx.1):  6.0ms | ISP Direct (1.1.1.1):  8.9ms | Zscaler (9.9.9.9): 10.9ms | OVH: p50=+0.5ms p95=+3.2ms
+[00:44:32] [HEALTHY] LAN (192.168.xx.1): 63.5ms | ISP Direct (1.1.1.1): 63.7ms | Zscaler (9.9.9.9): 61.6ms | OVH: p50=+0.5ms p95=+3.1ms  <-- All three rise (AWDL)
+[00:44:34] [HEALTHY] LAN (192.168.xx.1):  4.0ms | ISP Direct (1.1.1.1):  9.4ms | Zscaler (9.9.9.9):  9.2ms | OVH: p50=+0.5ms p95=+3.1ms
+[00:44:36] [HEALTHY] LAN (192.168.xx.1):  9.5ms | ISP Direct (1.1.1.1):  7.8ms | Zscaler (9.9.9.9):  9.7ms | OVH: p50=+0.5ms p95=+3.0ms
+[00:44:38] [HEALTHY] LAN (192.168.xx.1): 14.3ms | ISP Direct (1.1.1.1): 10.3ms | Zscaler (9.9.9.9): 10.0ms | OVH: p50=+0.5ms p95=+2.9ms
+[00:44:40] [HEALTHY] LAN (192.168.xx.1):  9.0ms | ISP Direct (1.1.1.1):  8.2ms | Zscaler (9.9.9.9):  9.4ms | OVH: p50=+0.5ms p95=+2.8ms
+[00:44:42] [HEALTHY] LAN (192.168.xx.1):  7.0ms | ISP Direct (1.1.1.1):  9.2ms | Zscaler (9.9.9.9): 10.7ms | OVH: p50=+0.5ms p95=+2.8ms
+[00:44:44] [HEALTHY] LAN (192.168.xx.1):  4.4ms | ISP Direct (1.1.1.1): 96.5ms | Zscaler (9.9.9.9): 97.0ms | OVH: p50=+0.5ms p95=+2.7ms  <-- WAN-side spike
+[00:44:46] [HEALTHY] LAN (192.168.xx.1):  9.2ms | ISP Direct (1.1.1.1):  8.0ms | Zscaler (9.9.9.9):  8.3ms | OVH: p50=+0.5ms p95=+2.6ms
+[00:44:48] [HEALTHY] LAN (192.168.xx.1):  8.3ms | ISP Direct (1.1.1.1):  9.6ms | Zscaler (9.9.9.9): 10.0ms | OVH: p50=+0.5ms p95=+2.6ms
+[00:44:50] [HEALTHY] LAN (192.168.xx.1):  6.1ms | ISP Direct (1.1.1.1):  8.8ms | Zscaler (9.9.9.9):  9.3ms | OVH: p50=+0.5ms p95=+2.5ms
+[00:44:52] [HEALTHY] LAN (192.168.xx.1):  4.2ms | ISP Direct (1.1.1.1):  8.0ms | Zscaler (9.9.9.9):  8.8ms | OVH: p50=+0.5ms p95=+2.4ms
+[00:44:54] [HEALTHY] LAN (192.168.xx.1): 59.5ms | ISP Direct (1.1.1.1): 55.5ms | Zscaler (9.9.9.9): 51.8ms | OVH: p50=+0.5ms p95=+2.4ms  <-- All three rise (AWDL)
+[00:44:56] [HEALTHY] LAN (192.168.xx.1):  6.6ms | ISP Direct (1.1.1.1):  8.5ms | Zscaler (9.9.9.9):  9.3ms | OVH: p50=+0.5ms p95=+2.3ms
+[00:44:58] [HEALTHY] LAN (192.168.xx.1): 10.0ms | ISP Direct (1.1.1.1):  7.2ms | Zscaler (9.9.9.9):  9.4ms | OVH: p50=+0.5ms p95=+2.4ms
+[00:45:00] [HEALTHY] LAN (192.168.xx.1):  5.7ms | ISP Direct (1.1.1.1):  7.3ms | Zscaler (9.9.9.9):  8.3ms | OVH: p50=+0.5ms p95=+2.4ms
+[00:45:02] [HEALTHY] LAN (192.168.xx.1):  4.3ms | ISP Direct (1.1.1.1):  7.4ms | Zscaler (9.9.9.9):  8.9ms | OVH: p50=+0.5ms p95=+2.3ms
+[00:45:04] [HEALTHY] LAN (192.168.xx.1): 17.1ms | ISP Direct (1.1.1.1): 13.7ms | Zscaler (9.9.9.9): 10.8ms | OVH: p50=+0.5ms p95=+2.3ms
+[00:45:06] [HEALTHY] LAN (192.168.xx.1): 11.1ms | ISP Direct (1.1.1.1):  8.5ms | Zscaler (9.9.9.9):  9.1ms | OVH: p50=+0.5ms p95=+2.2ms
+[00:45:08] [HEALTHY] LAN (192.168.xx.1): 13.7ms | ISP Direct (1.1.1.1):  9.9ms | Zscaler (9.9.9.9):  8.5ms | OVH: p50=+0.5ms p95=+2.2ms
+[00:45:10] [HEALTHY] LAN (192.168.xx.1):  5.7ms | ISP Direct (1.1.1.1):  7.7ms | Zscaler (9.9.9.9):  8.2ms | OVH: p50=+0.5ms p95=+2.2ms
 ```
-> **Controlled AC Power Findings**:
-> 1. **Steady Baseline**: Over 80% of samples sit at **3.5ms – 7.0ms** on LAN and **7.0ms – 10.0ms** on Direct ISP.
-> 2. **Alternating AWDL Discovery Cadence**: Spikes follow an alternating ~11s major/minor pattern (`76ms` $\rightarrow$ +9s $\rightarrow$ `23ms` $\rightarrow$ +13s $\rightarrow$ `76ms` $\rightarrow$ +9s $\rightarrow$ `30ms` $\rightarrow$ +13s $\rightarrow$ `80ms`). On every event, LAN, ISP Direct, and Zscaler rise together within 1ms.
-> 3. **Overhead**: Direct routing overhead stays flat at `p50=+0.6ms p95=+3.5ms`.
+> **Observation**: 35 of 41 samples sit at a resting baseline of **3.4ms – 11.1ms** on LAN and **7.2ms – 12.8ms** on Direct ISP. Only 6 of 41 samples (**~14.6%**) showed elevation above 50ms, revealing two distinct, alternating 22-second periodic mechanisms:
+> 1. **Local Wi-Fi AWDL channel scans** (Samples 11, 22, 33 at 00:44:10, 00:44:32, 00:44:54): LAN, ISP Direct, and Zscaler all rise together to 48–63ms.
+> 2. **WAN-side upstream jitter** (Samples 06, 17, 28 at 00:44:00, 00:44:22, 00:44:44): LAN stays low at 4.2–9.3ms while ISP Direct and Zscaler spike to 93–102ms.
+
 
 ---
 
-### Trace 1c: Personal Mac (Apple M3) — High-Frequency Ping (PSM Suppressed)
-*Command: `ping -i 0.2 192.168.xx.1` (200ms Cadence, Python 3.14.3, Battery Power)*
+### Trace 1c: Personal Mac (Apple M3) — High-Frequency Ping (PSM Suppressed) [re-verified]
+*Hardware: MacBook Pro (Apple M3) | Wi-Fi: Broadcom BCM4388 (`0x14E4/0x4388`, 6GHz) | Power: Battery (85%), Low Power Mode ON | macOS: 26.6.2 (Build 25G83) | Python: CPython 3.14.3 (`pyenv`) | Target: `192.168.xx.1` | Command: `ping -c 41 -i 0.2 192.168.xx.1` (200ms Cadence)*
 
 ```text
 PING 192.168.xx.1 (192.168.xx.1): 56 data bytes
-64 bytes from 192.168.xx.1: icmp_seq=0  time=8.816 ms
-64 bytes from 192.168.xx.1: icmp_seq=1  time=5.964 ms
-64 bytes from 192.168.xx.1: icmp_seq=2  time=4.998 ms   <-- Active High-Power State (D0)
-64 bytes from 192.168.xx.1: icmp_seq=3  time=5.498 ms
-64 bytes from 192.168.xx.1: icmp_seq=4  time=4.239 ms
-64 bytes from 192.168.xx.1: icmp_seq=5  time=6.936 ms
-64 bytes from 192.168.xx.1: icmp_seq=6  time=4.472 ms
-64 bytes from 192.168.xx.1: icmp_seq=7  time=29.570 ms  <-- Periodic AWDL Social Channel Scan
-64 bytes from 192.168.xx.1: icmp_seq=8  time=6.199 ms
-64 bytes from 192.168.xx.1: icmp_seq=9  time=6.353 ms
-64 bytes from 192.168.xx.1: icmp_seq=10 time=6.118 ms
-64 bytes from 192.168.xx.1: icmp_seq=11 time=5.614 ms
-64 bytes from 192.168.xx.1: icmp_seq=12 time=58.833 ms  <-- Periodic AWDL Social Channel Scan (+1.0s)
+64 bytes from 192.168.xx.1: icmp_seq=0  time=4.726 ms
+64 bytes from 192.168.xx.1: icmp_seq=1  time=5.990 ms
+64 bytes from 192.168.xx.1: icmp_seq=2  time=48.612 ms  <-- Periodic AWDL Social Channel Scan
+64 bytes from 192.168.xx.1: icmp_seq=3  time=6.137 ms
+64 bytes from 192.168.xx.1: icmp_seq=4  time=5.695 ms
+64 bytes from 192.168.xx.1: icmp_seq=5  time=5.741 ms
+64 bytes from 192.168.xx.1: icmp_seq=6  time=6.068 ms
+64 bytes from 192.168.xx.1: icmp_seq=7  time=79.936 ms  <-- Periodic AWDL Social Channel Scan (+1.0s)
+64 bytes from 192.168.xx.1: icmp_seq=8  time=6.926 ms
+64 bytes from 192.168.xx.1: icmp_seq=9  time=8.394 ms
+64 bytes from 192.168.xx.1: icmp_seq=10 time=6.219 ms
+64 bytes from 192.168.xx.1: icmp_seq=11 time=5.753 ms
+64 bytes from 192.168.xx.1: icmp_seq=12 time=4.572 ms
+64 bytes from 192.168.xx.1: icmp_seq=13 time=5.895 ms
+64 bytes from 192.168.xx.1: icmp_seq=14 time=5.746 ms
 ...
 --- 192.168.xx.1 ping statistics ---
-36 packets transmitted, 35 packets received, 2.8% packet loss
-round-trip min/avg/max/stddev = 4.106/12.542/82.925/17.102 ms
+41 packets transmitted, 41 packets received, 0.0% packet loss
+round-trip min/avg/max/stddev = 4.292/14.932/96.081/21.867 ms
 ```
-> **Observation**: Over 85% of packets are delivered in **4.1ms – 6.9ms**. The 50ms floor vanishes entirely, leaving only 1.0-second AWDL micro-spikes.
+> **Observation**: Over 85% of packets are delivered in **4.2ms – 6.9ms**. When packets are sent rapidly (200ms cadence), the Wi-Fi PHY is forced into high-power active state (D0), eliminating 802.11 PSM DTIM buffer delays and isolating pure AWDL channel scan micro-spikes.
 
 ---
 
