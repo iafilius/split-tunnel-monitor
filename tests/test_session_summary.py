@@ -206,3 +206,22 @@ class TestSessionSummary:
         except asyncio.CancelledError:
             pass
 
+    def test_version_in_session_summary(self):
+        from ping_checker import __version__, __log_schema__
+        output = _run_summary()
+        assert f"v{__version__}" in output
+        assert f"log-schema: {__log_schema__}" in output
+        assert f"Version:     {__version__}" in output
+
+    def test_write_log_footer(self, tmp_path):
+        from ping_checker import _write_log_footer, __version__, __log_schema__
+        test_file = tmp_path / "test.log"
+        test_file.write_text("# header\n")
+        _write_log_footer(str(test_file), status_counts={"HEALTHY": 10, "DEGRADED": 2, "OUTAGE": 0, "INFO": 1})
+        content = test_file.read_text()
+        assert "# Session Stopped:" in content
+        assert f"Version: {__version__}" in content
+        assert f"Schema: {__log_schema__}" in content
+        assert "Total Samples: 13" in content
+
+

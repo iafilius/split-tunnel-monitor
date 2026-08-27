@@ -655,6 +655,26 @@ def init_logfile() -> str:
     return filename
 
 
+def _write_log_footer(filename: str, status_counts: dict | None = None, reason: str = "Session Stopped") -> None:
+    """Appends a structured termination footer comment to the active logfile."""
+    try:
+        now_iso = datetime.now().astimezone().isoformat()
+        counts_str = ""
+        if status_counts:
+            total = sum(status_counts.values())
+            counts_str = f" | Total Samples: {total} (HEALTHY: {status_counts.get('HEALTHY', 0)}, DEGRADED: {status_counts.get('DEGRADED', 0)}, OUTAGE: {status_counts.get('OUTAGE', 0)}, INFO: {status_counts.get('INFO', 0)})"
+        sep = "----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------\n"
+        footer = (
+            f"{sep}"
+            f"# {reason}: {now_iso} | Version: {__version__} | Schema: {__log_schema__}{counts_str}\n"
+        )
+        with open(filename, "a", encoding="utf-8") as f:
+            f.write(footer)
+    except Exception:
+        pass
+
+
+
 class OverheadStats:
     """
     Collects rolling overhead samples (zsc_rtt - isp_rtt) and per-path loss counts.
@@ -830,8 +850,9 @@ def _print_session_summary(
     sep = "\u2500" * 50
 
     print(f"\n{sep}")
-    print(" Session Summary")
+    print(f" Session Summary (v{__version__}, log-schema: {__log_schema__})")
     print(sep)
+    print(f" Version:     {__version__} (log-schema: {__log_schema__})")
     print(f" Duration:    {_fmt_duration(total_secs)}  ({session_start.strftime('%Y-%m-%d %H:%M:%S')} \u2013 {now.strftime('%Y-%m-%d %H:%M:%S')})")
     print(f" Interface:   {network_info.get('interface', 'N/A')}")
     print(f" Samples:     {total:,}")
@@ -915,9 +936,10 @@ async def main():
 
     logfile = args.logfile if args.logfile else init_logfile()
     print("=" * 90)
-    print(" Zscaler & Multi-Path macOS Network Outage Monitor")
+    print(f" Zscaler & Multi-Path macOS Network Outage Monitor (v{__version__})")
     print("=" * 90)
-    print(f"Logging to: {os.path.abspath(logfile)}")
+    print(f"Monitor Version:           {__version__} (log-schema: {__log_schema__})")
+    print(f"Logging to:                {os.path.abspath(logfile)}")
     print(f"ISP Direct Probe Target:   {args.isp_target}")
     print(f"Zscaler Tunnel Target:     {args.zscaler_target}")
 
@@ -1023,8 +1045,7 @@ async def main():
                 today = datetime.now().date()
                 if today != current_log_date:
                     # Write footer to old logfile
-                    with open(logfile, "a", encoding="utf-8") as f:
-                        f.write(f"# END OF DAY — rotated at {datetime.now().strftime('%H:%M:%S')}\n")
+                    _write_log_footer(logfile, status_counts=status_counts, reason="END OF DAY — Rotated")
                     old_logfile = logfile
                     # Open new logfile for the new day
                     logfile = init_logfile()
@@ -1266,11 +1287,12 @@ async def main():
             await asyncio.sleep(args.interval)
 
     except (KeyboardInterrupt, asyncio.CancelledError):
+        _write_log_footer(logfile, status_counts=status_counts, reason="Session Ended")
         _print_session_summary(
             session_start, status_counts, incidents, current_incident,
             incident_count, peak_ovh, peak_ovh_time, overhead, logfile, network_info,
         )
-        print("\nMonitoring stopped by user.")
+        print(f"\nMonitoring stopped by user. (ping_checker v{__version__})")
         print(f"Full diagnostic session recorded in: {os.path.abspath(logfile)}")
 
 
