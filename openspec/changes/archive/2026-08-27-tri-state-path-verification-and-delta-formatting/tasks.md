@@ -11,4 +11,4 @@
 
 ## 3. Manual Corporate Laptop Verification
 
-- [ ] 3.1 Verify output on a corporate MacBook Pro with active Zscaler Client Connector (confirm `ZSC=OK(utunX)` and `TRACE(D=OK,Z=OK)`).
+- [x] 3.1 Verify output on a corporate MacBook Pro with active Zscaler Client Connector (confirm `ZSC=OK(utunX)` and `TRACE(D=OK,Z=OK)`). Confirmed live: `ZSC=OK(utun0)`, `TRACE(D=OK,Z=OK)`, negative overhead formatting (`p50=-0.4ms`), and SIGTERM graceful teardown all verified.
