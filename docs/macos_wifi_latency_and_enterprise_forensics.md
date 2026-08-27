@@ -19,43 +19,40 @@ These behaviors are **not** caused by ISP congestion or router hardware faults. 
 
 ## 2. Platform Comparison: Clean vs. Enterprise-Managed Mac
 
-| Metric / Dimension                                 | Clean / Unmanaged Mac                                    | Corporate MDM-Managed Mac                                        |
-| :------------------------------------------------- | :------------------------------------------------------- | :--------------------------------------------------------------- |
-| **Example Hardware**                               | MacBook Pro (Apple M3)                                   | MacBook Pro (Apple M2 Pro)                                       |
-| **Wi-Fi Subsystem**                                | Integrated Apple Silicon Wi-Fi 6E PHY                    | Apple / Broadcom Wi-Fi 6 (BCM4387 / BCM4378)                     |
-| **OS / Fleet Management**                          | Clean macOS (Free / Unmanaged)                           | Corporate MDM (Jamf Pro, Intune, Kandji)                         |
-| **Security & VPN Agents**                          | Native macOS Network Stack                               | Zscaler Client Connector (ZCC), CrowdStrike Falcon, Defender ATP |
-| **Resting Wi-Fi Latency**                          | **~50–60ms** (Consistent PSM Sleep Floor)                | **6ms – 100ms+** (Multi-Modal Jitter)                            |
-| **Active Radio Latency**                           | **~4–7ms** (Triggered by active I/O bursts)              | **~6–15ms** (When not contending with AWDL or EDR hooks)         |
-| **Wakeup Periodicity**                             | Strict 21s cadence (via periodic probing)                | Masked by non-deterministic background security traffic          |
-| **Local Gateway Router**                           | Xiaomi AIoT AX3600 (OpenWrt, Qualcomm IPQ8071A / Ath11k) | Same Home Gateway / Access Point                                 |
-| **Power Source / Low Power Mode** (during capture) | **Battery, Low Power Mode ENABLED**                      | **AC Power, Low Power Mode OFF**                                 |
-
-> **Confound to note**: The Clean/M3 column's traces (Section 4, Trace 1 & 2) were captured on battery power with Low Power Mode enabled, while the Managed/M2 Pro column's trace (Trace 3) was captured on AC power with Low Power Mode off. macOS Low Power Mode measurably throttles CPU clocks and can make Wi-Fi radio power management *more* aggressive — this is a real, uncontrolled variable layered on top of the "unmanaged vs. managed" comparison, and is very plausibly a significant contributor to the M3's consistent ~50-60ms floor, independent of it being "clean"/unmanaged. See Section 5 for the full methodology caveat.
+| Metric / Dimension                                 | Personal Mac (Battery + Low Power Mode)                  | Personal Mac (AC Power, Normal Mode)                     | Corporate MDM-Managed Mac (AC Power, Normal Mode)                |
+| :------------------------------------------------- | :------------------------------------------------------- | :------------------------------------------------------- | :--------------------------------------------------------------- |
+| **Hardware**                                       | MacBook Pro (Apple M3)                                   | MacBook Pro (Apple M3)                                   | MacBook Pro (Apple M2 Pro)                                       |
+| **Wi-Fi Subsystem**                                | Integrated Apple Silicon Wi-Fi 6E PHY                    | Integrated Apple Silicon Wi-Fi 6E PHY                    | Apple / Broadcom Wi-Fi 6 (BCM4387 / BCM4378)                     |
+| **OS / Fleet Management**                          | Clean macOS (Free / Unmanaged)                           | Clean macOS (Free / Unmanaged)                           | Corporate MDM (Microsoft Intune / DEP-enrolled)                  |
+| **Security & VPN Agents**                          | Native macOS Network Stack                               | Native macOS Network Stack                               | Zscaler Client Connector (ZCC), Defender ATP, Falcon             |
+| **Power State**                                    | **Battery Power, Low Power Mode ON**                     | **AC Power, Low Power Mode OFF**                         | **AC Power, Low Power Mode OFF**                                 |
+| **Resting Wi-Fi Latency**                          | **~50–60ms** (Aggressive 802.11 PSM Sleep)               | **~5–8ms** (Normal Radio State)                          | **6ms – 100ms+** (Multi-Modal Jitter)                            |
+| **Wakeup / Periodic Behavior**                     | Drops to 4–7ms every 21s (Subprocess burst)              | Steady 5–8ms baseline with 1s AWDL spikes                | Mixed: AWDL spikes + WAN drops + Zscaler `utun` jitter           |
+| **Local Gateway Router**                           | Xiaomi AIoT AX3600 (OpenWrt, Qualcomm IPQ8071A / Ath11k) | Same Home Gateway / Access Point                         | Same Home Gateway / Access Point                                 |
 
 ---
 
 ## 3. Core Mechanics & Technical Root Causes
 
-### A. IEEE 802.11 Power Save Mode (PSM) & DTIM Buffering
-* **How it works**: When a Mac sends or receives low-frequency traffic (e.g. 1 packet every 2 seconds), macOS puts the Wi-Fi baseband and RF front-end into low-power sleep between packets.
+### A. IEEE 802.11 Power Save Mode (PSM) & macOS Low Power Mode
+* **How it works**: When on battery power with macOS Low Power Mode enabled, macOS drastically reduces background radio polling. Solitary packets spaced 2 seconds apart cause the Wi-Fi PHY to remain in deep 802.11 Power Save Mode (PSM).
 * **The AP Queue**: The Access Point buffers downstream ICMP replies in its hardware queue until the next **Delivery Traffic Indication Message (DTIM)** beacon frame.
 * **The Latency Effect**: Packets wait **40–60ms** inside the AP buffer before being delivered over the air.
-* **Simultaneous Probe Invariance**: When testing multi-path destinations simultaneously (e.g. LAN Gateway, Direct ISP `1.1.1.1`, and Zscaler `9.9.9.9`), the 50ms buffering delay applies equally to all packets in the batch ($\text{RTT}_{\text{ISP}} - \text{RTT}_{\text{LAN}} \approx 0\text{ms}$).
+* **AC Power / Normal Mode Difference**: When plugged into AC power with Low Power Mode disabled, the radio stays in normal power state, yielding a **5–8ms** resting floor.
 
 ```
-[MacBook in PSM Sleep] ──(2s idle)──> [AP Buffers Reply] ──(Wait for DTIM Beacon ~50ms)──> [Frame Delivered]
+[Mac on Battery / Low Power Mode] ──(2s idle)──> [AP Buffers Reply] ──(Wait for DTIM Beacon ~50ms)──> [Frame Delivered]
 ```
 
 ### B. The 21-Second Subprocess Wakeup Rhythm
 In network monitoring tools like `split-tunnel-monitor`, periodic rediscovery checks trigger system calls (`scutil`, `route -n get`, and background `traceroute -I`) every 10 iterations ($\approx 21\text{s}$). 
-* The burst of OS system calls and network socket creation immediately transitions the Wi-Fi radio from **Power Save (D3/Sleep)** into **Active (D0/High Power)**.
-* For that single iteration, round-trip time drops instantly to **4–7ms**, before decaying back to the 50ms PSM resting state.
+* On battery/Low Power Mode, this burst of OS system calls immediately transitions the Wi-Fi radio from **Power Save (D3/Sleep)** into **Active (D0/High Power)**.
+* For that single iteration, round-trip time drops instantly from 55ms down to **4–7ms**, before decaying back to the 50ms PSM resting state.
 
 ### C. Apple Wireless Direct Link (AWDL) Social Channel Scanning
 * **How it works**: macOS maintains peer-to-peer Wi-Fi networks for AirDrop, AirPlay, Sidecar, and Universal Control over a virtual interface (`awdl0`).
 * **The Channel Hop**: Approximately every **1.0 to 1.5 seconds**, the Wi-Fi radio momentarily hops off the connected AP channel to 5GHz social channels (such as Channel 44 or 149) to exchange synchronization beacons.
-* **The Latency Effect**: Any frame transmitted or received during the off-channel window is queued for **20–80ms**, creating periodic latency spikes.
+* **The Latency Effect**: Any frame transmitted or received during the off-channel window is queued for **20–85ms**, creating periodic latency spikes visible on both AC power and battery.
 
 ### D. Enterprise Security & VPN Stack Jitter (Corporate Macs)
 * **Zscaler Client Connector (`utun`)**: Traps outbound packets via Apple's user-space `NetworkExtension` provider. Thread scheduling, context switching, and TLS/DTLS encapsulation add variable microsecond-to-millisecond delays.
@@ -65,28 +62,51 @@ In network monitoring tools like `split-tunnel-monitor`, periodic rediscovery ch
 
 ## 4. Empirical Real-World Reference Traces
 
-### Trace 1: Clean Personal Mac (Apple M3) — Resting PSM vs. 21s Wakeup
-*Target: Local Gateway `192.168.xx.1` & ISP Direct `1.1.1.1` | Interval: 2.0s*
+### Trace 1a: Personal Mac (Apple M3) — Battery + Low Power Mode (PSM Floor)
+*Hardware: MacBook Pro (Apple M3) | Power: Battery (Low Power Mode ON) | Python: 3.14.3 | Target: Local Gateway `192.168.xx.1` & ISP Direct `1.1.1.1` | Interval: 2.0s*
 
 ```text
 [22:01:21] [HEALTHY] LAN (192.168.xx.1):  6.2ms | ISP Direct (1.1.1.1):  9.0ms | ZSC=INACTIVE (Active Wakeup)
 [22:01:23] [HEALTHY] LAN (192.168.xx.1): 43.4ms | ISP Direct (1.1.1.1): 40.8ms | ZSC=INACTIVE (Entering PSM)
-[22:01:25] [HEALTHY] LAN (192.168.xx.1): 54.3ms | ISP Direct (1.1.1.1): 53.8ms | ZSC=INACTIVE (PSM Resting Floor)
+[22:01:25] [HEALTHY] LAN (192.168.xx.1): 54.3ms | ISP Direct (1.1.1.1): 53.8ms | ZSC=INACTIVE (PSM Resting Floor ~55ms)
 [22:01:27] [HEALTHY] LAN (192.168.xx.1): 59.0ms | ISP Direct (1.1.1.1): 62.4ms | ZSC=INACTIVE
 [22:01:29] [HEALTHY] LAN (192.168.xx.1): 60.9ms | ISP Direct (1.1.1.1): 59.7ms | ZSC=INACTIVE
 ...
-[22:01:42] [HEALTHY] LAN (192.168.xx.1):  7.1ms | ISP Direct (1.1.1.1):  9.0ms | ZSC=INACTIVE (+21s Wakeup)
+[22:01:42] [HEALTHY] LAN (192.168.xx.1):  7.1ms | ISP Direct (1.1.1.1):  9.0ms | ZSC=INACTIVE (+21s Subprocess Wakeup)
 ...
-[22:02:03] [HEALTHY] LAN (192.168.xx.1):  5.9ms | ISP Direct (1.1.1.1):  9.1ms | ZSC=INACTIVE (+21s Wakeup)
+[22:02:03] [HEALTHY] LAN (192.168.xx.1):  5.9ms | ISP Direct (1.1.1.1):  9.1ms | ZSC=INACTIVE (+21s Subprocess Wakeup)
 ...
-[22:02:24] [HEALTHY] LAN (192.168.xx.1):  4.3ms | ISP Direct (1.1.1.1):  8.3ms | ZSC=INACTIVE (+21s Wakeup)
+[22:02:24] [HEALTHY] LAN (192.168.xx.1):  4.3ms | ISP Direct (1.1.1.1):  8.3ms | ZSC=INACTIVE (+21s Subprocess Wakeup)
 ```
-> **Observation**: Notice how $\text{RTT}_{\text{ISP}} - \text{RTT}_{\text{LAN}} \approx 0–3\text{ms}$ at all times. 100% of the 50ms variance is confined to the local Wi-Fi link.
+
+---
+
+### Trace 1b: Personal Mac (Apple M3) — AC Power (Low Power Mode OFF)
+*Hardware: MacBook Pro (Apple M3) | Power: AC Power (Low Power Mode OFF) | Python: 3.14.3 | Target: Local Gateway `192.168.xx.1` | Interval: 2.0s*
+
+```text
+Sample 01: rtt= 7.18ms  (Normal PHY Baseline)
+Sample 02: rtt= 6.11ms  (Normal PHY Baseline)
+Sample 03: rtt= 7.81ms  (Normal PHY Baseline)
+Sample 04: rtt= 4.67ms  (Normal PHY Baseline)
+Sample 05: rtt=27.82ms  (AWDL Social Channel Scan)
+Sample 06: rtt=87.74ms  (AWDL Social Channel Scan)
+Sample 07: rtt= 6.22ms  (Normal PHY Baseline)
+Sample 08: rtt= 7.83ms  (Normal PHY Baseline)
+Sample 09: rtt= 7.62ms  (Normal PHY Baseline)
+Sample 10: rtt= 7.51ms  (Normal PHY Baseline)
+Sample 11: rtt= 8.29ms  (Normal PHY Baseline)
+Sample 12: rtt= 4.57ms  (Normal PHY Baseline)
+Sample 13: rtt=33.94ms  (AWDL Social Channel Scan)
+Sample 14: rtt=79.78ms  (AWDL Social Channel Scan)
+Sample 15: rtt=85.88ms  (AWDL Social Channel Scan)
+```
+> **Controlled Isolation Finding**: On AC Power without Low Power Mode, the resting baseline on the exact same M3 drops from **~55ms** to **4.5ms – 8.2ms**, isolating the 50ms floor specifically to battery Low Power Mode PSM throttling. The remaining 27–87ms spikes occur at periodic 1–2s intervals matching AWDL channel hops.
 
 ---
 
 ### Trace 2: Personal Mac (Apple M3) — High-Frequency Ping (PSM Suppressed)
-*Command: `ping -i 0.2 192.168.xx.1` (200ms Cadence)*
+*Command: `ping -i 0.2 192.168.xx.1` (200ms Cadence, Python 3.14.3, Battery Power)*
 
 ```text
 PING 192.168.xx.1 (192.168.xx.1): 56 data bytes
