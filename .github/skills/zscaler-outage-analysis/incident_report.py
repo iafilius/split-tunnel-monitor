@@ -85,7 +85,7 @@ def extract_incidents(logfiles):
                         # Escalate DEGRADED → OUTAGE if it gets worse
                         if status == 'OUTAGE' and current['type'] == 'DEGRADED':
                             current['type'] = 'OUTAGE'
-                elif status == 'HEALTHY' and current is not None:
+                elif status in ('HEALTHY', 'INFO') and current is not None:
                     current['end'] = ts
                     incidents.append(current)
                     current = None
