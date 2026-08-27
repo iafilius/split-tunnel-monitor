@@ -18,6 +18,11 @@ The repository SHALL include a dedicated technical guide documenting macOS Wi-Fi
 - **WHEN** a user follows the troubleshooting playbook in the guide
 - **THEN** the guide provides rapid-ping commands (`ping -i 0.2`) to suppress PSM, AWDL interface isolation steps (`sudo ifconfig awdl0 down`), and comparative reference traces
 
+#### Scenario: Guide documents measurement methodology and reproducibility caveats
+
+- **WHEN** an engineer reads the empirical traces section of the guide
+- **THEN** the guide documents how each trace was captured (execution context, power source, Low Power Mode state, Python interpreter version, and what the underlying `ping` measurement source is), and states that single ad-hoc Wi-Fi captures are illustrative, not authoritative resting-baseline benchmarks, since channel congestion, concurrent system load, power state, and physical position are not controlled between sessions
+
 ### Requirement: Reference Guide Discoverability
 
 The repository README SHALL link to the Wi-Fi latency and enterprise forensics guide.
