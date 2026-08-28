@@ -298,6 +298,11 @@ def should_trigger_trace_recheck(iteration: int, trace_verify_every: int, zsc_st
     return iteration % trace_verify_every == 1 or zsc_status_changed
 
 
+def count_limit_reached(iteration: int, count: "int | None") -> bool:
+    """Decide whether a --count/-n bounded run should stop after this iteration."""
+    return count is not None and iteration >= count
+
+
 _ZSC_ROUTE_TO_TRACE_STATUS = {
     "OK": "OK",
     "BYPASSED": "BYPASSED",
@@ -975,6 +980,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--logfile", type=str, default="", help="Custom logfile path (default: auto-generated unique filename)")
     parser.add_argument("--version", action="version", version=f"ping_checker {__version__} (log-schema: {__log_schema__})")
     parser.add_argument("--no-notify", action="store_true", help="Disable macOS desktop notifications (notifications are on by default)")
+    parser.add_argument("-n", "--count", type=int, default=None, help="Stop automatically after N samples and print the session summary (default: run until interrupted)")
     return parser
 
 
@@ -984,6 +990,8 @@ async def main():
     args.trace_verify = not args.no_trace_verify
     args.rotate_daily = not args.no_rotate_daily
     args.compress_rotated = not args.no_compress_rotated
+    if args.count is not None and args.count <= 0:
+        parser.error("--count/-n must be a positive integer")
 
     logfile = args.logfile if args.logfile else init_logfile()
     print("=" * 90)
@@ -1090,6 +1098,16 @@ async def main():
             loop.add_signal_handler(sig, _sig_handler)
         except (NotImplementedError, RuntimeError):
             pass
+
+    def _finish(reason: str, message: str):
+        _write_log_footer(logfile, status_counts=status_counts, reason=reason)
+        _print_session_summary(
+            session_start, status_counts, incidents, current_incident,
+            incident_count, peak_ovh, peak_ovh_time, overhead, logfile, network_info,
+        )
+        print(f"\n{message} (ping_checker v{__version__})")
+        print(f"Full diagnostic session recorded in: {os.path.abspath(logfile)}")
+
     try:
         while True:
             iteration += 1
@@ -1349,21 +1367,20 @@ async def main():
                     last_heartbeat_time = time.time()
                     silent_healthy_count = 0
 
+            if count_limit_reached(iteration, args.count):
+                break
+
             await asyncio.sleep(args.interval)
 
+        _finish("Sample Count Reached", f"Reached requested sample count ({args.count}).")
+
     except (KeyboardInterrupt, asyncio.CancelledError):
-        _write_log_footer(logfile, status_counts=status_counts, reason="Session Ended")
-        _print_session_summary(
-            session_start, status_counts, incidents, current_incident,
-            incident_count, peak_ovh, peak_ovh_time, overhead, logfile, network_info,
-        )
-        print(f"\nMonitoring stopped by user. (ping_checker v{__version__})")
-        print(f"Full diagnostic session recorded in: {os.path.abspath(logfile)}")
+        _finish("Session Ended", "Monitoring stopped by user.")
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
+    except KeyboardInterrupt:
         pass
 
