@@ -3,6 +3,9 @@
 *.log.gz
 ping_checker_*.log*
 
+# Except curated raw trace evidence committed for the Wi-Fi latency forensics guide
+!docs/traces/**/*.log
+
 # IDE & temporary files
 .DS_Store
 .agent/

@@ -38,6 +38,21 @@ The repository SHALL include a dedicated technical guide documenting macOS Wi-Fi
 - **WHEN** a new hardware, OS version, or configuration comparison is added later
 - **THEN** it can be recorded using the same reusable structure already established in the guide — a numbered Trace entry in Section 4 (hardware, power source, Low Power Mode state, Python version, targets, interval) and a corresponding row in the Section 5 "Recorded capture conditions" table — without needing to redesign the document's format
 
+### Requirement: Raw Trace Evidence Is Committed to the Repository
+
+Any trace added to this guide after this requirement exists SHALL have its raw `--logfile` output committed to `docs/traces/` in this repository (not left in a machine-local temp path), so its statistics are independently re-computable and visible to anyone pulling the repo — including a different contributor's machine, not just the one that captured it.
+
+#### Scenario: New trace entries link to a committed raw log
+
+- **WHEN** a new `### Trace X: ...` entry is added to Section 5
+- **THEN** the entry includes a link to its raw logfile committed at `docs/traces/trace-<id>-<short-description>-n<count>.log`
+- **AND** the fenced code block in the entry shows only representative excerpt lines, not the full raw dump, since the full data lives in the linked file
+
+#### Scenario: Traces without a committed raw log are disclosed as such
+
+- **WHEN** a trace already in the guide predates this requirement and its original raw log was never saved or is no longer available
+- **THEN** the guide discloses which traces lack a committed raw log, rather than silently presenting all traces as equally independently verifiable
+
 ### Requirement: Statistically Adequate Sample Sizes for Comparative Claims
 
 The forensics guide SHALL NOT present a percentage-based comparison between two captures (e.g. "elevated-sample rate") as a meaningful, causally-attributable difference unless the sample size is adequate to distinguish that difference from chance, or the guide explicitly flags the comparison as statistically inconclusive.
@@ -51,6 +66,21 @@ The forensics guide SHALL NOT present a percentage-based comparison between two 
 
 - **WHEN** a comparison in the guide is based on traces of 41 or fewer samples per condition
 - **THEN** the guide states that the resulting percentage difference is within statistical noise at that sample size (with an approximate confidence-interval or significance-test indication), rather than presenting it as a confirmed causal effect
+
+### Requirement: Quantitative Claims Must Cite a Real, Checkable Capture
+
+The forensics guide SHALL NOT present a specific latency/jitter number (p50, p95, mean, spread, or similar) as a "typical" or representative fact unless it is computed from a specific trace already documented in Section 5 and that trace is named. Cross-machine comparisons based on a single pair of sessions (N=1 pair) SHALL NOT use absolute-certainty language ("conclusively proven", "100% identical", "definitively"); use hedged language ("strongly indicated", "consistent with") instead and state the N=1 limitation explicitly.
+
+#### Scenario: A precise number must name its source trace
+
+- **WHEN** the guide states a specific p50, p95, or jitter-spread figure for a "typical" or "representative" scenario
+- **THEN** the guide names the exact Trace (e.g. "Trace 3d") the number was computed from, so a reader can independently recompute it from that trace's raw data
+- **AND** if no specific trace backs the number (e.g. it is a conceptual illustration), the guide labels it as illustrative rather than "typical"
+
+#### Scenario: N=1 cross-machine comparisons use hedged causal language
+
+- **WHEN** the guide draws a causal conclusion from comparing exactly one clean machine against exactly one managed machine (or any other single-pair comparison)
+- **THEN** the guide uses hedged language ("strongly indicated", "consistent with") rather than absolute-certainty language ("conclusively proven", "100% identical", "definitively"), and states that it is a single-comparison observation, not a controlled study
 
 ### Requirement: Cross-Platform Power-State Benchmark Matrix
 
