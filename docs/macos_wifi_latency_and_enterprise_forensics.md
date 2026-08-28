@@ -593,6 +593,7 @@ round-trip min/avg/max/stddev = 4.292/14.932/96.081/21.867 ms
 * **Wi-Fi AP & Link**: Xiaomi AIoT AX3600 (OpenWrt 25.12.5, Qualcomm IPQ8071A) | 5GHz (Channel 100, 80MHz, Wi-Fi 6 / 802.11ax)
 * **Security & MDM Profile**: Personal (Clean / Unmanaged, Native Network Stack) | VPN: None
 * **Targets & Cadence**: LAN `192.168.31.1`, Direct ISP `1.1.1.1` (`-S local_ip`), Zscaler `9.9.9.9` (Direct) | Interval: 2.0s | **120 samples** (21:31:50–21:35:59), captured via `split-tunnel-monitor -i 2.0 -n 120`
+* **Raw log (full evidence, all 120 samples)**: [`traces/trace-1d-m3-battery-lpm-clean-n120.log`](traces/trace-1d-m3-battery-lpm-clean-n120.log)
 
 ```text
 [sample   1] LAN= 4.1ms  ISP= 8.7ms  ZSC= 9.0ms   <-- Initial discovery active radio state
@@ -617,6 +618,7 @@ round-trip min/avg/max/stddev = 4.292/14.932/96.081/21.867 ms
 * **Wi-Fi AP & Link**: Xiaomi AIoT AX3600 (OpenWrt 25.12.5, Qualcomm IPQ8071A) | 5GHz (Channel 100, 80MHz, Wi-Fi 6 / 802.11ax)
 * **Security & MDM Profile**: Personal (Clean / Unmanaged, Native Network Stack) | VPN: None
 * **Targets & Cadence**: LAN `192.168.31.1`, Direct ISP `1.1.1.1` (`-S local_ip`), Zscaler `9.9.9.9` (Direct) | Interval: 2.0s | **120 samples** (21:36:52–21:41:01), captured via `split-tunnel-monitor -i 2.0 -n 120`
+* **Raw log (full evidence, all 120 samples)**: [`traces/trace-1e-m3-ac-clean-n120.log`](traces/trace-1e-m3-ac-clean-n120.log)
 
 ```text
 [sample   1] LAN= 4.5ms  ISP= 7.2ms  ZSC= 9.7ms   <-- Initial discovery active radio state
@@ -639,6 +641,7 @@ round-trip min/avg/max/stddev = 4.292/14.932/96.081/21.867 ms
 * **Wi-Fi AP & Link**: Xiaomi AIoT AX3600 (OpenWrt 25.12.5, Qualcomm IPQ8071A) | 5GHz (Channel 100, 80MHz, Wi-Fi 6 / 802.11ax)
 * **Security & MDM Profile**: Personal (Clean / Unmanaged, Native Network Stack) | VPN: None
 * **Command & Cadence**: `ping -c 120 -i 0.2 192.168.31.1` (200ms Cadence, 120 packets)
+* **Raw log (full evidence, all 120 samples)**: [`traces/trace-1f-m3-highfreq-ping-n120.log`](traces/trace-1f-m3-highfreq-ping-n120.log)
 
 ```text
 --- 192.168.31.1 ping statistics ---
