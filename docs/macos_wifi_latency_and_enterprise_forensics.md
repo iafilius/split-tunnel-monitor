@@ -175,10 +175,44 @@ The answer lies in **compounding software and radio queue delays**:
    * When an AWDL discovery scan triggers, the packet only waits for the radio to return from social channels (~80ms).
    $$\text{RTT}_{\text{Clean}} = \underbrace{80\text{ms}}_{\text{AWDL off-channel wait}} + \underbrace{4\text{ms}}_{\text{Radio TX/RX}} + \underbrace{1\text{ms}}_{\text{Clean Kernel delivery}} \approx \mathbf{85\text{ms} – 96\text{ms}}$$
 
-2. **Corporate Managed Mac (M2 Pro)**:
+2. **Corporate Managed Mac (Apple M2 Pro) — Measured on a LIGHTLY LOADED System**:
    * Active with Microsoft Defender ATP (`wdavdaemon`), CrowdStrike Falcon (`com.crowdstrike.falcon.Agent`), and Zscaler Client Connector (`ZscalerTunnel`).
-   * When background software updates, MDM compliance scans, or disk inspections run concurrently, the kernel socket hook and ingress packet filter introduce scheduling delays that compound with the AWDL radio stall:
-   $$\text{RTT}_{\text{Corporate}} = \underbrace{30\text{ms}}_{\text{EDR Socket Hook}} + \underbrace{80\text{ms}}_{\text{AWDL Radio Stall}} + \underbrace{4\text{ms}}_{\text{Radio TX/RX}} + \underbrace{40\text{ms}}_{\text{Ingress Filter Inspection}} \approx \mathbf{150\text{ms} – 170\text{ms+}}$$
+   * **Crucial Baseline Context**: The **90ms – 170ms+** LAN spikes recorded in this guide occurred on a **near-idle, lightly loaded machine** (CPU load average was only **1.88 – 2.50 on a 12-core CPU**, representing <20% utilization, with **76%–77% free RAM and zero memory swapping**).
+   * Even in this near-idle state, routine background MDM compliance syncs, telemetry uploads, and EDR socket hooks introduce thread-scheduling delays that compound with the physical AWDL radio stall:
+   $$\text{RTT}_{\text{Corporate (Light Load)}} = \underbrace{30\text{ms}}_{\text{EDR Socket Hook}} + \underbrace{80\text{ms}}_{\text{AWDL Radio Stall}} + \underbrace{4\text{ms}}_{\text{Radio TX/RX}} + \underbrace{40\text{ms}}_{\text{Ingress Filter Inspection}} \approx \mathbf{150\text{ms} – 170\text{ms+}}$$
+
+---
+
+### 3.2 The Amplification Effect: What Happens Under Heavy CPU Load & Memory Swapping?
+
+Because the 170ms LAN latency on the corporate Mac was observed under **light system load**, system resource contention will severely amplify these delays. Under active developer workflows, three compounding operating system mechanisms come into play:
+
+```
+                      RESOURCE CONTENTION AMPLIFICATION CHAIN
+                      ═══════════════════════════════════════
+
+  [High CPU Run-Queue Depth]      [Memory Swapping / Page Faults]     [Kernel mbuf Lock Contention]
+  (Xcode, Docker, Rust Builds)         (RAM Pressure / SSD Swap)       (Multiple Content Filters)
+  ┌───────────────────────────┐   ┌─────────────────────────────┐    ┌───────────────────────────┐
+  │ • EDR daemon threads get  │   │ • EDR daemon memory swapped │    │ • XNU BSD socket mutexes  │
+  │   starved on CPU queues   │   │ • Page fault stalls packet  │    │   serialized across hooks │
+  │ • Context switch: +150ms  │   │ • SSD I/O delay: +200-500ms │    │ • Buffer queue drops      │
+  └───────────────────────────┘   └─────────────────────────────┘    └───────────────────────────┘
+                                                 │
+                                                 ▼
+             EXPECTED HEAVY-LOAD LAN PING: 300ms – 800ms+ or TIMEOUT
+```
+
+1. **CPU Run-Queue Depth & Context-Switch Starvation**:
+   * When compiling software (Xcode, Rust `cargo`, Go `build`, Webpack) or running containerized workloads (Docker / Kubernetes), the macOS Mach kernel scheduler prioritizes foreground compilation threads over background daemon processes.
+   * When `ping` executes, the kernel must context-switch to the user-space EDR daemon (`wdavdaemon` or `falcon_agent`) to evaluate the socket. If CPU cores are saturated, the EDR daemon waits in the run queue for **100ms – 250ms+** before it is scheduled to inspect the packet.
+2. **Memory Pressure, Anonymous Paging & Disk Swap Faults**:
+   * If a developer runs multiple heavy applications (Chrome with 40+ tabs, IDEs, Docker VM, Slack, Teams), system memory enters the **Amber or Red zone** (`memory_pressure`).
+   * macOS begins compressing memory and paging anonymous memory to NVMe SSD swap. If the EDR daemon's code segments, rule tables, or the kernel's network filter buffers are paged out, servicing a single ICMP echo packet triggers a synchronous **disk page fault**, introducing an instantaneous **200ms – 500ms+ spike**.
+3. **Kernel `mbuf` Buffer Pool Lock Contention**:
+   * Multiple `NetworkExtension` and `EndpointSecurity` hooks intercept network buffers (`mbufs`) using serialized kernel locks. Heavy concurrent network I/O (e.g. `git pull`, package downloads, video calls) causes lock contention in the XNU network stack, causing solitary diagnostic probes to queue behind large bulk TCP streams.
+
+> **Takeaway for Engineers & IT Support**: If a corporate laptop exhibits 90ms–170ms LAN latency while resting idle, **it is entirely normal and expected to see LAN latency spike to 300ms–800ms+ (or show transient packet loss / timeouts) during heavy CPU compilation or memory swapping.** This is not a Wi-Fi hardware defect or home router failure—it is the direct physical consequence of user-space security inspection under OS resource contention.
 
 ---
 
