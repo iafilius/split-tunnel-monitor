@@ -47,7 +47,7 @@ When diagnosing network performance and VPN split-tunneling on macOS, engineers 
 | **Dominant Fingerprint**       | **Fingerprint A (PSM Floor ~50–60ms)** + Fingerprint B                                                | **Clean Baseline (~4–8ms)** + Fingerprint B (14.6% elevated)                                         | **Fingerprint C (Overlay Jitter)** + Fingerprint B (7.3% elevated)                                   | **Fingerprint C (Overlay Jitter)** + Fingerprint B (19.5% elevated)                                  |
 | **Wakeup / Periodic Behavior** | Drops to 4–7ms every 21s (Subprocess burst)                                                          | Steady 5–8ms baseline with 1s AWDL spikes                                                            | Mixed: AWDL spikes + WAN drops + Zscaler `utun` jitter                                               | Same mixed pattern as AC — no distinct battery-only PSM floor observed                               |
 
-> **Key finding (confirmed on identical Broadcom BCM4388 hardware)**: Both machines share the **exact same Broadcom BCM4388 (`0x14E4, 0x4388`) Wi-Fi 6E card** running on macOS 26.6.2 (Build 25G83) connected to the **same Xiaomi AX3600 OpenWrt 25.12.5 AP on 5GHz Channel 100**. This completely eliminates hardware chipset differences and AP variables. On the M3, Low Power Mode alone is responsible for the ~50-60ms resting floor — the *same unmanaged* M3 on AC power with Low Power Mode off sits at ~4-8ms (Trace 1b), matching the low end of the managed M2 Pro's range. On the M2 Pro, enabling Battery + Low Power Mode (Trace 3a) did **not** produce a comparable consistent floor — it stayed multi-modal (~19.5% elevated samples), similar in shape to its own AC-power baseline (~7.3%). This proves the resting floor variation is entirely a product of OS power-assertion policy, background process state, and corporate security/network filter hooks.
+> **Key finding (confirmed on identical Broadcom BCM4388 hardware)**: Both machines share the **exact same Broadcom BCM4388 (`0x14E4, 0x4388`) Wi-Fi 6E card** running on macOS 26.6.2 (Build 25G83) connected to the **same Xiaomi AX3600 OpenWrt 25.12.5 AP on 5GHz Channel 100**. This completely eliminates hardware chipset differences and AP variables. On the M3, Low Power Mode alone is responsible for the ~50-60ms resting floor — the *same unmanaged* M3 on AC power with Low Power Mode off sits at ~4-8ms (Trace 1b), matching the low end of the managed M2 Pro's range. On the M2 Pro, enabling Battery + Low Power Mode (Trace 3a) did **not** produce a comparable consistent floor — it stayed multi-modal (~19.5% elevated samples), similar in shape to its own AC-power baseline (~7.3%). This strongly suggests the resting floor variation is primarily a product of OS power-assertion policy, background process state, and corporate security/network filter hooks.
 
 
 ---
@@ -283,6 +283,30 @@ When submitting or recording a new trace, format the entry as follows:
 * **Targets & Cadence**: LAN `[IP]`, Direct ISP `1.1.1.1` (`-S local_ip`), Zscaler `9.9.9.9` | Interval: 2.0s | [N] samples
 ```
 
+### C. How to Reproduce & Contribute a Trace
+Every reference trace in this guide cites a specific, exact sample count (41, 118, ...). Manually judging when to press Ctrl+C to hit a specific count is imprecise and not scriptable — use `split-tunnel-monitor`'s `-n`/`--count` option instead, which stops the run automatically after exactly N samples and prints the same session summary a Ctrl+C would.
+
+**How many samples do you need?** Depends on what you're using the trace for — see "Statistical Power & Confidence" in Section 6:
+- **Qualitative pillar/fault-domain attribution** (which target spiked, LAN vs. ISP vs. Zscaler): 41 samples is fine — each qualifying sample is direct, per-sample evidence regardless of N.
+- **Quantitative comparison of elevated-sample percentages against another trace**: capture at least **~120 samples** per condition (`--count 120`, ~4 minutes at the default 2.0s interval) — 41 samples cannot reliably distinguish rates like 7% vs. 20% from chance.
+
+```bash
+# 1. Capture the two one-liner telemetry snapshots from Section A above and save their output.
+
+# 2. Run a precise, reproducible capture to its own logfile, while also teeing the live
+#    console output for pasting into your trace entry. Use --count 41 for a quick qualitative
+#    trace, or --count 120+ if your trace needs to support a quantitative percentage comparison:
+split-tunnel-monitor -i 2.0 --count 120 --logfile my_trace.log | tee my_trace_console.txt
+
+# 3. The run stops on its own once the requested sample count is captured and prints a session
+#    summary (status breakdown, overhead stats) — no need to time or interrupt it manually.
+```
+
+Then assemble your contribution:
+1. Fill in the [8-point template](#b-standardized-8-point-trace-template-for-contributors) above using the two telemetry snapshots from Section A and the header of `my_trace_console.txt`.
+2. Include the full console output (or the printed session summary at minimum) so the elevated-sample percentage others compute from it is independently checkable — see [Section 6](#6-methodology--reproducibility-caveats) for why a past trace comparison in this guide was found to be based on an inconsistent threshold.
+3. Open a **pull request** adding your `### Trace X: ...` entry to this file (`docs/macos_wifi_latency_and_enterprise_forensics.md`), or open a **GitHub issue** on the project repository with the template filled in if you'd rather have a maintainer merge it. There is currently no separate CONTRIBUTING.md — this section is the contribution process for this guide.
+
 ---
 
 ## 5. Empirical Real-World Reference Traces
@@ -341,7 +365,7 @@ When submitting or recording a new trace, format the entry as follows:
 [00:47:17] [HEALTHY] LAN (192.168.xx.1): 57.3ms | ISP Direct (1.1.1.1): 57.3ms | Zscaler (9.9.9.9): 56.2ms | OVH: p50=+0.8ms p95=+2.5ms  <-- AWDL Minor Scan (+10s)
 [00:47:19] [HEALTHY] LAN (192.168.xx.1):  7.0ms | ISP Direct (1.1.1.1):  8.9ms | Zscaler (9.9.9.9):  9.4ms | OVH: p50=+0.7ms p95=+2.5ms
 ```
-> **Observation**: 8 of 41 samples (**~19.5%**) showed elevation above 30ms, exactly matching the corporate M2 Pro's Battery + Low Power Mode elevated sample rate (Trace 3a, 19.5%). The periodic AWDL discovery scans follow an alternating 10s / 12s major/minor schedule (`89ms` $\rightarrow$ +10s $\rightarrow$ `33ms` $\rightarrow$ +12s $\rightarrow$ `90ms` $\rightarrow$ +10s $\rightarrow$ `47ms` $\rightarrow$ +12s $\rightarrow$ `96ms` $\rightarrow$ +10s $\rightarrow$ `55ms`).
+> **Observation**: Using the same >50ms elevated-sample threshold as every other reference trace in this guide, 6 of 41 samples (**~14.6%**) were elevated — matching Trace 1b's own AC-power rate (~14.6%), *not* the corporate M2 Pro's Battery + Low Power Mode rate (Trace 3a, ~19.5%). An earlier version of this observation compared this trace's samples above a >30ms threshold (8/41, ~19.5%) directly against Trace 3a's >50ms-based ~19.5%, which coincidentally produced the same percentage under two different thresholds and was corrected here to avoid an invalid cross-trace comparison. The periodic AWDL discovery scans follow an alternating 10s / 12s major/minor schedule (`89ms` $\rightarrow$ +10s $\rightarrow$ `33ms` $\rightarrow$ +12s $\rightarrow$ `90ms` $\rightarrow$ +10s $\rightarrow$ `47ms` $\rightarrow$ +12s $\rightarrow$ `96ms` $\rightarrow$ +10s $\rightarrow$ `55ms`).
 
 ---
 
@@ -464,7 +488,7 @@ round-trip min/avg/max/stddev = 4.292/14.932/96.081/21.867 ms
 [22:33:07] [HEALTHY] LAN (192.168.xx.1):  7.8ms | ISP Direct (1.1.1.1): 91.4ms | Zscaler (9.9.9.9): 88.8ms | DIRECT=OK(en0) | ZSC=OK(utun0)  <-- WAN-side pattern again
 [22:33:19] [HEALTHY] LAN (192.168.xx.1): 10.1ms | ISP Direct (1.1.1.1): 11.6ms | Zscaler (9.9.9.9): 15.6ms | DIRECT=OK(en0) | ZSC=OK(utun0)
 ```
-> **Observation**: This ~90s capture on a live Intune-managed, Zscaler-enrolled M2 Pro shows **three distinct jitter signatures** overlapping, confirming the diagnostic playbook in Section 6:
+> **Observation**: This ~90s capture on a live Intune-managed, Zscaler-enrolled M2 Pro shows **three distinct jitter signatures** overlapping, confirming the diagnostic playbook in Section 7:
 > 1. **Local Wi-Fi PHY-wide events** (e.g. 22:31:18, 22:32:08) — LAN, ISP, and Zscaler rise together within 1-2ms of each other, consistent with AWDL channel-hop or PSM buffering affecting the entire link regardless of destination.
 > 2. **WAN/enterprise-side events** (e.g. 22:31:15, 22:31:44, 22:33:07) — LAN stays at its normal 5-10ms floor while ISP Direct *and* Zscaler both spike to 85-100ms together, indicating the added latency is beyond the local Wi-Fi hop, shared by both non-local destinations.
 > 3. **Zscaler-only events** (e.g. 22:32:18) — LAN and ISP stay low while only the Zscaler target spikes, isolating the delay to the tunnel/cloud-edge segment specifically.
@@ -493,7 +517,7 @@ round-trip min/avg/max/stddev = 4.292/14.932/96.081/21.867 ms
 [00:26:03] [HEALTHY] LAN (192.168.xx.1): 58.2ms | ISP Direct (1.1.1.1): 55.4ms | Zscaler (9.9.9.9): 53.2ms | ZSC=OK(utun0)  <-- All three rise together
 [00:26:21] [HEALTHY] LAN (192.168.xx.1): 63.6ms | ISP Direct (1.1.1.1): 65.6ms | Zscaler (9.9.9.9): 65.8ms | ZSC=OK(utun0)  <-- All three rise together
 ```
-> **Observation**: 8 of 41 samples (**~19.5%**) showed a target above 50ms — higher than the AC-power baseline (Trace 3c, ~7.3%), but still the same multi-modal shape (local Wi-Fi PHY-wide, WAN/enterprise-side, Zscaler-only events), not a single consistent floor like the M3 shows on battery (Trace 1a, ~50-60ms nearly every sample). Battery + Low Power Mode on this M2 Pro measurably increases jitter *frequency* somewhat, but does not reproduce the M3's PSM-floor behavior.
+> **Observation**: 8 of 41 samples (**~19.5%**) showed a target above 50ms — nominally higher than the AC-power baseline (Trace 3c, ~7.3%), but still the same multi-modal shape (local Wi-Fi PHY-wide, WAN/enterprise-side, Zscaler-only events), not a single consistent floor like the M3 shows on battery (Trace 1a, ~50-60ms nearly every sample). At n=41 per trace this gap is *not* statistically significant (see "Statistical Power & Confidence" below) — treat "Battery + Low Power Mode may increase jitter frequency somewhat" as a hypothesis this data is consistent with, not a confirmed effect; it does not reproduce the M3's PSM-floor behavior either way.
 
 ---
 
@@ -545,6 +569,47 @@ round-trip min/avg/max/stddev = 4.292/14.932/96.081/21.867 ms
 
 ---
 
+### Trace 3d: Corporate Managed Mac (Apple M2 Pro) — AC Power, Zscaler Active [n=120, statistically compliant re-capture]
+* **Client Device**: MacBook Pro (Apple M2 Pro 16", 12-core, 2023)
+* **Client Wi-Fi Chipset**: Broadcom BCM4388 (`0x14E4, 0x4388`), DriverKit 1566.5 (`system_profiler SPAirPortDataType`)
+* **OS & Runtime**: macOS 26.6.2 (Build 25G83) | Python: CPython 3.11.3 (`pyenv`)
+* **Power & Assertions**: AC Power (100%, finishing charge), Low Power Mode OFF (`pmset -g live`)
+* **System Telemetry**: CPU load avg: 2.78 / 3.21 / 4.72 (`uptime`) | Memory free: 75% (`memory_pressure`)
+* **Wi-Fi AP & Link**: Xiaomi AIoT AX3600 (OpenWrt 25.12.5, Qualcomm IPQ8071A) | 5GHz (Channel 100, 80MHz, Wi-Fi 6 / 802.11ax)
+* **Security & MDM Profile**: Corporate MDM (Microsoft Intune DEP-enrolled) | VPN: Zscaler Client Connector Active (`utun0`)
+* **Targets & Cadence**: LAN `192.168.31.1`, Direct ISP `1.1.1.1` (`-S local_ip`), Zscaler `9.9.9.9` | Interval: 2.0s | **120 samples** (18:03:24–18:09:19), captured via `split-tunnel-monitor -i 2.0 --count 120`
+
+```text
+[sample   3] LAN=11.3ms  ISP=10.7ms  ZSC=38.6ms   <-- Zscaler-only rise
+[sample  13] LAN=11.3ms  ISP= 9.6ms  ZSC=32.0ms   <-- Zscaler-only rise
+[sample  47] LAN=248.5ms ISP=245.6ms ZSC=244.2ms  <-- All three rise together — a real, single large local Wi-Fi PHY-wide event, well above the 48-96ms AWDL range documented elsewhere in this guide
+[sample  52] LAN=13.6ms  ISP=12.9ms  ZSC=79.3ms   <-- Zscaler-only rise
+[sample  92] LAN= 5.6ms  ISP= 9.8ms  ZSC=61.8ms   <-- Zscaler-only rise
+```
+> **Observation**: 3 of 120 samples (**~2.5%**) showed a target above 50ms — computed programmatically from the full raw logfile (not a manual excerpt count), directly addressing the "is 41 samples enough?" question: this is the first trace in the guide captured at the ~120-sample size the Section 6 power calculation says is needed for a real percentage comparison. Sample 47's 244–248ms all-three-rise event is the single largest local Wi-Fi PHY-wide spike recorded in this guide — a reminder that even a "compliant" sample size can still land an outlier tail event; a single capture, at any N, is still one data point. Compare against **Trace 3e** below, its matched Battery + Low Power Mode re-capture.
+
+---
+
+### Trace 3e: Corporate Managed Mac (Apple M2 Pro) — Battery + Low Power Mode, Zscaler Active [n=120, statistically compliant re-capture]
+* **Client Device**: MacBook Pro (Apple M2 Pro 16", 12-core, 2023)
+* **Client Wi-Fi Chipset**: Broadcom BCM4388 (`0x14E4, 0x4388`), DriverKit 1566.5 (`system_profiler SPAirPortDataType`)
+* **OS & Runtime**: macOS 26.6.2 (Build 25G83) | Python: CPython 3.11.3 (`pyenv`)
+* **Power & Assertions**: Battery (100%, discharging), Low Power Mode ON (`pmset -g batt` / `pmset -g live`)
+* **System Telemetry**: CPU load avg: 3.51 / 8.23 / 14.80 (`uptime`) | Memory free: ~76% (`memory_pressure`, captured immediately after the run — the exact start-of-capture reading was inadvertently lost to a truncated pipe)
+* **Wi-Fi AP & Link**: Xiaomi AIoT AX3600 (OpenWrt 25.12.5, Qualcomm IPQ8071A) | 5GHz (Channel 100, 80MHz, Wi-Fi 6 / 802.11ax)
+* **Security & MDM Profile**: Corporate MDM (Microsoft Intune DEP-enrolled) | VPN: Zscaler Client Connector Active (`utun0`)
+* **Targets & Cadence**: LAN `192.168.31.1`, Direct ISP `1.1.1.1` (`-S local_ip`), Zscaler `9.9.9.9` | Interval: 2.0s | **120 samples** (21:11:19–21:17:05), captured via `split-tunnel-monitor -i 2.0 --count 120`
+
+```text
+[sample 65] LAN= 4.8ms  ISP= 8.8ms  ZSC=59.2ms   <-- Zscaler-only rise
+[sample 69] LAN=64.6ms  ISP=61.8ms  ZSC=59.3ms   <-- All three rise together
+[sample 78] LAN=60.8ms  ISP=60.6ms  ZSC=62.4ms   <-- All three rise together
+```
+> **Observation**: 3 of 120 samples (**~2.5%**) showed a target above 50ms — **identical to Trace 3d's 2.5% (AC power)**, captured on the same machine, same day, same Zscaler-active state, with only the power source and Low Power Mode differing. This directly refutes the earlier (now-corrected) n=41-based claim that Battery + Low Power Mode "measurably increases jitter frequency" on this M2 Pro: at a properly powered sample size, the two conditions show no difference at all. One honest caveat this session surfaced: the 15-minute load average during this capture (14.80) was noticeably higher than Trace 3d's (4.72) — an uncontrolled difference between the two sessions — yet the elevated-sample rate still matched exactly, which is if anything reassuring that system load in this range isn't driving the result, but it means this pair isn't a perfectly clean A/B either.
+
+---
+
+
 ## 6. Methodology & Reproducibility Caveats
 
 Empirical traces in this guide are illustrative snapshots, not authoritative resting-baseline benchmarks. Two back-to-back capture sessions on the *same* M2 Pro, same Wi-Fi network, less than an hour apart, produced measurably different jitter profiles — this section documents how traces are captured and why session-to-session variance of this magnitude is expected.
@@ -562,12 +627,14 @@ Empirical traces in this guide are illustrative snapshots, not authoritative res
 | **Trace 3a** (Managed M2 Pro, Battery+LPM) | MacBook Pro (Apple M2 Pro) | BCM4388, 5GHz Ch 100 | Xiaomi AX3600 (OpenWrt 25.12.5) | 26.6.2 (25G83) | Battery (100%) | **Enabled** | 1.88 / 2.37 / 2.46 | 76% | Active | 3.11.3 |
 | **Trace 3b** (Managed M2 Pro, AC, Bypassed) | MacBook Pro (Apple M2 Pro) | BCM4388, 5GHz Ch 100 | Xiaomi AX3600 (OpenWrt 25.12.5) | 26.6.2 (25G83) | AC Power | Off | 1.97 / 2.50 / 2.52 | 77% | Bypassed | 3.11.3 |
 | **Trace 3c** (Managed M2 Pro, AC, Active) | MacBook Pro (Apple M2 Pro) | BCM4388, 5GHz Ch 100 | Xiaomi AX3600 (OpenWrt 25.12.5) | 26.6.2 (25G83) | AC Power | Off | 2.50 / 2.60 / 2.55 | 77% | Active | 3.11.3 |
+| **Trace 3d** (Managed M2 Pro, AC, Active, n=120) | MacBook Pro (Apple M2 Pro) | BCM4388, 5GHz Ch 100 | Xiaomi AX3600 (OpenWrt 25.12.5) | 26.6.2 (25G83) | AC Power | Off | 2.78 / 3.21 / 4.72 | 75% | Active | 3.11.3 |
+| **Trace 3e** (Managed M2 Pro, Battery+LPM, Active, n=120) | MacBook Pro (Apple M2 Pro) | BCM4388, 5GHz Ch 100 | Xiaomi AX3600 (OpenWrt 25.12.5) | 26.6.2 (25G83) | Battery (100%) | **Enabled** | 3.51 / 8.23 / 14.80 | ~76% | Active | 3.11.3 |
 
 **Confound resolved and hardware identity verified**:
-- Both machines share the **exact same Broadcom BCM4388 (`0x14E4, 0x4388`) Wi-Fi 6E chipset** running the **same macOS 26.6.2 (Build 25G83) OS build** on the same home Wi-Fi network (Channel 100, 5GHz, 80MHz, -35 to -39 dBm RSSI).
+- Both machines share the **exact same Broadcom BCM4388 (`0x14E4, 0x4388`) Wi-Fi 6E chipset** running the **same macOS 26.6.2 (Build 25G83) OS build** on the same home Wi-Fi network (Channel 100, 5GHz, 80MHz). *Note*: RSSI/MCS were not independently re-measured for every capture session — the M2 Pro's own verified reading earlier in this project was -45 dBm signal / -94 dBm noise; treat the "MCS 11" figure repeated across all four Section 2 columns as representative of this AP under typical conditions rather than a per-session verified measurement.
 - On the **M3**: AC Power / Low-Power-Mode-off (Trace 1b) sits at **~3.5–7.0ms**, matching the low end of the managed M2 Pro's baseline — proving that the ~50–60ms resting floor seen on battery (Trace 1a) was driven by Low Power Mode PSM sleep policy rather than unmanaged hardware.
 - On the **M2 Pro**: Battery + Low Power Mode (Trace 3a) did *not* create a steady ~50ms floor, but instead exhibited multi-modal jitter (~19.5% elevated samples) similar to its AC baseline (~7.3%).
-- **Causality Conclusion**: Because hardware chipset (BCM4388), OS build (26.6.2), and Wi-Fi access point (AX3600) are 100% identical, the observed latency differences are definitively proven to arise from **software/runtime policy factors**:
+- **Causality Conclusion**: Because hardware chipset (BCM4388), OS build (26.6.2), and Wi-Fi access point (AX3600) are identical across both machines, the observed latency differences are strongly indicated to arise from **software/runtime policy factors** rather than hardware — though this remains a single-comparison (N=1 pair) observation, not a controlled study:
   1. OS Power Assertions (active foreground app vs background idle sleep),
   2. Enterprise MDM/EDR background packet inspect hooks (Microsoft Defender ATP, Falcon),
   3. Zscaler Client Connector `utun` virtual next-hop encryption overhead, and
@@ -580,7 +647,25 @@ Empirical traces in this guide are illustrative snapshots, not authoritative res
 - **Trace 3a** (re-verified, Battery+Low-Power-Mode, Zscaler active, full telemetry recorded): 8 of 41 samples (~19.5%) elevated — noticeably higher than Trace 3c, though not a consistent floor.
 - **Trace 3b** (re-verified, AC Power, Zscaler bypassed, full telemetry recorded): 5 of 118 samples (~4.2%) elevated — the lowest of the three re-verified sessions.
 
-All three re-verified sessions (3a/3b/3c) ran under comparable, unremarkable system load (CPU load averages 1.9-2.6, memory free 76-77%) — ruling out background system contention as an explanation for the differences between them. The 12-19 percentage-point spread that remains is attributable to the Wi-Fi/power/tunnel-state variables each session specifically varied.
+All three re-verified sessions (3a/3b/3c) ran under comparable, unremarkable system load (CPU load averages 1.9-2.6, memory free 76-77%) — ruling out background system contention as an explanation for the differences between them. The 12-19 percentage-point spread that remains is attributable to the Wi-Fi/power/tunnel-state variables each session specifically varied, **subject to the statistical caveat below** — at n=41 per trace, this spread is not distinguishable from sampling noise.
+
+### Statistical Power & Confidence
+
+The AWDL/PSM spikes behind every "% elevated" statistic in this guide aren't independent coin-flips — they're a small number of discrete periodic events (one roughly every 10–22s) landing inside a fixed-length capture. A 41-sample trace at 2.0s interval (~82s) only contains **~4–8 such events**; one extra or missing event swings the reported percentage by ~2.5 points on its own. That makes the elevated-sample percentages in this guide much noisier than they look.
+
+**Worked example** — Trace 3c (3/41, ~7.3%) vs. Trace 3a (8/41, ~19.5%), the comparison Section 2 and the observation above use to suggest Battery + Low Power Mode increases jitter frequency:
+
+$$\text{SE}_{\text{diff}} = \sqrt{\frac{2\bar{p}(1-\bar{p})}{n}} \approx \sqrt{\frac{2(0.134)(0.866)}{41}} \approx 7.5\text{pp} \qquad z = \frac{19.5 - 7.3}{7.5} \approx 1.62$$
+
+$z \approx 1.62$ is below the conventional $z = 1.96$ ($p < 0.05$) threshold — **this difference is not statistically significant at n=41 per condition.** A proper power calculation for reliably detecting a gap this size (80% power, $\alpha = 0.05$) requires:
+
+$$n \approx \frac{(1.96+0.84)^2\left[p_1(1-p_1)+p_2(1-p_2)\right]}{(p_1-p_2)^2} \approx 118 \text{ samples per condition}$$
+
+(Trace 3b already happens to have 118 samples, but wasn't captured at that size *for* this comparison.) **Practical takeaway**: treat every elevated-sample percentage in this guide as a rough indicator, not a statistically validated finding, unless it's compared against another trace of at least a similar size using the calculation above. What n=41 traces *are* reliable for is the **per-sample pillar/fault-domain triangulation** (Section 3's LAN-vs-ISP-vs-Zscaler cross-target comparison) — that logic is a structural, per-sample diagnostic (does target X spike while target Y stays flat, in this one sample?), not an aggregate statistic, so it doesn't need a large N to be valid.
+
+**Resolved**: Traces 3d and 3e (both n=120, AC vs. Battery+LPM, otherwise matched) were captured specifically to settle this. Result: **3/120 (2.5%) elevated in both** — identical, not just "not significant." The n=41-based "Battery + Low Power Mode increases jitter frequency" claim does not hold up once the sample size is actually adequate to test it.
+
+**Recommendation for future contributors**: if your trace is meant to support a quantitative comparison (not just qualitative pillar attribution), capture at least **~120 samples** (`split-tunnel-monitor -i 2.0 --count 120`, ~4 minutes) per condition — see Section 4C.
 
 Neither Session A nor Session B is "wrong" — they illustrate that a single ~60-120s ad-hoc Wi-Fi capture is not a reproducible benchmark, and that the historical sessions' lack of recorded system telemetry (predating design.md Decision 5) means system load can't be fully ruled out as a contributor to *their* difference from each other. Both were captured on the same M2 Pro, same physical location, same AC-power/Low-Power-Mode-off state, so power state specifically is ruled out as the cause of the Session A-vs-B swing (unlike the M3-vs-M2-Pro comparison above, where it is a confirmed confound). Plausible contributors to the Session A-vs-B swing:
 - **Wi-Fi channel congestion** from other devices on the same AP/channel, which fluctuates minute-to-minute independent of anything on the Mac itself.
@@ -589,11 +674,11 @@ Neither Session A nor Session B is "wrong" — they illustrate that a single ~60
 - **AWDL/Bluetooth/Continuity activity** from nearby Apple devices (AirDrop, Handoff, Universal Clipboard) varies by whatever else is active nearby at capture time.
 
 ### Recommendation for engineers using this guide
-Treat any single capture as one data point. For a credible "is this network healthy" judgment, capture multiple sessions across different times of day, and where root-causing matters, corroborate with `airport -I` (RSSI/channel/noise), a packet capture, or a controlled AWDL-disabled comparison (Section 6, Step 2) rather than a single ad-hoc trace.
+Treat any single capture as one data point. For a credible "is this network healthy" judgment, capture multiple sessions across different times of day, and where root-causing matters, corroborate with `airport -I` (RSSI/channel/noise), a packet capture, or a controlled AWDL-disabled comparison (Section 7, Step 2) rather than a single ad-hoc trace.
 
 ---
 
-## 6. Diagnostic Playbook for Engineers & Users
+## 7. Diagnostic Playbook for Engineers & Users
 
 When troubleshooting complaints of "slow Wi-Fi" or "VPN lag" on macOS:
 
@@ -613,7 +698,7 @@ sudo ifconfig awdl0 down
 * **Result Analysis**: If periodic 30–80ms spikes disappear during ping tests, AWDL off-channel scanning is confirmed.
 
 ### Step 3: Differentiate LAN Jitter from ISP/VPN Jitter
-Using [`split-tunnel-monitor`](file:///Users/arjan/personal/split-tunnel-monitor/ping_checker.py):
+Using [`split-tunnel-monitor`](../ping_checker.py):
 ```bash
 split-tunnel-monitor
 ```
@@ -637,7 +722,7 @@ sudo fs_usage -w -f network
 
 ---
 
-## 7. IT Support & Security Helpdesk Escalation Playbook
+## 8. IT Support & Security Helpdesk Escalation Playbook
 
 When remote employees report "slow Wi-Fi" or "unstable VPN", IT helpdesks often reflexively respond: *"It's your home ISP router, please reboot it or plug in an Ethernet cable."*
 
@@ -699,7 +784,9 @@ I have captured deterministic network telemetry using multi-path ICMP triangulat
 
 ---
 
-## 8. Summary Reference Card
+## 9. Summary Reference Card
+
+**Reference test environment**: All magnitudes below were captured on Broadcom BCM4388 (Wi-Fi 6E) client hardware, connected to a **Xiaomi AIoT AX3600 router (OpenWrt 25.12.5, Qualcomm IPQ8071A/Ath11k)** on **5GHz Channel 100, 80MHz width, Wi-Fi 6 (802.11ax)**. These are not universal constants: DTIM interval, channel width, and AP vendor/firmware all directly affect the PSM/AWDL magnitudes below, so a different router brand/model/firmware, band (2.4/5/6GHz), or channel/width will produce a different — but analogous — fingerprint. Use the 8-point trace template (Section 4B) to record your own setup's fingerprint for comparison.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐

@@ -38,6 +38,20 @@ The repository SHALL include a dedicated technical guide documenting macOS Wi-Fi
 - **WHEN** a new hardware, OS version, or configuration comparison is added later
 - **THEN** it can be recorded using the same reusable structure already established in the guide — a numbered Trace entry in Section 4 (hardware, power source, Low Power Mode state, Python version, targets, interval) and a corresponding row in the Section 5 "Recorded capture conditions" table — without needing to redesign the document's format
 
+### Requirement: Statistically Adequate Sample Sizes for Comparative Claims
+
+The forensics guide SHALL NOT present a percentage-based comparison between two captures (e.g. "elevated-sample rate") as a meaningful, causally-attributable difference unless the sample size is adequate to distinguish that difference from chance, or the guide explicitly flags the comparison as statistically inconclusive.
+
+#### Scenario: Minimum sample size stated for new quantitative comparisons
+
+- **WHEN** the guide's capture protocol recommends a trace that will be used to support a quantitative percentage comparison between two conditions
+- **THEN** it states a minimum recommended sample count backed by a stated power calculation (e.g. ~120 samples per condition to reliably distinguish elevated-sample rates on the order of 7% vs. 20% at conventional significance), and points contributors to the `--count`/`-n` CLI option to capture exactly that many samples
+
+#### Scenario: Existing small-sample comparisons are labeled, not asserted as confirmed findings
+
+- **WHEN** a comparison in the guide is based on traces of 41 or fewer samples per condition
+- **THEN** the guide states that the resulting percentage difference is within statistical noise at that sample size (with an approximate confidence-interval or significance-test indication), rather than presenting it as a confirmed causal effect
+
 ### Requirement: Cross-Platform Power-State Benchmark Matrix
 
 The forensics guide SHALL provide a 2x2 comparison matrix documenting latency behavior under both AC power and Battery power across personal (unmanaged M3) and corporate MDM-managed (M2 Pro) environments.
