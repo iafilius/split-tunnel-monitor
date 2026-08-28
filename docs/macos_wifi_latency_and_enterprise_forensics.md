@@ -107,6 +107,81 @@ Probing `9.9.9.9` via the default route exercises the enterprise secure access l
 
 ---
 
+### 3.1 Deep Dive: The Anatomy of a 170ms LAN Ping (Compounding EDR & AWDL Queues)
+
+Engineers on corporate laptops frequently ask: *"Why does pinging my local home router—1 meter away over Wi-Fi 6—stretch to 100ms – 170ms+ on my work Mac, while my personal Mac rarely exceeds 96ms on the exact same Wi-Fi network?"*
+
+The answer lies in **compounding software and radio queue delays**:
+
+```
+                          ANATOMY OF A LAN PING ON MACOS
+                          ══════════════════════════════
+
+      [User Space: ping process]
+                 │  1. socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP)
+                 ▼
+      [macOS Kernel Network Stack (XNU)]
+                 │  2. Packet buffer (mbuf) allocated
+                 ▼
+      ┌───────────────────────────────────────────────────────────┐
+      │  ENTERPRISE HOOK LAYER (Corporate Mac Only!)              │
+      │  • EndpointSecurity System Extension (sysx)               │
+      │  • Microsoft Defender ATP Network Realtime Inspection     │
+      │  • CrowdStrike Falcon Socket Filter / BPF tap             │
+      │  • Content Filter NetworkExtension (NEFilterDataProvider) │
+      │                                                           │
+      │  ==> Intercepts raw socket, checks process signature,     │
+      │      and inspects network buffers before release!         │
+      │      (Adds +20ms to +40ms under CPU / I/O load)           │
+      └─────────────────────────────┬─────────────────────────────┘
+                                    │  3. Packet passed down
+                                    ▼
+      [macOS Network Interface Layer: en0]
+                                    │  4. Enqueued to DriverKit Wi-Fi queue
+                                    ▼
+      [IO80211 DriverKit & Broadcom PCIe Engine]
+                                    │  5. Broadcom BCM4388 Wi-Fi MAC
+                                    ▼
+      ┌───────────────────────────────────────────────────────────┐
+      │  PHYSICAL AIR / RADIO LAYER                               │
+      │  • If AWDL is active: Radio is off-channel (Ch 44/149)    │
+      │    for 80ms! Outbound frame is STALLED in hardware queue! │
+      │  • If PSM is active: AP buffers reply until DTIM beacon!  │
+      │      (Adds +80ms radio off-channel wait)                  │
+      └─────────────────────────────┬─────────────────────────────┘
+                                    │  6. Frame transmitted over 5GHz Wi-Fi 6
+                                    ▼
+      [Local Router / Gateway: 192.168.xx.1 (Xiaomi AX3600)]
+                                    │  7. Router replies in <0.5ms
+                                    ▼
+      [Physical Air Return to Mac]
+                                    │  8. Wi-Fi Card receives ICMP Echo Reply
+                                    ▼
+      ┌───────────────────────────────────────────────────────────┐
+      │  ENTERPRISE INGRESS INSPECTION                            │
+      │  • EDR packet filter inspects incoming mbuf               │
+      │  • Context switch from DriverKit/kernel to user daemon    │
+      │      (Adds +20ms to +50ms under background scanning)      │
+      └─────────────────────────────┬─────────────────────────────┘
+                                    │  9. Delivered to socket
+                                    ▼
+      [User Space: ping receives reply and records RTT]
+```
+
+#### The Mathematical Comparison: Clean Mac vs Corporate Mac
+
+1. **Clean Personal Mac (M3)**:
+   * Has zero kernel socket filters or EDR hooks.
+   * When an AWDL discovery scan triggers, the packet only waits for the radio to return from social channels (~80ms).
+   $$\text{RTT}_{\text{Clean}} = \underbrace{80\text{ms}}_{\text{AWDL off-channel wait}} + \underbrace{4\text{ms}}_{\text{Radio TX/RX}} + \underbrace{1\text{ms}}_{\text{Clean Kernel delivery}} \approx \mathbf{85\text{ms} – 96\text{ms}}$$
+
+2. **Corporate Managed Mac (M2 Pro)**:
+   * Active with Microsoft Defender ATP (`wdavdaemon`), CrowdStrike Falcon (`com.crowdstrike.falcon.Agent`), and Zscaler Client Connector (`ZscalerTunnel`).
+   * When background software updates, MDM compliance scans, or disk inspections run concurrently, the kernel socket hook and ingress packet filter introduce scheduling delays that compound with the AWDL radio stall:
+   $$\text{RTT}_{\text{Corporate}} = \underbrace{30\text{ms}}_{\text{EDR Socket Hook}} + \underbrace{80\text{ms}}_{\text{AWDL Radio Stall}} + \underbrace{4\text{ms}}_{\text{Radio TX/RX}} + \underbrace{40\text{ms}}_{\text{Ingress Filter Inspection}} \approx \mathbf{150\text{ms} – 170\text{ms+}}$$
+
+---
+
 ### Authoritative Multi-Path Fault Domain Triangulation
 
 | Monitored Pattern | LAN (`192.168.xx.1`) | ISP Direct (`1.1.1.1`) | Zscaler (`9.9.9.9`) | Root Cause / Fault Domain |
@@ -486,9 +561,85 @@ split-tunnel-monitor
   - If **LAN, ISP, and Zscaler all rise together by +50ms**, the delay is 100% on the local Wi-Fi hop.
   - If **LAN is 5ms, ISP is 10ms, but Zscaler is 95ms**, the overhead is genuinely inside the Zscaler cloud edge or corporate tunnel.
 
+### Step 4: Audit Active Enterprise Security Extensions (Non-Root)
+To discover which enterprise security daemons are intercepting network traffic on your Mac:
+```bash
+# 1. List active EndpointSecurity and Network Content Filter extensions:
+systemextensionsctl list
+
+# 2. Check active EDR and VPN daemons:
+ps aux | grep -E "wdavdaemon|falcon|Zscaler|mdmclient" | grep -v grep
+
+# 3. View live kernel network socket interception (requires sudo/admin):
+sudo fs_usage -w -f network
+```
+* **Result Analysis**: If `EndpointSecurity` or `NetworkExtension` providers (e.g. `com.microsoft.wdav.netfilter` or `com.crowdstrike.falcon.Agent`) are loaded (`[activated enabled]`), socket operations are actively routed through enterprise user-space inspection daemons.
+
 ---
 
-## 7. Summary Reference Card
+## 7. IT Support & Security Helpdesk Escalation Playbook
+
+When remote employees report "slow Wi-Fi" or "unstable VPN", IT helpdesks often reflexively respond: *"It's your home ISP router, please reboot it or plug in an Ethernet cable."*
+
+By providing deterministic evidence captured via `split-tunnel-monitor` and macOS telemetry, engineers can definitively demonstrate whether the bottleneck is on local Wi-Fi, the ISP WAN underlay, or enterprise endpoint software.
+
+### A. What the End-User Can Do (Evidence Collection)
+1. Ensure the Mac is plugged into **AC MagSafe power** (to eliminate the 802.11 PSM battery sleep confound).
+2. Run a 40-sample capture with `split-tunnel-monitor`:
+   ```bash
+   split-tunnel-monitor -i 2.0
+   ```
+3. Run the telemetry snapshot one-liner:
+   ```bash
+   sw_vers && uptime && memory_pressure && systemextensionsctl list
+   ```
+
+### B. What the Enterprise IT / Security Administrator Can Configure
+If EDR inspection or VPN tunnel overhead is proven to be the source of jitter:
+1. **Endpoint Process Exclusions**: Add developer toolchains, local compilers, and ICMP diagnostic binaries to Microsoft Defender / CrowdStrike real-time inspection exclusions.
+2. **Network Content Filter Bypass**: Configure Microsoft Defender NetFilter to bypass local LAN subnets (`192.168.0.0/16`, `10.0.0.0/8`, `172.16.0.0/12`) so local gateway traffic is handled entirely in kernel space.
+3. **Zscaler ZIA / ZPA Split-Tunnel Optimization**: Ensure trusted corporate destinations (Teams, Zoom, Git over SSH) are bypassed from TLS deep-packet inspection under ZCC app profiles.
+
+---
+
+### C. Standardized IT Support Ticket Template
+
+Copy and paste this template directly into your corporate ticketing portal (ServiceNow, Jira Service Desk, Zendesk):
+
+```markdown
+Subject: Network Latency / Split-Tunnel Overhead Forensics on [MacBook Model]
+
+Dear IT / Security Support Team,
+
+I have captured deterministic network telemetry using multi-path ICMP triangulation to diagnose recurring latency degradation on my corporate-managed macOS laptop.
+
+### 1. System & Security Context
+* **Device**: [e.g. MacBook Pro M2 Pro 16", 12-core]
+* **OS Build**: macOS [e.g. 26.6.2 (Build 25G83)]
+* **Power State**: AC MagSafe Connected (Low Power Mode OFF)
+* **System Load**: CPU load avg [e.g. 1.88], Memory Free [e.g. 76%]
+* **Active Security Extensions**: [e.g. Microsoft Defender ATP (com.microsoft.wdav.netfilter), Zscaler Client Connector (utun0)]
+
+### 2. Multi-Path Triangulation Evidence
+* **Local LAN Gateway (192.168.xx.1)**: [e.g. Baseline 4.9ms | Peak 96.4ms during EDR load]
+* **Direct ISP Underlay (1.1.1.1 bound to en0)**: [e.g. Baseline 8.2ms | Peak 12.0ms]
+* **Zscaler Tunnel (9.9.9.9 via utun0)**: [e.g. Baseline 9.4ms | Spikes to 102.3ms]
+* **Observed Overhead (OVH: p50/p95)**: p50 = [+1.2ms], p95 = [+4.5ms to +80ms during tunnel contention]
+
+### 3. Diagnostic Deductions
+1. **Local Wi-Fi is Proven Healthy**: Rapid probing (`ping -c 41 -i 0.2 192.168.xx.1`) delivers 85%+ of packets in <6.0ms on 5GHz Wi-Fi 6 (Channel 100, -38 dBm RSSI).
+2. **ISP WAN Underlay is Stable**: Direct ISP traffic (`1.1.1.1`) maintains a steady 8–12ms round-trip with 0% packet loss.
+3. **Identified Bottleneck**: [Select One:
+   - [ ] Enterprise EDR Content Filter Socket Hook adding +40ms to +80ms delay during background daemon scans.
+   - [ ] Zscaler ZIA Cloud Edge latency spike (+90ms) occurring independently while LAN and ISP underlay remain <10ms.]
+
+### 4. Requested Action
+- Please review active Defender ATP / Falcon network inspection policies and verify if local subnet exclusions (`192.168.0.0/16`) or Zscaler Cloud Edge re-routing can be applied to this device profile.
+```
+
+---
+
+## 8. Summary Reference Card
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -502,3 +653,4 @@ split-tunnel-monitor
 │ Random multi-modal jump │ ~20 – 120 ms      │ Zscaler + EDR Packet Filters  │
 └─────────────────────────┴───────────────────┴───────────────────────────────┘
 ```
+

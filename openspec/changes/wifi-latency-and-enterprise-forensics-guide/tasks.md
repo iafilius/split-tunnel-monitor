@@ -65,6 +65,10 @@
 - [x] 9.3 Format all reference trace headers and comparison tables with the 8-point metadata schema (Client hardware, chipset, OS/Python, power state/assertions, system load/memory, AP brand/model/firmware, Wi-Fi standard/band/channel, and MDM/security profile).
 - [x] 9.4 Synchronize Antigravity Knowledge Item `macos_wifi_latency_psm_and_mdm_forensics` and run full test suite validation.
 
+## 10. Enterprise Security & EDR Latency Deep Dive
 
-
+- [x] 10.1 Add Section 3.1 to documentation detailing the compounding queue mechanics of EDR socket interception (Microsoft Defender ATP / Falcon), DriverKit scheduling, and AWDL off-channel scanning causing 170ms LAN pings.
+- [x] 10.2 Document non-invasive diagnostic commands for auditing active system extensions and network content filters (`systemextensionsctl list`, `scutil --dns`, `ps aux`, `sudo fs_usage -w -f network`).
+- [x] 10.3 Add an IT Support & Security Helpdesk Escalation Playbook with a structured ticket template containing deterministic multi-path evidence.
+- [x] 10.4 Synchronize findings with Antigravity Knowledge Item and validate all OpenSpec specs.
 

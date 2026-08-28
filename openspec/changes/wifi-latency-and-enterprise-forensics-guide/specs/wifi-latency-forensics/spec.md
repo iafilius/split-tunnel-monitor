@@ -107,8 +107,26 @@ The forensics guide SHALL formalize the concept of "macOS Wi-Fi Latency Fingerpr
 - **WHEN** a contributor prepares to record a benchmark trace
 - **THEN** the guide provides exact copy-paste shell one-liners to extract system telemetry, Wi-Fi link parameters, and power assertions in under 5 seconds
 
-### Requirement: Reference Guide Discoverability
+### Requirement: Enterprise EDR & Endpoint Security Overhead Diagnostics
 
+The forensics guide SHALL document the architectural mechanics of EDR/antivirus socket interception, provide non-invasive diagnostic commands, and include an IT support escalation playbook.
+
+#### Scenario: Compounding EDR and AWDL Queue Breakdown
+
+- **WHEN** diagnosing high LAN gateway pings (up to 170ms+) on corporate machines
+- **THEN** the guide provides an end-to-end architectural pipeline diagram showing how EDR socket hooks (Microsoft Defender ATP / Falcon), DriverKit queueing, and AWDL off-channel scanning compound to produce 150–170ms+ delays on local hops
+
+#### Scenario: Non-Invasive Security Extension Audit Commands
+
+- **WHEN** an end-user or engineer investigates active security agents
+- **THEN** the guide provides non-root and root diagnostic commands (`systemextensionsctl list`, `scutil --dns`, `ps aux`, `sudo fs_usage -w -f network`) to inspect active content filters and system extensions
+
+#### Scenario: IT Support & Security Helpdesk Escalation Playbook
+
+- **WHEN** an employee needs to report network performance degradation to corporate IT/Security
+- **THEN** the guide provides a structured ticket template with reproducible evidence (trace outputs, system extension listings, power state, and multi-path triangulation data) to accelerate vendor/IT resolution
+
+### Requirement: Reference Guide Discoverability
 
 The repository README SHALL link to the Wi-Fi latency and enterprise forensics guide.
 
@@ -116,3 +134,4 @@ The repository README SHALL link to the Wi-Fi latency and enterprise forensics g
 
 - **WHEN** browsing the project README
 - **THEN** a link to `docs/macos_wifi_latency_and_enterprise_forensics.md` is present under the technical guides section
+

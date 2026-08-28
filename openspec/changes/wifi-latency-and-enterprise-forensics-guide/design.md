@@ -45,7 +45,12 @@ Users running `split-tunnel-monitor` on macOS need clear explanations for latenc
 - **Rationale**: Classifying behaviors into deterministic "macOS Wi-Fi Latency Fingerprints" (Fingerprint A: PSM Sleep Floor, Fingerprint B: AWDL Social Scan, Fingerprint C: Enterprise EDR/Overlay Jitter) provides a rigorous diagnostic framework. Establishing an 8-point metadata schema and providing one-liner CLI telemetry capture commands allows future engineers and community contributors across different AP vendor hardware (UniFi, Cisco Meraki, Aruba, Asus, OpenWrt) to submit reproducible benchmark traces without ambiguity.
 - **Alternative**: Ad-hoc, unstructured text submissions (rejected: leads to missing variables like power state, channel width, or EDR load).
 
+### Decision 8: EDR & Security Agent Latency Architecture & End-User Escalation Protocol
+- **Rationale**: Remote employees on corporate-managed laptops frequently encounter friction when contacting IT helpdesks ("it's your home Wi-Fi router"). Providing a detailed breakdown of compounding EDR/DriverKit socket delays along with an actionable IT Support Escalation Template equips engineers with incontrovertible evidence to demonstrate whether latency is on local Wi-Fi, the ISP WAN underlay, or enterprise endpoint inspection hooks.
+- **Alternative**: Generic troubleshooting advice without ticket templates (rejected: leaves users unable to effectively communicate findings to security teams).
+
 ## Risks / Trade-offs
+
 
 
 
