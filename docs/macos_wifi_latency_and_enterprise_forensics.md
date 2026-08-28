@@ -235,8 +235,8 @@ To ensure that latency traces contributed by different engineers across differen
 Before starting a benchmark capture, run these two commands in macOS Terminal to extract all link and system telemetry in under 5 seconds:
 
 ```bash
-# 1. System Telemetry & Power Snapshot:
-echo "=== SYSTEM & POWER TELEMETRY ===" && sw_vers && uptime && memory_pressure && pmset -g live
+# 1. System Telemetry, Swap & Power Snapshot:
+echo "=== SYSTEM, SWAP & POWER TELEMETRY ===" && sw_vers && uptime && memory_pressure && sysctl vm.swapusage && pmset -g live
 
 # 2. Wi-Fi Link & AP Parameter Snapshot:
 system_profiler SPAirPortDataType | grep -E "Card Type|Firmware Version|MAC Address|Current Network Information|PHY Mode|Channel|Country Code|Security|Signal / Noise"

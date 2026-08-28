@@ -116,17 +116,28 @@ The forensics guide SHALL document the architectural mechanics of EDR/antivirus 
 - **WHEN** diagnosing high LAN gateway pings (up to 170ms+) on corporate machines
 - **THEN** the guide provides an end-to-end architectural pipeline diagram showing how EDR socket hooks (Microsoft Defender ATP / Falcon), DriverKit queueing, and AWDL off-channel scanning compound to produce 150–170ms+ delays on local hops
 
+#### Scenario: System Resource Contention & Memory Swap Amplification
+
+- **WHEN** diagnosing network performance under developer workloads (Xcode compilation, Docker containers, high memory pressure, SSD swapping)
+- **THEN** the guide documents the expected amplification effect where CPU run-queue starvation and anonymous memory page faults can increase LAN ICMP latency from 90–170ms up to 300–800ms+ or trigger transient packet loss, distinguishing OS resource contention from Wi-Fi or ISP network failures
+
+#### Scenario: Telemetry Capture of Swap & Resource Pressure
+
+- **WHEN** recording or contributing benchmark traces under active workloads
+- **THEN** the telemetry schema requires capturing swap usage (`sysctl vm.swapusage`), memory pressure (`memory_pressure`), and CPU load average (`uptime`) to correlate latency spikes with system resource pressure
+
 #### Scenario: Non-Invasive Security Extension Audit Commands
 
 - **WHEN** an end-user or engineer investigates active security agents
-- **THEN** the guide provides non-root and root diagnostic commands (`systemextensionsctl list`, `scutil --dns`, `ps aux`, `sudo fs_usage -w -f network`) to inspect active content filters and system extensions
+- **THEN** the guide provides non-root and root diagnostic commands (`systemextensionsctl list`, `scutil --dns`, `ps aux`, `sudo fs_usage -w -f network`, `sysctl vm.swapusage`) to inspect active content filters and system extensions
 
 #### Scenario: IT Support & Security Helpdesk Escalation Playbook
 
 - **WHEN** an employee needs to report network performance degradation to corporate IT/Security
-- **THEN** the guide provides a structured ticket template with reproducible evidence (trace outputs, system extension listings, power state, and multi-path triangulation data) to accelerate vendor/IT resolution
+- **THEN** the guide provides a structured ticket template with reproducible evidence (trace outputs, system extension listings, power state, swap/memory metrics, and multi-path triangulation data) to accelerate vendor/IT resolution
 
 ### Requirement: Reference Guide Discoverability
+
 
 The repository README SHALL link to the Wi-Fi latency and enterprise forensics guide.
 

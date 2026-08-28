@@ -49,7 +49,12 @@ Users running `split-tunnel-monitor` on macOS need clear explanations for latenc
 - **Rationale**: Remote employees on corporate-managed laptops frequently encounter friction when contacting IT helpdesks ("it's your home Wi-Fi router"). Providing a detailed breakdown of compounding EDR/DriverKit socket delays along with an actionable IT Support Escalation Template equips engineers with incontrovertible evidence to demonstrate whether latency is on local Wi-Fi, the ISP WAN underlay, or enterprise endpoint inspection hooks.
 - **Alternative**: Generic troubleshooting advice without ticket templates (rejected: leaves users unable to effectively communicate findings to security teams).
 
+### Decision 9: Resource Contention Disambiguation (CPU Sched & Memory Swap vs Network Faults)
+- **Rationale**: High latency under heavy developer workloads (Xcode/Rust builds, Docker, RAM pressure) can easily mimic network degradation. By explicitly capturing `sysctl vm.swapusage`, `memory_pressure`, and `uptime` load averages alongside ICMP probes, testing protocols can conclusively disambiguate whether a 300ms–800ms spike was caused by Wi-Fi medium drops or EDR user-space daemon paging and thread scheduling starvation.
+- **Alternative**: Assuming all latency is network-related (rejected: causes misdiagnosis of local workstation CPU/RAM bottlenecks as router/ISP faults).
+
 ## Risks / Trade-offs
+
 
 
 

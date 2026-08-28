@@ -68,7 +68,9 @@
 ## 10. Enterprise Security & EDR Latency Deep Dive
 
 - [x] 10.1 Add Section 3.1 to documentation detailing the compounding queue mechanics of EDR socket interception (Microsoft Defender ATP / Falcon), DriverKit scheduling, and AWDL off-channel scanning causing 170ms LAN pings.
-- [x] 10.2 Document non-invasive diagnostic commands for auditing active system extensions and network content filters (`systemextensionsctl list`, `scutil --dns`, `ps aux`, `sudo fs_usage -w -f network`).
-- [x] 10.3 Add an IT Support & Security Helpdesk Escalation Playbook with a structured ticket template containing deterministic multi-path evidence.
-- [x] 10.4 Synchronize findings with Antigravity Knowledge Item and validate all OpenSpec specs.
+- [x] 10.2 Add Section 3.2 detailing amplification under heavy CPU compilation (run-queue starvation) and memory swapping (page faults stalling ICMP sockets up to 800ms+).
+- [x] 10.3 Document non-invasive diagnostic commands for auditing active system extensions, swap usage, and network content filters (`systemextensionsctl list`, `sysctl vm.swapusage`, `scutil --dns`, `ps aux`, `sudo fs_usage -w -f network`).
+- [x] 10.4 Add an IT Support & Security Helpdesk Escalation Playbook with a structured ticket template containing deterministic multi-path evidence.
+- [x] 10.5 Synchronize findings with Antigravity Knowledge Item and validate all OpenSpec specs.
+
 
