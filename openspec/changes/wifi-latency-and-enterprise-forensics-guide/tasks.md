@@ -53,5 +53,18 @@
   3. Pillar 3: Zscaler Tunnel Path (`9.9.9.9` & `OVH: p50/p95`) — `utun` virtual next-hop encapsulation, TLS proxy inspection, ZIA cloud edge routing, and mathematical rolling overhead calculation.
 - [x] 8.2 Incorporate the authoritative 3-way fault domain triangulation matrix into the documentation and knowledge base.
 
+## 9. Standardized Latency Fingerprint Telemetry Schema & Contributor Protocol
+
+- [x] 9.1 Formalize the 3 core "macOS Wi-Fi Latency Fingerprints" in Executive Summary and Section 3:
+  1. Fingerprint A: 802.11 PSM DTIM Sleep Floor (~50–60ms resting floor on battery idle).
+  2. Fingerprint B: AWDL Off-Channel Discovery Scan Spikes (48ms–96ms periodic 10s–22s spikes across all targets).
+  3. Fingerprint C: Enterprise EDR & Virtual-Hop Overlay Jitter (90ms–170ms+ multi-modal spikes from Defender ATP/Falcon hooks and Zscaler `utun` encapsulation).
+- [x] 9.2 Add a dedicated Contributor Protocol section with copy-paste one-liner commands:
+  - System Telemetry: `sw_vers && uptime && memory_pressure && pmset -g live`
+  - Wi-Fi Link Parameters: `system_profiler SPAirPortDataType | grep -E "Card Type|Firmware|Current Network|Channel|PHY Mode"`
+- [x] 9.3 Format all reference trace headers and comparison tables with the 8-point metadata schema (Client hardware, chipset, OS/Python, power state/assertions, system load/memory, AP brand/model/firmware, Wi-Fi standard/band/channel, and MDM/security profile).
+- [x] 9.4 Synchronize Antigravity Knowledge Item `macos_wifi_latency_psm_and_mdm_forensics` and run full test suite validation.
+
+
 
 

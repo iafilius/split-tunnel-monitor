@@ -1,20 +1,35 @@
-# macOS Wi-Fi Latency Forensics: Power Save Mode (PSM), AWDL & Enterprise MDM/VPN Stacks
+# macOS Wi-Fi Latency Fingerprints: Power Save Mode (PSM), AWDL & Enterprise MDM/VPN Forensics
 
-A technical reference and diagnostic guide explaining why macOS Wi-Fi ICMP latency behaves counter-intuitively across different Apple Silicon hardware generations and management profiles.
+A technical reference, diagnostic guide, and standardized benchmarking protocol explaining why macOS Wi-Fi ICMP latency exhibits distinct physical and OS-level **"Latency Fingerprints"** across Apple Silicon hardware, power profiles, and enterprise security stacks.
 
 ---
 
-## 1. Executive Summary
+## 1. Executive Summary: The 3 Core macOS Latency Fingerprints
 
-When diagnosing network performance and VPN split-tunneling on macOS, engineers frequently observe puzzling ICMP ping patterns across local and remote destinations:
-* **The LAN Gateway Paradox**: Pinging the local home router (`192.168.xx.1`) only 1 meter away does not sit at a flat 1ms. On battery with Low Power Mode ON, it can appear stuck at a "stable" **~50–60ms** floor (an artifact of 802.11 PSM DTIM beacon buffering), while dropping to **~4–8ms** during active use.
-* **Periodic Wi-Fi Jitter**: On both personal and corporate Macs, local LAN pings periodically spike to **45ms – 96ms** every 10–22 seconds due to Apple Wireless Direct Link (AWDL) off-channel social discovery scans.
-* **Enterprise Multi-Modal Swings**: On a corporate-managed Mac, local LAN pings can stretch up to **100ms – 170ms+** during background EDR inspection (Microsoft Defender ATP / Falcon), while Zscaler tunnel targets (`9.9.9.9`) exhibit independent **90ms – 102ms** spikes even when local Wi-Fi and direct ISP paths are idle.
+When diagnosing network performance and VPN split-tunneling on macOS, engineers frequently observe puzzling ICMP ping patterns across local and remote destinations. Rather than unstructured random noise, these patterns fall into three deterministic **macOS Latency Fingerprints**:
 
-These behaviors are deterministic physical and OS-level artifacts across three distinct network tiers:
-1. **Local Wi-Fi Tier**: IEEE 802.11 Power Save Mode (PSM) DTIM beacon buffering and AWDL off-channel scanning.
-2. **Direct WAN Underlay Tier**: Upstream ISP DOCSIS/fiber bufferbloat isolated via source-bound probing (`1.1.1.1` via `-S local_ip`).
-3. **Enterprise Overlay Tier**: Zscaler Client Connector (`utun` user-space NetworkExtension routing), MDM compliance syncs, and EDR packet filters.
+```
+                              MACOS LATENCY FINGERPRINT TYPES
+                              ═══════════════════════════════
+
+  [Fingerprint A: PSM Sleep Floor]     [Fingerprint B: AWDL Social Scan]    [Fingerprint C: Enterprise Overlay]
+       (Battery + LPM State)                   (10s–22s Cadence)                   (MDM / Zscaler Stack)
+  ┌──────────────────────────────┐     ┌──────────────────────────────┐     ┌──────────────────────────────┐
+  │ • ~50–60ms resting floor     │     │ • 48ms–96ms sync spikes      │     │ • 90ms–170ms multi-modal     │
+  │ • AP DTIM beacon buffer      │     │ • Radio leaves AP channel    │     │ • DriverKit socket hooks     │
+  │ • Drops to 4ms on wakeup     │     │ • All 3 targets jump         │     │ • Zscaler utun routing       │
+  └──────────────────────────────┘     └──────────────────────────────┘     └──────────────────────────────┘
+```
+
+1. **Fingerprint A: The 802.11 PSM Sleep Floor (~50–60ms)**:
+   * Pinging the local home router (`192.168.xx.1`) only 1 meter away appears stuck at ~50–60ms when on battery with Low Power Mode ON and no active foreground network tasks.
+   * Solitary 2.0s probes cause the Wi-Fi PHY to sleep; the Access Point buffers replies in its queue until the next DTIM beacon frame. An active burst immediately wakes the radio to **~4–8ms**.
+2. **Fingerprint B: AWDL Off-Channel Discovery Scans (48ms – 96ms)**:
+   * Every 10 to 22 seconds, macOS temporarily switches the Broadcom radio away from the connected AP channel to 5GHz social channels for AirDrop/Continuity beacons.
+   * All outbound frames during this 80ms window are queued, causing simultaneous **48ms – 96ms spikes across LAN, Direct ISP, and VPN targets**.
+3. **Fingerprint C: Enterprise Overlay & EDR Inspection (90ms – 170ms+)**:
+   * On corporate-managed Macs, endpoint security filters (Microsoft Defender ATP / Falcon) and Zscaler Client Connector (`utun` user-space NetworkExtension routing) add kernel/driver scheduling delays.
+   * LAN gateway pings stretch up to **100ms – 170ms+** under background load, while Zscaler tunnel targets (`9.9.9.9`) exhibit independent **90ms – 102ms** spikes even when local Wi-Fi and direct ISP paths are idle.
 
 ---
 
@@ -22,16 +37,18 @@ These behaviors are deterministic physical and OS-level artifacts across three d
 
 | Metric / Dimension             | Personal Mac (Battery + Low Power Mode)                                                              | Personal Mac (AC Power, Normal Mode)                                                                 | Corporate MDM-Managed Mac (AC Power, Normal Mode)                                                    | Corporate MDM-Managed Mac (Battery + Low Power Mode)                                                 |
 | :----------------------------- | :--------------------------------------------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------- |
-| **Hardware**                   | MacBook Pro (Apple M3)                                                                               | MacBook Pro (Apple M3)                                                                               | MacBook Pro (Apple M2 Pro)                                                                           | MacBook Pro (Apple M2 Pro)                                                                           |
+| **Hardware**                   | MacBook Pro (Apple M3)                                                                               | MacBook Pro (Apple M3)                                                                               | MacBook Pro (Apple M2 Pro, 12-core)                                                                  | MacBook Pro (Apple M2 Pro, 12-core)                                                                  |
 | **Wi-Fi Subsystem**            | Broadcom Wi-Fi 6E (BCM4388 `0x14E4/0x4388`, verified via `system_profiler SPAirPortDataType`; 6GHz)  | Broadcom Wi-Fi 6E (BCM4388 `0x14E4/0x4388`, verified via `system_profiler SPAirPortDataType`; 6GHz)  | Broadcom Wi-Fi 6E (BCM4388 `0x14E4/0x4388`, verified via `system_profiler SPAirPortDataType`; 6GHz) | Broadcom Wi-Fi 6E (BCM4388 `0x14E4/0x4388`, verified via `system_profiler SPAirPortDataType`; 6GHz) |
+| **Wi-Fi Standard & Band**      | **Wi-Fi 6 (802.11ax)**, 5GHz (Channel 100, 80MHz width, MCS 11)                                      | **Wi-Fi 6 (802.11ax)**, 5GHz (Channel 100, 80MHz width, MCS 11)                                      | **Wi-Fi 6 (802.11ax)**, 5GHz (Channel 100, 80MHz width, MCS 11)                                      | **Wi-Fi 6 (802.11ax)**, 5GHz (Channel 100, 80MHz width, MCS 11)                                      |
+| **Access Point (AP)**          | **Xiaomi AIoT AX3600** (OpenWrt 25.12.5, Qualcomm IPQ8071A / Ath11k)                                | **Xiaomi AIoT AX3600** (OpenWrt 25.12.5, Qualcomm IPQ8071A / Ath11k)                                | **Xiaomi AIoT AX3600** (OpenWrt 25.12.5, Qualcomm IPQ8071A / Ath11k)                                | **Xiaomi AIoT AX3600** (OpenWrt 25.12.5, Qualcomm IPQ8071A / Ath11k)                                |
 | **OS / Fleet Management**      | Clean macOS (Free / Unmanaged)                                                                       | Clean macOS (Free / Unmanaged)                                                                       | Corporate MDM (Microsoft Intune / DEP-enrolled)                                                      | Corporate MDM (Microsoft Intune / DEP-enrolled)                                                      |
 | **Security & VPN Agents**      | Native macOS Network Stack                                                                           | Native macOS Network Stack                                                                           | Zscaler Client Connector (ZCC), Defender ATP, Falcon                                                 | Zscaler Client Connector (ZCC), Defender ATP, Falcon                                                 |
-| **Power State**                | **Battery Power, Low Power Mode ON**                                                                 | **AC Power, Low Power Mode OFF**                                                                     | **AC Power, Low Power Mode OFF**                                                                     | **Battery Power, Low Power Mode ON**                                                                 |
-| **Resting Wi-Fi Latency**      | **~50–60ms** (Aggressive 802.11 PSM Sleep)                                                           | **~5–8ms** (Normal Radio State)                                                                      | **6ms – 100ms+** (Multi-Modal Jitter)                                                                | **~6ms – 90ms** (Multi-Modal Jitter, similar magnitude to AC)                                        |
+| **Power State**                | **Battery Power (85%), Low Power Mode ON**                                                           | **AC Power (MagSafe), Low Power Mode OFF**                                                           | **AC Power (MagSafe), Low Power Mode OFF**                                                           | **Battery Power (100%), Low Power Mode ON**                                                          |
+| **Dominant Fingerprint**       | **Fingerprint A (PSM Floor ~50–60ms)** + Fingerprint B                                                | **Clean Baseline (~4–8ms)** + Fingerprint B (14.6% elevated)                                         | **Fingerprint C (Overlay Jitter)** + Fingerprint B (7.3% elevated)                                   | **Fingerprint C (Overlay Jitter)** + Fingerprint B (19.5% elevated)                                  |
 | **Wakeup / Periodic Behavior** | Drops to 4–7ms every 21s (Subprocess burst)                                                          | Steady 5–8ms baseline with 1s AWDL spikes                                                            | Mixed: AWDL spikes + WAN drops + Zscaler `utun` jitter                                               | Same mixed pattern as AC — no distinct battery-only PSM floor observed                               |
-| **Local Gateway Router**       | Xiaomi AIoT AX3600 (OpenWrt, Qualcomm IPQ8071A / Ath11k)                                             | Same Home Gateway / Access Point                                                                     | Same Home Gateway / Access Point                                                                     | Same Home Gateway / Access Point                                                                     |
 
-> **Key finding (confirmed on identical Broadcom BCM4388 hardware)**: Both machines share the **exact same Broadcom BCM4388 (`0x14E4, 0x4388`) Wi-Fi 6E card** running on macOS 26.6.2 (Build 25G83). This completely eliminates hardware chipset differences as a variable. On the M3, Low Power Mode alone is responsible for the ~50-60ms resting floor — the *same unmanaged* M3 on AC power with Low Power Mode off sits at ~5-8ms (Trace 1b), matching the low end of the managed M2 Pro's range. On the M2 Pro, enabling Battery + Low Power Mode (Trace 3a) did **not** produce a comparable consistent floor — it stayed multi-modal (~19.5% elevated samples), similar in shape to its own AC-power baseline (~7.3%). This proves the resting floor variation is entirely a product of OS power-assertion policy, background process state, and corporate security/network filter hooks. See Section 5 for full methodology and Section 4 for the supporting traces.
+> **Key finding (confirmed on identical Broadcom BCM4388 hardware)**: Both machines share the **exact same Broadcom BCM4388 (`0x14E4, 0x4388`) Wi-Fi 6E card** running on macOS 26.6.2 (Build 25G83) connected to the **same Xiaomi AX3600 OpenWrt 25.12.5 AP on 5GHz Channel 100**. This completely eliminates hardware chipset differences and AP variables. On the M3, Low Power Mode alone is responsible for the ~50-60ms resting floor — the *same unmanaged* M3 on AC power with Low Power Mode off sits at ~4-8ms (Trace 1b), matching the low end of the managed M2 Pro's range. On the M2 Pro, enabling Battery + Low Power Mode (Trace 3a) did **not** produce a comparable consistent floor — it stayed multi-modal (~19.5% elevated samples), similar in shape to its own AC-power baseline (~7.3%). This proves the resting floor variation is entirely a product of OS power-assertion policy, background process state, and corporate security/network filter hooks.
+
 
 ---
 
@@ -101,9 +118,50 @@ Probing `9.9.9.9` via the default route exercises the enterprise secure access l
 
 ---
 
+## 4. Standardized Capture Protocol & Multi-Contributor Telemetry Schema
+
+To ensure that latency traces contributed by different engineers across different hardware (Apple Silicon M1/M2/M3/M4, Intel) and Wi-Fi environments (OpenWrt, UniFi, Cisco Meraki, Aruba, Asus, Eero, AVM FRITZ!Box) are 100% reproducible and comparable, every trace MUST follow the **8-Point Metadata Schema**.
+
+### A. One-Liner Telemetry Extraction Commands
+Before starting a benchmark capture, run these two commands in macOS Terminal to extract all link and system telemetry in under 5 seconds:
+
+```bash
+# 1. System Telemetry & Power Snapshot:
+echo "=== SYSTEM & POWER TELEMETRY ===" && sw_vers && uptime && memory_pressure && pmset -g live
+
+# 2. Wi-Fi Link & AP Parameter Snapshot:
+system_profiler SPAirPortDataType | grep -E "Card Type|Firmware Version|MAC Address|Current Network Information|PHY Mode|Channel|Country Code|Security|Signal / Noise"
+```
+
+### B. Standardized 8-Point Trace Template for Contributors
+When submitting or recording a new trace, format the entry as follows:
+
+```markdown
+### Trace X: [Device Model] — [Power State] ([Network Environment / Security Mode])
+* **Client Device**: MacBook Pro ([Apple Silicon / Intel Model])
+* **Client Wi-Fi Chipset**: [Chipset Model, e.g. Broadcom BCM4388 0x14E4/0x4388], DriverKit [Version]
+* **OS & Runtime**: macOS [Version, Build] | Python: [CPython Version]
+* **Power & Assertions**: [AC Power / Battery %], Low Power Mode [ON/OFF] (`pmset -g live`)
+* **System Telemetry**: CPU load avg: [1/5/15 min] (`uptime`) | Memory free: [%] (`memory_pressure`)
+* **Wi-Fi AP & Link**: [Brand Model, Firmware] | [Band (2.4/5/6GHz), Channel, Width MHz, PHY Mode] | RSSI: [dBm]
+* **Security & MDM Profile**: [Personal Unmanaged / Corporate MDM (Intune/Jamf)] | VPN: [Zscaler / None]
+* **Targets & Cadence**: LAN `[IP]`, Direct ISP `1.1.1.1` (`-S local_ip`), Zscaler `9.9.9.9` | Interval: 2.0s | [N] samples
+```
+
+---
+
+## 5. Empirical Real-World Reference Traces
 
 ### Trace 1a: Personal Mac (Apple M3) — Battery + Low Power Mode (PSM & AWDL Jitter) [re-verified]
-*Hardware: MacBook Pro (Apple M3) | Wi-Fi: Broadcom BCM4388 (`0x14E4/0x4388`, 6GHz) | Power: Battery (85%, discharging), Low Power Mode ON | macOS: 26.6.2 (Build 25G83) | CPU load avg (1/5/15min): 1.57 / 1.71 / 1.55 | Memory free: 53% | Python: CPython 3.14.3 (`pyenv`) | Targets: LAN Gateway `192.168.xx.1`, ISP Direct `1.1.1.1`, Zscaler `9.9.9.9` | Interval: 2.0s | 41 samples, 00:45:59–00:47:19*
+* **Client Device**: MacBook Pro (Apple M3, 2023)
+* **Client Wi-Fi Chipset**: Broadcom BCM4388 (`0x14E4, 0x4388`), DriverKit 1566.5 (`system_profiler SPAirPortDataType`)
+* **OS & Runtime**: macOS 26.6.2 (Build 25G83) | Python: CPython 3.14.3 (`pyenv`)
+* **Power & Assertions**: Battery (85%, discharging), Low Power Mode ON (`pmset -g live`)
+* **System Telemetry**: CPU load avg: 1.57 / 1.71 / 1.55 (`uptime`) | Memory free: 53% (`memory_pressure`)
+* **Wi-Fi AP & Link**: Xiaomi AIoT AX3600 (OpenWrt 25.12.5, Qualcomm IPQ8071A) | 5GHz (Channel 100, 80MHz, Wi-Fi 6 / 802.11ax)
+* **Security & MDM Profile**: Personal (Clean / Unmanaged, Native Network Stack) | VPN: None
+* **Targets & Cadence**: LAN `192.168.xx.1`, Direct ISP `1.1.1.1` (`-S local_ip`), Zscaler `9.9.9.9` | Interval: 2.0s | 41 samples (00:45:59–00:47:19)
+
 
 ```text
 [00:45:59] [HEALTHY] LAN (192.168.xx.1):  5.0ms | ISP Direct (1.1.1.1):  9.1ms | Zscaler (9.9.9.9):  9.2ms
@@ -153,7 +211,14 @@ Probing `9.9.9.9` via the default route exercises the enterprise secure access l
 ---
 
 ### Trace 1b: Personal Mac (Apple M3) — AC Power (Low Power Mode OFF) [re-verified]
-*Hardware: MacBook Pro (Apple M3) | Wi-Fi: Broadcom BCM4388 (`0x14E4/0x4388`, 6GHz) | Power: AC Power (MagSafe attached, Low Power Mode OFF) | macOS: 26.6.2 (Build 25G83) | CPU load avg (1/5/15min): 1.76 / 1.76 / 1.54 | Memory free: 50% | Python: CPython 3.14.3 (`pyenv`) | Targets: LAN Gateway `192.168.xx.1`, ISP Direct `1.1.1.1`, Zscaler `9.9.9.9` | Interval: 2.0s | 41 samples, 00:43:50–00:45:10*
+* **Client Device**: MacBook Pro (Apple M3, 2023)
+* **Client Wi-Fi Chipset**: Broadcom BCM4388 (`0x14E4, 0x4388`), DriverKit 1566.5 (`system_profiler SPAirPortDataType`)
+* **OS & Runtime**: macOS 26.6.2 (Build 25G83) | Python: CPython 3.14.3 (`pyenv`)
+* **Power & Assertions**: AC Power (MagSafe attached), Low Power Mode OFF (`pmset -g live`)
+* **System Telemetry**: CPU load avg: 1.76 / 1.76 / 1.54 (`uptime`) | Memory free: 50% (`memory_pressure`)
+* **Wi-Fi AP & Link**: Xiaomi AIoT AX3600 (OpenWrt 25.12.5, Qualcomm IPQ8071A) | 5GHz (Channel 100, 80MHz, Wi-Fi 6 / 802.11ax)
+* **Security & MDM Profile**: Personal (Clean / Unmanaged, Native Network Stack) | VPN: None
+* **Targets & Cadence**: LAN `192.168.xx.1`, Direct ISP `1.1.1.1` (`-S local_ip`), Zscaler `9.9.9.9` | Interval: 2.0s | 41 samples (00:43:50–00:45:10)
 
 ```text
 [00:43:50] [HEALTHY] LAN (192.168.xx.1):  3.9ms | ISP Direct (1.1.1.1):  8.5ms | Zscaler (9.9.9.9):  9.6ms
@@ -202,11 +267,16 @@ Probing `9.9.9.9` via the default route exercises the enterprise secure access l
 > 1. **Local Wi-Fi AWDL channel scans** (Samples 11, 22, 33 at 00:44:10, 00:44:32, 00:44:54): LAN, ISP Direct, and Zscaler all rise together to 48–63ms.
 > 2. **WAN-side upstream jitter** (Samples 06, 17, 28 at 00:44:00, 00:44:22, 00:44:44): LAN stays low at 4.2–9.3ms while ISP Direct and Zscaler spike to 93–102ms.
 
-
 ---
 
 ### Trace 1c: Personal Mac (Apple M3) — High-Frequency Ping (PSM Suppressed) [re-verified]
-*Hardware: MacBook Pro (Apple M3) | Wi-Fi: Broadcom BCM4388 (`0x14E4/0x4388`, 6GHz) | Power: Battery (85%), Low Power Mode ON | macOS: 26.6.2 (Build 25G83) | Python: CPython 3.14.3 (`pyenv`) | Target: `192.168.xx.1` | Command: `ping -c 41 -i 0.2 192.168.xx.1` (200ms Cadence)*
+* **Client Device**: MacBook Pro (Apple M3, 2023)
+* **Client Wi-Fi Chipset**: Broadcom BCM4388 (`0x14E4, 0x4388`), DriverKit 1566.5 (`system_profiler SPAirPortDataType`)
+* **OS & Runtime**: macOS 26.6.2 (Build 25G83) | Python: CPython 3.14.3 (`pyenv`)
+* **Power & Assertions**: Battery (85%), Low Power Mode ON (`pmset -g live`)
+* **Wi-Fi AP & Link**: Xiaomi AIoT AX3600 (OpenWrt 25.12.5, Qualcomm IPQ8071A) | 5GHz (Channel 100, 80MHz, Wi-Fi 6 / 802.11ax)
+* **Security & MDM Profile**: Personal (Clean / Unmanaged, Native Network Stack) | VPN: None
+* **Command & Cadence**: `ping -c 41 -i 0.2 192.168.xx.1` (200ms Cadence, 41 packets)
 
 ```text
 PING 192.168.xx.1 (192.168.xx.1): 56 data bytes
@@ -235,7 +305,13 @@ round-trip min/avg/max/stddev = 4.292/14.932/96.081/21.867 ms
 ---
 
 ### Trace 3: Corporate Managed Mac (Apple M2 Pro) — Multi-Modal Enterprise Jitter
-*Hardware: MacBook Pro (Apple M2 Pro, 12-core) | MDM: Microsoft Intune (DEP-enrolled) | Target: Local Gateway `192.168.xx.1`, ISP Direct `1.1.1.1` & Zscaler Tunnel Target `9.9.9.9` | Interval: 3.0s | Live capture via `split-tunnel-monitor` v1.2.0*
+* **Client Device**: MacBook Pro (Apple M2 Pro 16", 12-core, 2023)
+* **Client Wi-Fi Chipset**: Broadcom BCM4388 (`0x14E4, 0x4388`), DriverKit 1566.5 (`system_profiler SPAirPortDataType`)
+* **OS & Runtime**: macOS 26.6.2 (Build 25G83) | Python: CPython 3.11.3 (`pyenv`)
+* **Power & Assertions**: AC Power (100% charged), Low Power Mode OFF (`pmset -g live`)
+* **Wi-Fi AP & Link**: Xiaomi AIoT AX3600 (OpenWrt 25.12.5, Qualcomm IPQ8071A) | 5GHz (Channel 100, 80MHz, Wi-Fi 6 / 802.11ax)
+* **Security & MDM Profile**: Corporate MDM (Microsoft Intune DEP-enrolled) | VPN: Zscaler Client Connector Active (`utun0`)
+* **Targets & Cadence**: LAN `192.168.xx.1`, Direct ISP `1.1.1.1` (`-S local_ip`), Zscaler `9.9.9.9` | Interval: 3.0s | ~90s capture
 
 ```text
 [22:31:05] [HEALTHY] LAN (192.168.xx.1): 10.3ms | ISP Direct (1.1.1.1): 12.0ms | Zscaler (9.9.9.9): 12.0ms | DIRECT=OK(en0) | ZSC=OK(utun0)
@@ -257,13 +333,18 @@ round-trip min/avg/max/stddev = 4.292/14.932/96.081/21.867 ms
 > 1. **Local Wi-Fi PHY-wide events** (e.g. 22:31:18, 22:32:08) — LAN, ISP, and Zscaler rise together within 1-2ms of each other, consistent with AWDL channel-hop or PSM buffering affecting the entire link regardless of destination.
 > 2. **WAN/enterprise-side events** (e.g. 22:31:15, 22:31:44, 22:33:07) — LAN stays at its normal 5-10ms floor while ISP Direct *and* Zscaler both spike to 85-100ms together, indicating the added latency is beyond the local Wi-Fi hop, shared by both non-local destinations.
 > 3. **Zscaler-only events** (e.g. 22:32:18) — LAN and ISP stay low while only the Zscaler target spikes, isolating the delay to the tunnel/cloud-edge segment specifically.
->
-> Unlike the idealized Trace 1 (clean Mac, PSM-only), the corporate-managed baseline here rarely holds a single steady floor — the `OVH` rolling percentile columns (visible in the live tool output) trend and settle over the first ~30 samples as the session's own baseline is established, rather than a single fixed "PSM resting" value.
 
 ---
 
 ### Trace 3a: Corporate Managed Mac (Apple M2 Pro) — Battery + Low Power Mode (Zscaler Active) [re-verified]
-*Hardware: MacBook Pro (Apple M2 Pro, 12-core) | Power: Battery (100%, discharging), Low Power Mode ON | macOS: 26.6.2 (Build 25G83) | CPU load avg (1/5/15min): 1.88 / 2.37 / 2.46 | Memory free: 76% | Python: CPython 3.11.3 (`pyenv`) | Targets: LAN Gateway `192.168.xx.1`, ISP Direct `1.1.1.1`, Zscaler `9.9.9.9` | Interval: 2.0s | 41 samples, 00:24:25–00:26:29*
+* **Client Device**: MacBook Pro (Apple M2 Pro 16", 12-core, 2023)
+* **Client Wi-Fi Chipset**: Broadcom BCM4388 (`0x14E4, 0x4388`), DriverKit 1566.5 (`system_profiler SPAirPortDataType`)
+* **OS & Runtime**: macOS 26.6.2 (Build 25G83) | Python: CPython 3.11.3 (`pyenv`)
+* **Power & Assertions**: Battery (100%, discharging), Low Power Mode ON (`pmset -g live`)
+* **System Telemetry**: CPU load avg: 1.88 / 2.37 / 2.46 (`uptime`) | Memory free: 76% (`memory_pressure`)
+* **Wi-Fi AP & Link**: Xiaomi AIoT AX3600 (OpenWrt 25.12.5, Qualcomm IPQ8071A) | 5GHz (Channel 100, 80MHz, Wi-Fi 6 / 802.11ax)
+* **Security & MDM Profile**: Corporate MDM (Microsoft Intune DEP-enrolled) | VPN: Zscaler Client Connector Active (`utun0`)
+* **Targets & Cadence**: LAN `192.168.xx.1`, Direct ISP `1.1.1.1` (`-S local_ip`), Zscaler `9.9.9.9` | Interval: 2.0s | 41 samples (00:24:25–00:26:29)
 
 ```text
 [00:24:25] [HEALTHY] LAN (192.168.xx.1):  7.6ms | ISP Direct (1.1.1.1):  8.4ms | Zscaler (9.9.9.9): 13.3ms | ZSC=OK(utun0)
@@ -282,7 +363,14 @@ round-trip min/avg/max/stddev = 4.292/14.932/96.081/21.867 ms
 ---
 
 ### Trace 3b: Corporate Managed Mac (Apple M2 Pro) — AC Power, Zscaler Tunnel BYPASSED [re-verified]
-*Hardware: MacBook Pro (Apple M2 Pro, 12-core) | Power: AC Power, Low Power Mode OFF | macOS: 26.6.2 (Build 25G83) | CPU load avg (1/5/15min): 1.97 / 2.50 / 2.52 | Memory free: 77% | Python: CPython 3.11.3 (`pyenv`) | Zscaler: Internet Access disabled in ZCC UI (process still running) | Targets: ISP Direct `1.1.1.1`, Zscaler target `9.9.9.9` | Interval: 2.0s | 118 samples, 00:28:53–00:33:06*
+* **Client Device**: MacBook Pro (Apple M2 Pro 16", 12-core, 2023)
+* **Client Wi-Fi Chipset**: Broadcom BCM4388 (`0x14E4, 0x4388`), DriverKit 1566.5 (`system_profiler SPAirPortDataType`)
+* **OS & Runtime**: macOS 26.6.2 (Build 25G83) | Python: CPython 3.11.3 (`pyenv`)
+* **Power & Assertions**: AC Power, Low Power Mode OFF (`pmset -g live`)
+* **System Telemetry**: CPU load avg: 1.97 / 2.50 / 2.52 (`uptime`) | Memory free: 77% (`memory_pressure`)
+* **Wi-Fi AP & Link**: Xiaomi AIoT AX3600 (OpenWrt 25.12.5, Qualcomm IPQ8071A) | 5GHz (Channel 100, 80MHz, Wi-Fi 6 / 802.11ax)
+* **Security & MDM Profile**: Corporate MDM (Microsoft Intune DEP-enrolled) | VPN: Zscaler Bypassed (Internet Access off in UI)
+* **Targets & Cadence**: ISP Direct `1.1.1.1`, Zscaler `9.9.9.9` | Interval: 2.0s | 118 samples (00:28:53–00:33:06)
 
 ```text
 [00:28:54] [INFO] LAN (N/A): TIMEOUT/FAIL | ISP Direct (1.1.1.1):  9.3ms | Zscaler (9.9.9.9): 20.0ms | ZSC=BYPASSED(en0)
@@ -295,12 +383,19 @@ round-trip min/avg/max/stddev = 4.292/14.932/96.081/21.867 ms
 ```
 > **Observation**: `LAN (N/A): TIMEOUT/FAIL` throughout is the same known vgw-collision side effect described in the original capture of this scenario — disabling Zscaler mid-run causes the tool's own vgw-collision safeguard to discard the LAN gateway for this session. It does not affect the ISP Direct / Zscaler-target comparison this trace is measuring.
 >
-> With Zscaler's tunnel genuinely bypassed, only **5 of 118 samples (~4.2%)** showed a target above 50ms — the lowest of the three re-verified corporate sessions (AC-active ~7.3%, battery+Low-Power-Mode ~19.5%). This is directionally consistent across two independent capture attempts now (the original unverified capture showed ~5%) that Zscaler's own tunnel path adds some jitter beyond the shared Wi-Fi/MDM noise floor, though a single machine/session still can't fully isolate the mechanism (see Section 5).
+> With Zscaler's tunnel genuinely bypassed, only **5 of 118 samples (~4.2%)** showed a target above 50ms — the lowest of the three re-verified corporate sessions (AC-active ~7.3%, battery+Low-Power-Mode ~19.5%). This is directionally consistent across two independent capture attempts now (the original unverified capture showed ~5%) that Zscaler's own tunnel path adds some jitter beyond the shared Wi-Fi/MDM noise floor, though a single machine/session still can't fully isolate the mechanism (see Section 6).
 
 ---
 
 ### Trace 3c: Corporate Managed Mac (Apple M2 Pro) — AC Power, Zscaler Active [re-verified with full telemetry]
-*Hardware: MacBook Pro (Apple M2 Pro, 12-core) | Power: AC Power, Low Power Mode OFF | macOS: 26.6.2 (Build 25G83) | CPU load avg (1/5/15min): 2.50 / 2.60 / 2.55 | Memory free: 77% | Python: CPython 3.11.3 (`pyenv`) | Targets: LAN Gateway `192.168.xx.1`, ISP Direct `1.1.1.1`, Zscaler `9.9.9.9` | Interval: 2.0s | 41 samples, 00:21:10–00:23:13*
+* **Client Device**: MacBook Pro (Apple M2 Pro 16", 12-core, 2023)
+* **Client Wi-Fi Chipset**: Broadcom BCM4388 (`0x14E4, 0x4388`), DriverKit 1566.5 (`system_profiler SPAirPortDataType`)
+* **OS & Runtime**: macOS 26.6.2 (Build 25G83) | Python: CPython 3.11.3 (`pyenv`)
+* **Power & Assertions**: AC Power, Low Power Mode OFF (`pmset -g live`)
+* **System Telemetry**: CPU load avg: 2.50 / 2.60 / 2.55 (`uptime`) | Memory free: 77% (`memory_pressure`)
+* **Wi-Fi AP & Link**: Xiaomi AIoT AX3600 (OpenWrt 25.12.5, Qualcomm IPQ8071A) | 5GHz (Channel 100, 80MHz, Wi-Fi 6 / 802.11ax)
+* **Security & MDM Profile**: Corporate MDM (Microsoft Intune DEP-enrolled) | VPN: Zscaler Client Connector Active (`utun0`)
+* **Targets & Cadence**: LAN `192.168.xx.1`, Direct ISP `1.1.1.1` (`-S local_ip`), Zscaler `9.9.9.9` | Interval: 2.0s | 41 samples (00:21:10–00:23:13)
 
 ```text
 [00:21:11] [HEALTHY] LAN (192.168.xx.1):  4.9ms | ISP Direct (1.1.1.1):  8.2ms | Zscaler (9.9.9.9):  9.4ms | ZSC=OK(utun0)
@@ -315,7 +410,7 @@ round-trip min/avg/max/stddev = 4.292/14.932/96.081/21.867 ms
 
 ---
 
-## 5. Methodology & Reproducibility Caveats
+## 6. Methodology & Reproducibility Caveats
 
 Empirical traces in this guide are illustrative snapshots, not authoritative resting-baseline benchmarks. Two back-to-back capture sessions on the *same* M2 Pro, same Wi-Fi network, less than an hour apart, produced measurably different jitter profiles — this section documents how traces are captured and why session-to-session variance of this magnitude is expected.
 
@@ -323,15 +418,15 @@ Empirical traces in this guide are illustrative snapshots, not authoritative res
 `split-tunnel-monitor`'s `ping_target()` shells out to the system `ping -c 1` command and parses the RTT it reports (`time=X.X ms`) directly from `ping`'s own kernel-timestamped measurement — not from Python-side wall-clock timing around the subprocess call. This means **individual reported RTT values are accurate regardless of how the tool itself is invoked** (interactively in a foreground terminal, or via an automated/backgrounded capture). What is *not* controlled for is the **cadence and surrounding system context** between samples, and the underlying Wi-Fi medium conditions at the moment each probe fires.
 
 ### Recorded capture conditions
-| Trace                                                   | Hardware                   | Wi-Fi Chipset       | macOS Version   | Power Source                | Low Power Mode | CPU Load Avg     | Memory Free % | Zscaler                        | Python                   |
-| :------------------------------------------------------ | :------------------------- | :------------------ | :-------------- | :-------------------------- | :------------- | :--------------- | :------------ | :----------------------------- | :----------------------- |
-| Trace 1a ("Clean" M3, Battery+LPM)                      | MacBook Pro (Apple M3)     | Broadcom BCM4388 6E | 26.6.2 (25G83)  | Battery                     | **Enabled**    | 2.24 / 1.69 / 1.48 | 49%           | N/A (no Zscaler)               | CPython 3.14.3 (`pyenv`) |
-| Trace 1b ("Clean" M3, AC Power)                         | MacBook Pro (Apple M3)     | Broadcom BCM4388 6E | 26.6.2 (25G83)  | AC Power                    | Off            | 2.24 / 1.69 / 1.48 | 49%           | N/A (no Zscaler)               | CPython 3.14.3 (`pyenv`) |
-| Trace 3 ("Managed" M2 Pro, AC Power, Session A)         | MacBook Pro (Apple M2 Pro) | Broadcom BCM4388 6E | 26.6.2 (25G83)  | AC Power (100%, charged)    | Off            | Not recorded     | Not recorded  | Active                         | CPython 3.11.3 (`pyenv`) |
-| Session B (comparison, same M2 Pro, ~50 min earlier)    | MacBook Pro (Apple M2 Pro) | Broadcom BCM4388 6E | 26.6.2 (25G83)  | AC Power                    | Off            | Not recorded     | Not recorded  | Active (mid-toggle testing)    | CPython 3.11.3 (`pyenv`) |
-| Trace 3a ("Managed" M2 Pro, Battery+LPM)                | MacBook Pro (Apple M2 Pro) | Broadcom BCM4388 6E | 26.6.2 (25G83)  | Battery (100%, discharging) | **Enabled**    | 1.88 / 2.37 / 2.46 | 76%           | Active                         | CPython 3.11.3 (`pyenv`) |
-| Trace 3b ("Managed" M2 Pro, AC Power, Zscaler bypassed) | MacBook Pro (Apple M2 Pro) | Broadcom BCM4388 6E | 26.6.2 (25G83)  | AC Power                    | Off            | 1.97 / 2.50 / 2.52 | 77%           | Bypassed (Internet Access off) | CPython 3.11.3 (`pyenv`) |
-| Trace 3c ("Managed" M2 Pro, AC Power, Zscaler Active)   | MacBook Pro (Apple M2 Pro) | Broadcom BCM4388 6E | 26.6.2 (25G83)  | AC Power                    | Off            | 2.50 / 2.60 / 2.55 | 77%           | Active                         | CPython 3.11.3 (`pyenv`) |
+| Trace | Hardware | Wi-Fi Chipset / Band | Access Point & Firmware | macOS Version | Power Source | Low Power Mode | CPU Load Avg | Memory Free % | Zscaler | Python |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Trace 1a** (Clean M3, Battery+LPM) | MacBook Pro (Apple M3) | BCM4388, 5GHz Ch 100 | Xiaomi AX3600 (OpenWrt 25.12.5) | 26.6.2 (25G83) | Battery (85%) | **Enabled** | 1.57 / 1.71 / 1.55 | 53% | N/A | 3.14.3 |
+| **Trace 1b** (Clean M3, AC Power) | MacBook Pro (Apple M3) | BCM4388, 5GHz Ch 100 | Xiaomi AX3600 (OpenWrt 25.12.5) | 26.6.2 (25G83) | AC Power | Off | 1.76 / 1.76 / 1.54 | 50% | N/A | 3.14.3 |
+| **Trace 3** (Managed M2 Pro, AC, Session A) | MacBook Pro (Apple M2 Pro) | BCM4388, 5GHz Ch 100 | Xiaomi AX3600 (OpenWrt 25.12.5) | 26.6.2 (25G83) | AC Power | Off | Not recorded | Not recorded | Active | 3.11.3 |
+| **Session B** (M2 Pro, ~50 min earlier) | MacBook Pro (Apple M2 Pro) | BCM4388, 5GHz Ch 100 | Xiaomi AX3600 (OpenWrt 25.12.5) | 26.6.2 (25G83) | AC Power | Off | Not recorded | Not recorded | Active (mid-toggle) | 3.11.3 |
+| **Trace 3a** (Managed M2 Pro, Battery+LPM) | MacBook Pro (Apple M2 Pro) | BCM4388, 5GHz Ch 100 | Xiaomi AX3600 (OpenWrt 25.12.5) | 26.6.2 (25G83) | Battery (100%) | **Enabled** | 1.88 / 2.37 / 2.46 | 76% | Active | 3.11.3 |
+| **Trace 3b** (Managed M2 Pro, AC, Bypassed) | MacBook Pro (Apple M2 Pro) | BCM4388, 5GHz Ch 100 | Xiaomi AX3600 (OpenWrt 25.12.5) | 26.6.2 (25G83) | AC Power | Off | 1.97 / 2.50 / 2.52 | 77% | Bypassed | 3.11.3 |
+| **Trace 3c** (Managed M2 Pro, AC, Active) | MacBook Pro (Apple M2 Pro) | BCM4388, 5GHz Ch 100 | Xiaomi AX3600 (OpenWrt 25.12.5) | 26.6.2 (25G83) | AC Power | Off | 2.50 / 2.60 / 2.55 | 77% | Active | 3.11.3 |
 
 **Confound resolved and hardware identity verified**:
 - Both machines share the **exact same Broadcom BCM4388 (`0x14E4, 0x4388`) Wi-Fi 6E chipset** running the **same macOS 26.6.2 (Build 25G83) OS build** on the same home Wi-Fi network (Channel 100, 5GHz, 80MHz, -35 to -39 dBm RSSI).

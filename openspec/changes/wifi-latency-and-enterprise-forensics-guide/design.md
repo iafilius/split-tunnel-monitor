@@ -41,7 +41,12 @@ Users running `split-tunnel-monitor` on macOS need clear explanations for latenc
   3. If LAN and ISP are low (4–8ms) and only Zscaler spikes $\rightarrow$ VPN `utun` / Cloud Edge event.
 - **Alternative**: Focus exclusively on LAN gateway pings and omit WAN/VPN paths (rejected: loses the core triangulation value of `split-tunnel-monitor`).
 
+### Decision 7: Latency Fingerprints & Standardized 8-Point Contributor Schema
+- **Rationale**: Classifying behaviors into deterministic "macOS Wi-Fi Latency Fingerprints" (Fingerprint A: PSM Sleep Floor, Fingerprint B: AWDL Social Scan, Fingerprint C: Enterprise EDR/Overlay Jitter) provides a rigorous diagnostic framework. Establishing an 8-point metadata schema and providing one-liner CLI telemetry capture commands allows future engineers and community contributors across different AP vendor hardware (UniFi, Cisco Meraki, Aruba, Asus, OpenWrt) to submit reproducible benchmark traces without ambiguity.
+- **Alternative**: Ad-hoc, unstructured text submissions (rejected: leads to missing variables like power state, channel width, or EDR load).
+
 ## Risks / Trade-offs
+
 
 
 - **[Risk: Stale OS/Hardware specifics as macOS updates]** → Document macOS version and hardware chipset context (e.g. Apple Silicon Wi-Fi 6/6E, Sonoma/Sequoia).
