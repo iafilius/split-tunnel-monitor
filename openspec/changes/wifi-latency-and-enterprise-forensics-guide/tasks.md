@@ -115,3 +115,8 @@
 - [x] 15.5 Re-run the Section 6 "Statistical Power & Confidence" worked example against the new n≈120 counts (recomputed z-scores) and updated the observation text and Section 2 table percentages to the re-captured values.
 - [x] 15.6 Run `openspec validate --all` and `pytest` after the doc is updated with the new traces.
 
+## 16. Disambiguation of PSM Idle Sleep vs. Enterprise Jitter in Comparative Narratives
+
+- [x] 16.1 Update Executive Summary, Section 2 comparison table, and Section 6 causality narratives to explicitly distinguish benign 802.11 PSM power-saving sleep buffering (~50-60ms, collapsing to 3.0ms on active traffic) from true enterprise network jitter (90ms-170ms+ EDR socket queueing and Zscaler taxes).
+- [x] 16.2 Synchronize Antigravity Knowledge Base artifact `findings.md` and validate with `openspec validate --all` and `pytest -v`.
+

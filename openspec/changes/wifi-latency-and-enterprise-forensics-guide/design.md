@@ -65,7 +65,12 @@ Users running `split-tunnel-monitor` on macOS need clear explanations for latenc
 - **Rationale**: A user question ("is 41 samples really enough to detect the separate pillar/different causes of jitter?") led to computing an actual significance test: Trace 3c (7.3%) vs. Trace 3a (19.5%) at n=41 gives z ≈ 1.62, below the conventional p<0.05 threshold — a difference the guide had been treating as a real effect is not distinguishable from chance at that sample size. The AWDL/PSM spikes are a small number of discrete periodic events (~4-8 per 41-sample trace), not independent trials, which is *why* percentage estimates are this noisy at small N. The qualitative pillar/fault-domain triangulation (which target spiked, in a given sample) is unaffected by this — it's a per-sample structural check, not an aggregate statistic. Codified as a spec requirement (not just prose) so future contributors adding new comparisons don't repeat the same overclaim.
 - **Alternative**: Leave it as an informal caveat in the Methodology section only (rejected: Section 6 already had qualitative hedging — "treat any single capture as one data point" — and it clearly wasn't enough to stop specific percentage comparisons from being asserted as findings elsewhere in the same document).
 
+### Decision 13: Terminology Disambiguation — Benign PSM Idle Buffering vs. Erratic Enterprise Jitter
+- **Rationale**: Comparing raw `>50ms` sample counts in isolation created a confusing paradox where the clean personal M3 appeared to have "worse" metrics (85% >50ms) than the corporate M2 Pro (2.5% >50ms). In reality, the M3's 55ms baseline is **benign 802.11 PSM power-save buffering** during solitary probes on an idle radio (which instantly collapses to a flat 3.0ms under active traffic), whereas the corporate M2 Pro has an active radio kept awake by background daemons but experiences **erratic, degraded 90ms–170ms+ EDR socket queueing and Zscaler overlay taxes**. Terminology across tables and narratives is updated to explicitly prevent conflating intentional idle power-saving sleep with network degradation.
+- **Alternative**: Relying solely on numerical `>50ms` thresholds (rejected: misleadingly implies corporate network stacks perform better than clean native stacks).
+
 ## Risks / Trade-offs
+
 
 
 

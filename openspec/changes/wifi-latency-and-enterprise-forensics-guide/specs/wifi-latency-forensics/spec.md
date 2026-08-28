@@ -152,10 +152,18 @@ The forensics guide SHALL document the architectural mechanics of EDR/antivirus 
   1. Captive Portals: Explains that local LAN responds while WAN times out until authenticated via CNA modal (`http://captive.apple.com`).
   2. Docking Stations: Explains that wired Ethernet eliminates 802.11 PSM and AWDL radio delays (0.8–1.2ms LAN), isolating pure EDR and VPN overhead.
 
+#### Scenario: Disambiguation of Benign PSM Idle Sleep vs. Erratic Enterprise Jitter
+
+- **WHEN** comparing benchmark results across clean personal and enterprise-managed machines
+- **THEN** the documentation explicitly distinguishes between:
+  1. Benign 802.11 PSM Idle Sleep Buffering (~50–60ms flat baseline on clean idle systems with 0% socket contention, instantly collapsing to 3.0ms on active traffic), and
+  2. Erratic Enterprise Jitter & EDR Socket Queueing (wild multi-modal swings to 90ms–170ms+ and Zscaler overlay taxes caused by endpoint inspection software), preventing misinterpretation of benign power-saving idle buffering as network degradation.
+
 #### Scenario: IT Support & Security Helpdesk Escalation Playbook
 
 - **WHEN** an employee needs to report network performance degradation to corporate IT/Security
 - **THEN** the guide provides a structured ticket template with reproducible evidence (trace outputs, system extension listings, power state, swap/memory metrics, and multi-path triangulation data) to accelerate vendor/IT resolution
+
 
 ### Requirement: Reference Guide Discoverability
 

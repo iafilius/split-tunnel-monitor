@@ -31,6 +31,10 @@ When diagnosing network performance and VPN split-tunneling on macOS, engineers 
    * On corporate-managed Macs, endpoint security filters (Microsoft Defender ATP / Falcon) and Zscaler Client Connector (`utun` user-space NetworkExtension routing) add kernel/driver scheduling delays.
    * LAN gateway pings stretch up to **100ms – 170ms+** under background load, while Zscaler tunnel targets (`9.9.9.9`) exhibit independent **90ms – 102ms** spikes even when local Wi-Fi and direct ISP paths are idle.
 
+> 💡 **Critical Conceptual Disambiguation (Benign Sleep vs. Erratic Enterprise Jitter)**: 
+> * **Fingerprint A (PSM Sleep Buffering)** is **NOT** network degradation. On a clean Mac, the flat ~50ms baseline during solitary 2.0s probes is an intentional, energy-efficient 802.11 PHY power-save state that instantly collapses to ultra-low **3.0ms – 6.0ms** when active traffic begins.
+> * **Fingerprint C (Enterprise Jitter)** is **TRUE** software-induced degradation. On a corporate Mac, continuous background polling from Defender, Falcon, and ZCC keeps the radio awake in active D0 state (masking the PSM sleep floor), but introduces erratic, multi-modal **90ms – 170ms+ latency spikes** and Zscaler overlay taxes from kernel socket interception.
+
 ---
 
 ## 2. Platform Comparison: Clean vs. Enterprise-Managed Mac
