@@ -221,12 +221,25 @@ The forensics guide SHALL document the architectural mechanics of EDR/antivirus 
 
 ### Requirement: Reference Guide Discoverability
 
-
-
 The repository README SHALL link to the Wi-Fi latency and enterprise forensics guide.
 
 #### Scenario: Documentation link in README
 
 - **WHEN** browsing the project README
 - **THEN** a link to `docs/macos_wifi_latency_and_enterprise_forensics.md` is present under the technical guides section
+
+### Requirement: Asynchronous Cross-Machine Handoff via OpenSpec Task Tracker
+
+When tasks or benchmarks require execution across distinct physical machines (e.g. personal unmanaged M3 vs. corporate MDM-managed M2 Pro), OpenSpec's `tasks.md` SHALL serve as the definitive asynchronous handoff channel.
+
+#### Scenario: Self-Contained Cross-Machine Task Specifications
+
+- **WHEN** a task requires execution on a different physical laptop or environment
+- **THEN** the task entry in `tasks.md` SHALL contain:
+  1. An explicit statement of **Why** the task is needed and its investigative rationale.
+  2. The exact **How** instructions (power mode, UI toggles).
+  3. Copy-paste runnable CLI commands with standardized output paths.
+  4. Post-execution documentation and validation steps.
+- **AND** subsequent agent sessions on the destination machine SHALL execute directly from `tasks.md` without requiring the user to re-explain context.
+
 

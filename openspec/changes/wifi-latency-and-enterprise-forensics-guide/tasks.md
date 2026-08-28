@@ -193,5 +193,7 @@
 - [x] 23.3 Added Item 4 to Roadmap in `README.md` for diurnal enterprise curves and autoscaling transition shock investigation.
 - [x] 23.4 Renamed all 5 existing committed traces in `docs/traces/` to include ISO compact timestamps (`<YYYYMMDD-HHMMSS>`) extracted from their log headers.
 - [x] 23.5 Updated all markdown links and Section 4C / 6 documentation in `docs/macos_wifi_latency_and_enterprise_forensics.md`.
+- [x] 23.6 Codified permanent cross-machine handoff and communication rules in `AGENTS.md`, `design.md` (Decision 19), and `specs/wifi-latency-forensics/spec.md`.
+
 
 

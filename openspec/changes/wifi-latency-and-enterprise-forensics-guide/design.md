@@ -90,7 +90,12 @@ Users running `split-tunnel-monitor` on macOS need clear explanations for latenc
 - **Rationale**: Enterprise cloud security proxies (Zscaler ZIA) fluctuate heavily across diurnal business-hour cycles (peak enterprise concurrency 09:00–17:00 vs off-hours) and dynamic cloud autoscaling transitions (morning logon surges 08:30–09:30, lunchtime dips, and evening ramp-downs). Without exact timestamps in trace filenames, comparisons across different times of day are conflated or overwrite each other. Requiring `trace-<id>-<device>-<power>-<state>-<YYYYMMDD-HHMMSS>-n<N>.log` ensures that multiple traces under the same condition captured across different times and days remain distinct and independently checkable.
 - **Alternative**: Flat non-timestamped filenames (rejected: prevents comparing peak vs off-peak hours and risks overwriting historical benchmarks).
 
+### Decision 19: Asynchronous Cross-Machine Handoff & Communication Protocol via OpenSpec Tasks
+- **Rationale**: When engineering tasks span multiple physical machines or environments (e.g. Personal M3 clean stack vs. Corporate M2 Pro MDM stack), context easily gets lost between sessions. OpenSpec's `tasks.md` is designated as the authoritative cross-machine communication channel. Whenever an action must be executed on another laptop, the agent must write an explicit, self-contained task section documenting the **Why**, the **How**, exact copy-paste shell commands, and expected artifacts. This eliminates manual repetition and guarantees immediate context handoff.
+- **Alternative**: Relying on user memory or chat history (rejected: chat context is local to a session and doesn't transfer across different physical machines).
+
 ## Risks / Trade-offs
+
 
 
 
