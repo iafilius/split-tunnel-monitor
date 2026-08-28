@@ -73,4 +73,8 @@
 - [x] 10.4 Add an IT Support & Security Helpdesk Escalation Playbook with a structured ticket template containing deterministic multi-path evidence.
 - [x] 10.5 Synchronize findings with Antigravity Knowledge Item and validate all OpenSpec specs.
 
+## 11. Network Environment Edge Cases & Feature Roadmap
 
+- [x] 11.1 Add Section 3.3 to documentation covering Captive Portal diagnostics (`http://captive.apple.com`) and USB-C/Thunderbolt Docking Station Ethernet behavior (`en5`/`en7` removing PSM/AWDL delays).
+- [x] 11.2 Add Roadmap section to README covering (1) Full IPv4/IPv6 Dual-Stack monitoring, (2) Automated Dock profile switching, and (3) Captive portal pre-flight detection.
+- [x] 11.3 Synchronize Antigravity Knowledge Base artifacts and validate all OpenSpec specs.

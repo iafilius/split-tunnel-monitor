@@ -131,12 +131,20 @@ The forensics guide SHALL document the architectural mechanics of EDR/antivirus 
 - **WHEN** an end-user or engineer investigates active security agents
 - **THEN** the guide provides non-root and root diagnostic commands (`systemextensionsctl list`, `scutil --dns`, `ps aux`, `sudo fs_usage -w -f network`, `sysctl vm.swapusage`) to inspect active content filters and system extensions
 
+#### Scenario: Captive Portal and Docking Station Edge Cases
+
+- **WHEN** running split-tunnel monitoring on public hotel/airport networks or wired docking stations
+- **THEN** the guide provides diagnostic signatures and actionable hints:
+  1. Captive Portals: Explains that local LAN responds while WAN times out until authenticated via CNA modal (`http://captive.apple.com`).
+  2. Docking Stations: Explains that wired Ethernet eliminates 802.11 PSM and AWDL radio delays (0.8–1.2ms LAN), isolating pure EDR and VPN overhead.
+
 #### Scenario: IT Support & Security Helpdesk Escalation Playbook
 
 - **WHEN** an employee needs to report network performance degradation to corporate IT/Security
 - **THEN** the guide provides a structured ticket template with reproducible evidence (trace outputs, system extension listings, power state, swap/memory metrics, and multi-path triangulation data) to accelerate vendor/IT resolution
 
 ### Requirement: Reference Guide Discoverability
+
 
 
 The repository README SHALL link to the Wi-Fi latency and enterprise forensics guide.

@@ -216,6 +216,32 @@ Because the 170ms LAN latency on the corporate Mac was observed under **light sy
 
 ---
 
+### 3.3 Network Environment Edge Cases: Captive Portals & Docking Stations
+
+When monitoring split-tunnel networks outside standard home Wi-Fi setups, two common physical scenarios produce distinct diagnostic signatures:
+
+#### A. Captive Portal / Hotel / Public Wi-Fi Networks
+* **Observed Signature**:
+  ```text
+  [14:15:02] [OUTAGE] LAN (172.20.10.1): 3.8ms | ISP Direct (1.1.1.1): TIMEOUT | Zscaler (9.9.9.9): TIMEOUT | DIRECT=FAIL | ZSC=FAIL
+  ```
+* **Underlying Mechanism**: The hotel/public AP router issues an IP address via DHCP and responds to local ICMP echo requests (`3.8ms`), but intercepts all outbound WAN traffic (ports 80, 443, 53) and drops ICMP transit to `1.1.1.1` and `9.9.9.9` until web authentication is completed.
+* **Actionable Hint for Users**: Open Safari and navigate to `http://captive.apple.com` or `http://neverssl.com` (plain HTTP) to trigger the Captive Network Assistant (CNA) login splash page. Once authenticated, `split-tunnel-monitor` will automatically transition to `[HEALTHY]`.
+
+#### B. USB-C / Thunderbolt Docking Stations & Wired Ethernet
+* **Observed Signature**:
+  ```text
+  [09:30:15] [HEALTHY] LAN (192.168.1.1): 0.9ms | ISP Direct (1.1.1.1): 4.8ms | Zscaler (9.9.9.9): 8.9ms | DIRECT=OK(en5) | ZSC=OK(utun0)
+  ```
+* **Underlying Mechanism**: Connecting a USB-C or Thunderbolt dock switches the active physical network interface from Wi-Fi (`en0`) to high-speed Gigabit/10G Ethernet (`en5`, `en7`, or `en8`).
+* **Forensic Power**: On wired Ethernet:
+  1. **802.11 PSM DTIM sleep delays (~50ms) are eliminated** (0.0ms PHY sleep).
+  2. **AWDL social channel hopping spikes (48ms–96ms) drop to zero** (wired Ethernet has no radio off-channel scan).
+  3. **LAN Gateway baseline drops to flat 0.8ms – 1.2ms**.
+* **Diagnostic Value**: If a user on a wired docking station still observes 90ms–150ms spikes on LAN or Zscaler, **100% of the wireless physical medium is ruled out**, conclusively proving that the latency is generated exclusively by EDR socket inspection hooks (`sysx`) or Zscaler `utun` cloud-edge encapsulation.
+
+---
+
 ### Authoritative Multi-Path Fault Domain Triangulation
 
 | Monitored Pattern | LAN (`192.168.xx.1`) | ISP Direct (`1.1.1.1`) | Zscaler (`9.9.9.9`) | Root Cause / Fault Domain |

@@ -320,6 +320,22 @@ Full investigation guide including ZCC log correlation, timeline building, and t
 
 ---
 
+## Roadmap & Future Enhancements
+
+Planned features tracked for upcoming feature branches:
+
+1. **Full IPv4/IPv6 Dual-Stack Multipath Monitoring**:
+   * Concurrently probe IPv6 default gateway (`fe80::...`), IPv6 Direct ISP underlay (`2606:4700:4700::1111` Cloudflare DNS / `2001:4860:4860::8888` Google), and IPv6 VPN overlay (`2620:fe::fe` Quad9).
+   * Detect NAT64 / DNS64 synthesis and dual-stack route preference flapping.
+2. **Automated Dock / Wired vs. Wireless Profile Switching & Multi-Interface Forensics**:
+   * Detect transitions between Wi-Fi (`en0`) and USB-C/Thunderbolt Docking Station Ethernet adapters (`en5`/`en7`/`en8`).
+   * Maintain independent rolling overhead baselines for wired vs. wireless connections to prevent mixing Wi-Fi jitter with wired baselines.
+3. **Automated Captive Portal Pre-Flight Verification**:
+   * Detect hotel/public Wi-Fi captive networks and provide instant desktop notifications with direct CNA login URLs (`http://captive.apple.com`).
+
+---
+
 ## License
 
 GNU General Public License v3.0 (GPLv3)
+

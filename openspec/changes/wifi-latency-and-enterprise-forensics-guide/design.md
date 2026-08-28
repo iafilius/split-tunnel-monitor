@@ -53,7 +53,12 @@ Users running `split-tunnel-monitor` on macOS need clear explanations for latenc
 - **Rationale**: High latency under heavy developer workloads (Xcode/Rust builds, Docker, RAM pressure) can easily mimic network degradation. By explicitly capturing `sysctl vm.swapusage`, `memory_pressure`, and `uptime` load averages alongside ICMP probes, testing protocols can conclusively disambiguate whether a 300ms–800ms spike was caused by Wi-Fi medium drops or EDR user-space daemon paging and thread scheduling starvation.
 - **Alternative**: Assuming all latency is network-related (rejected: causes misdiagnosis of local workstation CPU/RAM bottlenecks as router/ISP faults).
 
+### Decision 10: Captive Portal Diagnostics & Dual-Stack / Docking Station Roadmap
+- **Rationale**: Real-world corporate laptop usage frequently spans captive hotel networks and USB-C/Thunderbolt docking stations. Documenting CNA captive hints (`http://captive.apple.com`) and wired dock interface isolation (`en5`/`en7` removing PSM/AWDL delays) in current forensics, while establishing formal roadmap entries for (1) Full IPv4/IPv6 Dual-Stack probing and (2) Automated Dock vs. Wi-Fi profile switching, provides an end-to-end operational vision.
+- **Alternative**: Omitting edge cases or ad-hoc roadmap planning (rejected: leaves users confused when testing on hotel Wi-Fi or docking stations).
+
 ## Risks / Trade-offs
+
 
 
 
