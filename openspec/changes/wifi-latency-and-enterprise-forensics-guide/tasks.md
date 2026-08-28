@@ -161,3 +161,28 @@
 - [x] 21.4 Before making any further edits to Section 2, Section 3.4/3.5, or Section 6: re-read `design.md` Decision 16 and 17 and the two spec requirements they codify ("Quantitative Claims Must Cite a Real, Checkable Capture" and "Raw Trace Evidence Is Committed to the Repository") in `specs/wifi-latency-forensics/spec.md`.
 - [x] 21.5 Run `openspec validate --all` and `pytest` after committing the trace files and reviewing the two decisions. Reported that all three M3 raw logs were found, committed, and linked in `docs/traces/`.
 
+## 22. Corporate M2 Pro Laptop: Capture Trace 3b (Zscaler Bypassed, n=120) & Final Archiving (to execute on the M2 Pro)
+
+- [ ] 22.1 `git pull origin fb_fb20260826jvdw` — picks up the three newly committed M3 raw logs (`trace-1d`, `trace-1e`, `trace-1f` in `docs/traces/`), updated doc links, and this task list.
+- [ ] 22.2 Execute Trace 3b Re-capture at $n=120$ with Zscaler Bypassed (Task 15.3):
+  - **Why**: Completes the final statistically powered ($n=120$) capture. Isolates pure host EDR / local MDM stack from Zscaler `utun` tunnel overhead on AC power.
+  - **How**: Ensure MagSafe AC power is connected (Low Power Mode OFF). In Zscaler Client Connector (ZCC) UI, toggle "Internet Security" / "Zscaler Internet Access" to OFF.
+  - **Capture Command**:
+    ```bash
+    python3 ping_checker.py -i 2.0 -n 120 --logfile docs/traces/trace-3b-m2pro-ac-zscaler-bypassed-n120.log
+    ```
+  - **Telemetry Command**:
+    ```bash
+    sw_vers && uptime && memory_pressure && pmset -g live
+    ```
+- [ ] 22.3 Update Trace 3b entry in Section 5 of `docs/macos_wifi_latency_and_enterprise_forensics.md`:
+  - Link the raw log `docs/traces/trace-3b-m2pro-ac-zscaler-bypassed-n120.log`.
+  - Update sample count (120), timestamps, telemetry, and programmatic elevated-sample percentage.
+  - Update Section 6 capture conditions table row for Trace 3b.
+- [ ] 22.4 Fact-check and update Section 3.5's "Cumulative Enterprise Layer Waterfall" table:
+  - Use the real recomputed values from `trace-3b-m2pro-ac-zscaler-bypassed-n120.log` to confirm or refine the "Layer 2: Host EDR" baseline.
+- [ ] 22.5 Run test suite, validate OpenSpec, commit, and archive the change:
+  - **Validate**: `openspec validate --all && pytest -v`
+  - **Commit**: `git add docs/ openspec/ && git commit -m "docs(traces): add Trace 3b n=120 bypassed capture and complete forensics guide"`
+  - **Archive**: `openspec archive wifi-latency-and-enterprise-forensics-guide`
+
