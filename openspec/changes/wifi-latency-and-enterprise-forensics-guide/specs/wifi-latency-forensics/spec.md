@@ -42,11 +42,18 @@ The repository SHALL include a dedicated technical guide documenting macOS Wi-Fi
 
 Any trace added to this guide after this requirement exists SHALL have its raw `--logfile` output committed to `docs/traces/` in this repository (not left in a machine-local temp path), so its statistics are independently re-computable and visible to anyone pulling the repo — including a different contributor's machine, not just the one that captured it.
 
-#### Scenario: New trace entries link to a committed raw log
+#### Scenario: New trace entries link to a committed raw log with timestamped provenance
 
 - **WHEN** a new `### Trace X: ...` entry is added to Section 5
-- **THEN** the entry includes a link to its raw logfile committed at `docs/traces/trace-<id>-<short-description>-n<count>.log`
+- **THEN** the entry includes a link to its raw logfile committed at `docs/traces/trace-<id>-<device>-<power>-<state>-<YYYYMMDD-HHMMSS>-n<count>.log`
 - **AND** the fenced code block in the entry shows only representative excerpt lines, not the full raw dump, since the full data lives in the linked file
+
+#### Scenario: Diurnal & Cloud Autoscaling Transition Forensics
+
+- **WHEN** analyzing or contributing empirical traces of enterprise VPN and cloud-edge paths (Zscaler)
+- **THEN** the guide and filename schema capture the exact capture date and time (`<YYYYMMDD-HHMMSS>`) to enable investigation of:
+  1. Diurnal business-hour load variance (peak office hours 09:00–17:00 vs off-hours / weekends).
+  2. Cloud autoscaling transition shock (transient TLS handshake and proxy queue jitter during morning ramp-up 08:30–09:30, lunch hour shifts, and evening ramp-down 17:00–18:30).
 
 #### Scenario: Traces without a committed raw log are disclosed as such
 

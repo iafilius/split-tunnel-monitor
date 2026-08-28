@@ -333,6 +333,10 @@ Planned features tracked for upcoming feature branches:
    * Maintain independent rolling overhead baselines for wired vs. wireless connections to prevent mixing Wi-Fi jitter with wired baselines.
 3. **Automated Captive Portal Pre-Flight Verification**:
    * Detect hotel/public Wi-Fi captive networks and provide instant desktop notifications with direct CNA login URLs (`http://captive.apple.com`).
+4. **Diurnal Enterprise Load Curves & Cloud Autoscaling Transition Forensics**:
+   * Investigate multi-temporal Zscaler tunnel performance across peak enterprise business hours (09:00–17:00) vs. off-peak hours (nights/weekends).
+   * Quantify cloud proxy autoscaling transition shock (morning logon surges 08:30–09:30, lunch dips, and evening drains) and client-observable TLS proxy queue latency.
+   * Standardize all benchmark trace captures with ISO compact date-time provenance (`trace-<id>-<device>-<power>-<state>-<YYYYMMDD-HHMMSS>-n<N>.log`).
 
 ---
 

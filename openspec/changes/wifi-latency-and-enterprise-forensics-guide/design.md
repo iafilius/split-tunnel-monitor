@@ -86,7 +86,12 @@ Users running `split-tunnel-monitor` on macOS need clear explanations for latenc
 - **Rationale**: Every trace in this guide up to this point existed only as a hand-curated excerpt pasted into markdown; the actual raw `--logfile` output lived in `/tmp` (this machine) or on the M3 laptop, was never committed, and was invisible to whichever machine didn't capture it — meaning "the other laptop doesn't know the results" and nobody could independently recompute a cited percentage from anything other than trusting the prose. Added `docs/traces/` with an explicit `.gitignore` negation (`!docs/traces/**/*.log`) since the repo has a blanket `*.log` ignore rule that would otherwise silently drop these files even on `git add`. Committed the two raw logs this session actually has on disk (Trace 3d, Trace 3e); explicitly disclosed that all other traces (1a-1f, 3/3a/3b/3c) predate this convention and have no committed raw log to recompute from.
 - **Alternative**: Keep relying on pasted excerpts + prose-stated percentages (rejected: this is exactly the gap the user flagged — no shared, checkable evidence between the two laptops or for future contributors).
 
+### Decision 18: Timestamped Trace Filenames for Multi-Temporal, Diurnal & Autoscaling Investigation
+- **Rationale**: Enterprise cloud security proxies (Zscaler ZIA) fluctuate heavily across diurnal business-hour cycles (peak enterprise concurrency 09:00–17:00 vs off-hours) and dynamic cloud autoscaling transitions (morning logon surges 08:30–09:30, lunchtime dips, and evening ramp-downs). Without exact timestamps in trace filenames, comparisons across different times of day are conflated or overwrite each other. Requiring `trace-<id>-<device>-<power>-<state>-<YYYYMMDD-HHMMSS>-n<N>.log` ensures that multiple traces under the same condition captured across different times and days remain distinct and independently checkable.
+- **Alternative**: Flat non-timestamped filenames (rejected: prevents comparing peak vs off-peak hours and risks overwriting historical benchmarks).
+
 ## Risks / Trade-offs
+
 
 
 

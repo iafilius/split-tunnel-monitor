@@ -163,26 +163,35 @@
 
 ## 22. Corporate M2 Pro Laptop: Capture Trace 3b (Zscaler Bypassed, n=120) & Final Archiving (to execute on the M2 Pro)
 
-- [ ] 22.1 `git pull origin fb_fb20260826jvdw` — picks up the three newly committed M3 raw logs (`trace-1d`, `trace-1e`, `trace-1f` in `docs/traces/`), updated doc links, and this task list.
+- [ ] 22.1 `git pull origin fb_fb20260826jvdw` — picks up the newly renamed timestamped raw logs in `docs/traces/`, updated doc links, and this task list.
 - [ ] 22.2 Execute Trace 3b Re-capture at $n=120$ with Zscaler Bypassed (Task 15.3):
-  - **Why**: Completes the final statistically powered ($n=120$) capture. Isolates pure host EDR / local MDM stack from Zscaler `utun` tunnel overhead on AC power.
+  - **Why**: Completes the final statistically powered ($n=120$) capture. Isolates pure host EDR / local MDM stack from Zscaler `utun` tunnel overhead on AC power with exact temporal provenance.
   - **How**: Ensure MagSafe AC power is connected (Low Power Mode OFF). In Zscaler Client Connector (ZCC) UI, toggle "Internet Security" / "Zscaler Internet Access" to OFF.
-  - **Capture Command**:
+  - **Capture Command** (insert current date/time in filename, e.g. `20260829-090000`):
     ```bash
-    python3 ping_checker.py -i 2.0 -n 120 --logfile docs/traces/trace-3b-m2pro-ac-zscaler-bypassed-n120.log
+    python3 ping_checker.py -i 2.0 -n 120 --logfile "docs/traces/trace-3b-m2pro-ac-zscaler-bypassed-$(date +%Y%m%d-%H%M%S)-n120.log"
     ```
   - **Telemetry Command**:
     ```bash
     sw_vers && uptime && memory_pressure && pmset -g live
     ```
 - [ ] 22.3 Update Trace 3b entry in Section 5 of `docs/macos_wifi_latency_and_enterprise_forensics.md`:
-  - Link the raw log `docs/traces/trace-3b-m2pro-ac-zscaler-bypassed-n120.log`.
+  - Link the raw log `docs/traces/trace-3b-m2pro-ac-zscaler-bypassed-<timestamp>-n120.log`.
   - Update sample count (120), timestamps, telemetry, and programmatic elevated-sample percentage.
   - Update Section 6 capture conditions table row for Trace 3b.
 - [ ] 22.4 Fact-check and update Section 3.5's "Cumulative Enterprise Layer Waterfall" table:
-  - Use the real recomputed values from `trace-3b-m2pro-ac-zscaler-bypassed-n120.log` to confirm or refine the "Layer 2: Host EDR" baseline.
+  - Use the real recomputed values from `trace-3b-m2pro-ac-zscaler-bypassed-*-n120.log` to confirm or refine the "Layer 2: Host EDR" baseline.
 - [ ] 22.5 Run test suite, validate OpenSpec, commit, and archive the change:
   - **Validate**: `openspec validate --all && pytest -v`
   - **Commit**: `git add docs/ openspec/ && git commit -m "docs(traces): add Trace 3b n=120 bypassed capture and complete forensics guide"`
   - **Archive**: `openspec archive wifi-latency-and-enterprise-forensics-guide`
+
+## 23. Diurnal Load Curves, Autoscaling Transitions & Timestamped Provenance Schema
+
+- [x] 23.1 Formalized Decision 18 in `design.md` on timestamped trace filenames for multi-temporal comparative forensics.
+- [x] 23.2 Added `Scenario: Diurnal & Cloud Autoscaling Transition Forensics` in `specs/wifi-latency-forensics/spec.md`.
+- [x] 23.3 Added Item 4 to Roadmap in `README.md` for diurnal enterprise curves and autoscaling transition shock investigation.
+- [x] 23.4 Renamed all 5 existing committed traces in `docs/traces/` to include ISO compact timestamps (`<YYYYMMDD-HHMMSS>`) extracted from their log headers.
+- [x] 23.5 Updated all markdown links and Section 4C / 6 documentation in `docs/macos_wifi_latency_and_enterprise_forensics.md`.
+
 

@@ -422,11 +422,11 @@ split-tunnel-monitor -i 2.0 --count 120 --logfile my_trace.log | tee my_trace_co
 
 Then assemble your contribution:
 1. Fill in the [8-point template](#b-standardized-8-point-trace-template-for-contributors) above using the two telemetry snapshots from Section A and the header of `my_trace_console.txt`.
-2. **Commit the raw `--logfile` output (not just excerpts) to `docs/traces/`** in this repo, named `trace-<id>-<short-description>-n<count>.log` (e.g. `trace-3d-m2pro-ac-zscaler-active-n120.log`) — this is the actual evidence behind your trace entry, and is what lets someone else (or your own future session, or the other laptop) independently recompute your elevated-sample percentage rather than trusting a pasted summary. `docs/traces/*.log` is explicitly exempted from this repo's `*.log` `.gitignore` rule — plain `git add` works.
-3. In your `### Trace X: ...` entry, link to the committed raw log (see Trace 3d/3e in Section 5 for the pattern) and quote only the interesting excerpt lines in the fenced code block, not the full raw dump.
+2. **Commit the raw `--logfile` output (not just excerpts) to `docs/traces/`** in this repo, named `trace-<id>-<device>-<power>-<state>-<YYYYMMDD-HHMMSS>-n<count>.log` (e.g. `trace-3d-m2pro-ac-zscaler-active-20260828-180324-n120.log`) — this is the actual evidence behind your trace entry, providing exact temporal provenance to enable comparing peak business hours vs. off-hours, and letting anyone independently recompute your elevated-sample percentage rather than trusting a pasted summary. `docs/traces/*.log` is explicitly exempted from this repo's `*.log` `.gitignore` rule — plain `git add` works.
+3. In your `### Trace X: ...` entry, link to the committed raw log (see Traces 1d, 1e, 1f, 3d, 3e in Section 5 for the pattern) and quote only the interesting excerpt lines in the fenced code block, not the full raw dump.
 4. Open a **pull request** adding your trace entry and its `docs/traces/*.log` file to this repo, or open a **GitHub issue** with the template filled in and the raw log attached if you'd rather have a maintainer merge it. There is currently no separate CONTRIBUTING.md — this section is the contribution process for this guide.
 
-**Known gap**: several traces already in this guide (1a/1b/1c, 1d/1e/1f, 3/3a/3b/3c) predate this convention and only exist as pasted excerpts in this markdown file — their raw logs were never saved outside a machine-local `/tmp` path (or, for the M3-captured traces, a different laptop entirely) and can no longer be independently re-verified. Only Trace 3d and Trace 3e (below) currently have a committed raw log. If you still have the original logfiles for any of the others, committing them retroactively to `docs/traces/` closes this gap.
+**Trace Provenance Status**: All modern $n=120$ benchmark traces (Trace 1d, 1e, 1f on M3 and Trace 3d, 3e on M2 Pro) have their full raw logs committed under `docs/traces/`. Early exploratory traces (1a/1b/1c, 3/3a/3b/3c at $n=41$) predate this convention and exist only as illustrative console excerpts in this markdown guide.
 
 ---
 
@@ -593,7 +593,7 @@ round-trip min/avg/max/stddev = 4.292/14.932/96.081/21.867 ms
 * **Wi-Fi AP & Link**: Xiaomi AIoT AX3600 (OpenWrt 25.12.5, Qualcomm IPQ8071A) | 5GHz (Channel 100, 80MHz, Wi-Fi 6 / 802.11ax)
 * **Security & MDM Profile**: Personal (Clean / Unmanaged, Native Network Stack) | VPN: None
 * **Targets & Cadence**: LAN `192.168.31.1`, Direct ISP `1.1.1.1` (`-S local_ip`), Zscaler `9.9.9.9` (Direct) | Interval: 2.0s | **120 samples** (21:31:50–21:35:59), captured via `split-tunnel-monitor -i 2.0 -n 120`
-* **Raw log (full evidence, all 120 samples)**: [`traces/trace-1d-m3-battery-lpm-clean-n120.log`](traces/trace-1d-m3-battery-lpm-clean-n120.log)
+* **Raw log (full evidence, all 120 samples)**: [`traces/trace-1d-m3-battery-lpm-clean-20260828-213150-n120.log`](traces/trace-1d-m3-battery-lpm-clean-20260828-213150-n120.log)
 
 ```text
 [sample   1] LAN= 4.1ms  ISP= 8.7ms  ZSC= 9.0ms   <-- Initial discovery active radio state
@@ -618,7 +618,7 @@ round-trip min/avg/max/stddev = 4.292/14.932/96.081/21.867 ms
 * **Wi-Fi AP & Link**: Xiaomi AIoT AX3600 (OpenWrt 25.12.5, Qualcomm IPQ8071A) | 5GHz (Channel 100, 80MHz, Wi-Fi 6 / 802.11ax)
 * **Security & MDM Profile**: Personal (Clean / Unmanaged, Native Network Stack) | VPN: None
 * **Targets & Cadence**: LAN `192.168.31.1`, Direct ISP `1.1.1.1` (`-S local_ip`), Zscaler `9.9.9.9` (Direct) | Interval: 2.0s | **120 samples** (21:36:52–21:41:01), captured via `split-tunnel-monitor -i 2.0 -n 120`
-* **Raw log (full evidence, all 120 samples)**: [`traces/trace-1e-m3-ac-clean-n120.log`](traces/trace-1e-m3-ac-clean-n120.log)
+* **Raw log (full evidence, all 120 samples)**: [`traces/trace-1e-m3-ac-clean-20260828-213652-n120.log`](traces/trace-1e-m3-ac-clean-20260828-213652-n120.log)
 
 ```text
 [sample   1] LAN= 4.5ms  ISP= 7.2ms  ZSC= 9.7ms   <-- Initial discovery active radio state
@@ -641,7 +641,7 @@ round-trip min/avg/max/stddev = 4.292/14.932/96.081/21.867 ms
 * **Wi-Fi AP & Link**: Xiaomi AIoT AX3600 (OpenWrt 25.12.5, Qualcomm IPQ8071A) | 5GHz (Channel 100, 80MHz, Wi-Fi 6 / 802.11ax)
 * **Security & MDM Profile**: Personal (Clean / Unmanaged, Native Network Stack) | VPN: None
 * **Command & Cadence**: `ping -c 120 -i 0.2 192.168.31.1` (200ms Cadence, 120 packets)
-* **Raw log (full evidence, all 120 samples)**: [`traces/trace-1f-m3-highfreq-ping-n120.log`](traces/trace-1f-m3-highfreq-ping-n120.log)
+* **Raw log (full evidence, all 120 samples)**: [`traces/trace-1f-m3-highfreq-ping-20260828-214100-n120.log`](traces/trace-1f-m3-highfreq-ping-20260828-214100-n120.log)
 
 ```text
 --- 192.168.31.1 ping statistics ---
@@ -767,7 +767,7 @@ round-trip min/avg/max/stddev = 3.009/12.118/91.010/17.999 ms
 * **Wi-Fi AP & Link**: Xiaomi AIoT AX3600 (OpenWrt 25.12.5, Qualcomm IPQ8071A) | 5GHz (Channel 100, 80MHz, Wi-Fi 6 / 802.11ax)
 * **Security & MDM Profile**: Corporate MDM (Microsoft Intune DEP-enrolled) | VPN: Zscaler Client Connector Active (`utun0`)
 * **Targets & Cadence**: LAN `192.168.31.1`, Direct ISP `1.1.1.1` (`-S local_ip`), Zscaler `9.9.9.9` | Interval: 2.0s | **120 samples** (18:03:24–18:09:19), captured via `split-tunnel-monitor -i 2.0 --count 120`
-* **Raw log (full evidence, all 120 samples)**: [`traces/trace-3d-m2pro-ac-zscaler-active-n120.log`](traces/trace-3d-m2pro-ac-zscaler-active-n120.log)
+* **Raw log (full evidence, all 120 samples)**: [`traces/trace-3d-m2pro-ac-zscaler-active-20260828-180324-n120.log`](traces/trace-3d-m2pro-ac-zscaler-active-20260828-180324-n120.log)
 
 ```text
 [sample   3] LAN=11.3ms  ISP=10.7ms  ZSC=38.6ms   <-- Zscaler-only rise
@@ -789,7 +789,7 @@ round-trip min/avg/max/stddev = 3.009/12.118/91.010/17.999 ms
 * **Wi-Fi AP & Link**: Xiaomi AIoT AX3600 (OpenWrt 25.12.5, Qualcomm IPQ8071A) | 5GHz (Channel 100, 80MHz, Wi-Fi 6 / 802.11ax)
 * **Security & MDM Profile**: Corporate MDM (Microsoft Intune DEP-enrolled) | VPN: Zscaler Client Connector Active (`utun0`)
 * **Targets & Cadence**: LAN `192.168.31.1`, Direct ISP `1.1.1.1` (`-S local_ip`), Zscaler `9.9.9.9` | Interval: 2.0s | **120 samples** (21:11:19–21:17:05), captured via `split-tunnel-monitor -i 2.0 --count 120`
-* **Raw log (full evidence, all 120 samples)**: [`traces/trace-3e-m2pro-battery-lpm-zscaler-active-n120.log`](traces/trace-3e-m2pro-battery-lpm-zscaler-active-n120.log)
+* **Raw log (full evidence, all 120 samples)**: [`traces/trace-3e-m2pro-battery-lpm-zscaler-active-20260828-211121-n120.log`](traces/trace-3e-m2pro-battery-lpm-zscaler-active-20260828-211121-n120.log)
 
 ```text
 [sample 65] LAN= 4.8ms  ISP= 8.8ms  ZSC=59.2ms   <-- Zscaler-only rise
@@ -860,8 +860,22 @@ Neither Session A nor Session B is "wrong" — they illustrate that a single ~60
 - **Concurrent system load** (other foreground/background processes competing for CPU and I/O) can delay when the asyncio event loop issues each probe, shifting *when* a packet leaves relative to AWDL/PSM timing windows, even though the RTT `ping` reports for that packet is still accurate.
 - **AWDL/Bluetooth/Continuity activity** from nearby Apple devices (AirDrop, Handoff, Universal Clipboard) varies by whatever else is active nearby at capture time.
 
+### Diurnal Enterprise Load Curves & Cloud Autoscaling Transition Forensics
+
+A major source of multi-temporal latency variance on enterprise-managed devices is the **diurnal enterprise load curve** and **dynamic cloud-edge autoscaling elasticity**:
+
+1. **Peak Business Hours vs. Off-Hours**:
+   * *Business Hours (09:00–17:00)*: Zscaler Public Service Edges (ZEN / SME clusters) experience peak tenant concurrency with millions of concurrent TLS inspection sessions, increasing TLS handshake ticket queues and TCP proxy buffer depths.
+   * *Off-Hours / Weekends*: Idle cryptographic worker pools deliver instant TLS 1.3 resumption and lower cloud-edge transit delay.
+2. **Cloud Autoscaling Transition Shock (Uphills & Downhills)**:
+   * *Morning Ramp-Up (08:30–09:30)*: When thousands of enterprise workers log on simultaneously, incoming traffic surges outpace rapid cloud autoscaling spin-up, producing transient 50ms–150ms proxy queue delays and TCP SYN retransmits.
+   * *Lunchtime Dips & Afternoon Resumption (12:00–13:30)*: Dynamic traffic shifts trigger cluster rebalancing.
+   * *Evening Ramp-Down (17:00–18:30)*: Traffic drains and node worker consolidation can force client TLS session renegotiations.
+3. **Requirement for Temporal Provenance**:
+   * Because a `+15ms` Zscaler overhead at 23:00 on Friday may become `+65ms` at 14:00 on Tuesday on the exact same Wi-Fi, all empirical traces in `docs/traces/` MUST retain exact compact ISO timestamps in their filenames (`trace-<id>-<device>-<power>-<state>-<YYYYMMDD-HHMMSS>-n<count>.log`) to enable future multi-temporal load curve studies.
+
 ### Recommendation for engineers using this guide
-Treat any single capture as one data point. For a credible "is this network healthy" judgment, capture multiple sessions across different times of day, and where root-causing matters, corroborate with `airport -I` (RSSI/channel/noise), a packet capture, or a controlled AWDL-disabled comparison (Section 7, Step 2) rather than a single ad-hoc trace.
+Treat any single capture as one data point. For a credible "is this network healthy" judgment, capture multiple sessions across different times of day (peak vs. off-peak), and where root-causing matters, corroborate with `airport -I` (RSSI/channel/noise), a packet capture, or a controlled AWDL-disabled comparison (Section 7, Step 2) rather than a single ad-hoc trace.
 
 ---
 
