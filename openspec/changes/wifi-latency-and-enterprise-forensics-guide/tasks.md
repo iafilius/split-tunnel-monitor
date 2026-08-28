@@ -120,3 +120,10 @@
 - [x] 16.1 Update Executive Summary, Section 2 comparison table, and Section 6 causality narratives to explicitly distinguish benign 802.11 PSM power-saving sleep buffering (~50-60ms, collapsing to 3.0ms on active traffic) from true enterprise network jitter (90ms-170ms+ EDR socket queueing and Zscaler taxes).
 - [x] 16.2 Synchronize Antigravity Knowledge Base artifact `findings.md` and validate with `openspec validate --all` and `pytest -v`.
 
+## 17. Four-Fingerprint Taxonomy (A, B, C, D) & OVH Calculation Deep Dive
+
+- [x] 17.1 Update `docs/macos_wifi_latency_and_enterprise_forensics.md` with the 4-fingerprint taxonomy (A: PSM Sleep Floor, B: AWDL Social Scan, C: Host EDR Socket Hooks, D: Zscaler VPN Overlay Tax).
+- [x] 17.2 Add dedicated mathematical breakdown of `OVH` (p50/p95) delta calculation ($RTT_{\text{Zscaler}} - RTT_{\text{Direct}}$) explaining that `OVH` isolates Fingerprint D (Zscaler tunnel tax) on a single machine, while Fingerprint C (Host EDR) affects all paths equally and is isolated by comparing against a clean unmanaged Mac.
+- [x] 17.3 Restructure Section 2 and Section 6 to anchor on the **Low Power Mode OFF (Normal / AC Power)** condition as the primary apples-to-apples baseline.
+- [x] 17.4 Synchronize Antigravity Knowledge Base artifact `findings.md` and validate with `openspec validate --all` and `pytest -v`.
+

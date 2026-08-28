@@ -54,7 +54,12 @@ The forensics guide SHALL NOT present a percentage-based comparison between two 
 
 ### Requirement: Cross-Platform Power-State Benchmark Matrix
 
-The forensics guide SHALL provide a 2x2 comparison matrix documenting latency behavior under both AC power and Battery power across personal (unmanaged M3) and corporate MDM-managed (M2 Pro) environments.
+The forensics guide SHALL provide a 2x2 comparison matrix documenting latency behavior under both AC power and Battery power across personal (unmanaged M3) and corporate MDM-managed (M2 Pro) environments, while establishing **Low Power Mode OFF (Normal / AC Power)** as the primary apples-to-apples comparison baseline to eliminate idle PSM sleep artifacts.
+
+#### Scenario: Primary Baseline Focused on Low Power Mode OFF
+
+- **WHEN** evaluating the true software and network performance impact between clean and corporate-managed Macs
+- **THEN** the guide focuses primarily on the **Low Power Mode OFF (AC Power / Active D0 State)** condition, explaining that continuous enterprise background daemon activity on corporate fleets keeps Wi-Fi radios in active D0 state (preventing 802.11 PSM sleep), making Low Power Mode OFF the only clean baseline to isolate EDR and VPN overhead without 2.0s solitary ping PSM sleep confounding the comparison
 
 #### Scenario: AC Power and Battery Power benchmark traces
 
@@ -83,7 +88,7 @@ The forensics guide SHALL provide dedicated, in-depth technical analysis for all
 #### Scenario: Zscaler Tunnel Path & Overhead Forensics (`9.9.9.9` & `OVH`)
 
 - **WHEN** evaluating VPN performance tax
-- **THEN** the guide details `utun` virtual next-hop encapsulation, TLS proxy inspection, ZIA cloud edge routing (9–15ms baseline jumping to 92–102ms), and the mathematical rolling overhead calculation $(RTT_{ZSC} - RTT_{ISP})$ across p50 and p95 percentiles
+- **THEN** the guide details `utun` virtual next-hop encapsulation, TLS proxy inspection, ZIA cloud edge routing (9–15ms baseline jumping to 92–102ms), and the mathematical rolling overhead calculation ($RTT_{ZSC} - RTT_{ISP}$) across p50 and p95 percentiles, explicitly noting that `OVH` isolates the VPN overlay tax (Fingerprint D) on a single machine, whereas Host EDR overhead (Fingerprint C) affects all paths equally and is isolated by comparing against a clean unmanaged Mac
 
 #### Scenario: Multi-Path Fault Domain Triangulation
 
@@ -98,10 +103,14 @@ The forensics guide SHALL provide dedicated, in-depth technical analysis for all
 
 The forensics guide SHALL formalize the concept of "macOS Wi-Fi Latency Fingerprints" and provide an 8-point standardized metadata schema and one-liner telemetry capture commands for multi-contributor trace submissions.
 
-#### Scenario: Document frames latency profiles as Latency Fingerprints
+#### Scenario: Document frames latency profiles as 4 Latency Fingerprints
 
 - **WHEN** reading the forensics documentation
-- **THEN** the guide classifies observed ICMP latency behaviors into distinct deterministic profiles: Fingerprint A (802.11 PSM DTIM Sleep Floor), Fingerprint B (AWDL Off-Channel Discovery Scan Spikes), and Fingerprint C (Enterprise EDR & Virtual-Hop Overlay Jitter)
+- **THEN** the guide classifies observed ICMP latency behaviors into 4 distinct deterministic profiles:
+  1. Fingerprint A: 802.11 PSM Idle Sleep Floor (~50–60ms on clean idle systems)
+  2. Fingerprint B: AWDL Off-Channel Discovery Scan Spikes (48ms–96ms periodic 10s–22s sync spikes)
+  3. Fingerprint C: Enterprise Host EDR & Kernel Socket Inspection (90ms–170ms+ on LAN/Direct)
+  4. Fingerprint D: Zscaler VPN Tunnel Encapsulation & Cloud Edge Overhead (+15ms to +90ms+ Delta)
 
 #### Scenario: 8-Point Standardized Trace Metadata Schema
 

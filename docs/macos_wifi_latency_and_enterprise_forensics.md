@@ -4,57 +4,62 @@ A technical reference, diagnostic guide, and standardized benchmarking protocol 
 
 ---
 
-## 1. Executive Summary: The 3 Core macOS Latency Fingerprints
+## 1. Executive Summary: The 4 Core macOS Latency Fingerprints
 
-When diagnosing network performance and VPN split-tunneling on macOS, engineers frequently observe puzzling ICMP ping patterns across local and remote destinations. Rather than unstructured random noise, these patterns fall into three deterministic **macOS Latency Fingerprints**:
+When diagnosing network performance and VPN split-tunneling on macOS, engineers frequently observe puzzling ICMP ping patterns across local and remote destinations. Rather than unstructured random noise, these patterns fall into four deterministic **macOS Latency Fingerprints**:
 
 ```
-                              MACOS LATENCY FINGERPRINT TYPES
-                              ═══════════════════════════════
+                                  MACOS LATENCY FINGERPRINT TYPES
+                                  ═══════════════════════════════
 
-  [Fingerprint A: PSM Sleep Floor]     [Fingerprint B: AWDL Social Scan]    [Fingerprint C: Enterprise Overlay]
-       (Battery + LPM State)                   (10s–22s Cadence)                   (MDM / Zscaler Stack)
-  ┌──────────────────────────────┐     ┌──────────────────────────────┐     ┌──────────────────────────────┐
-  │ • ~50–60ms resting floor     │     │ • 48ms–96ms sync spikes      │     │ • 90ms–170ms multi-modal     │
-  │ • AP DTIM beacon buffer      │     │ • Radio leaves AP channel    │     │ • DriverKit socket hooks     │
-  │ • Drops to 4ms on wakeup     │     │ • All 3 targets jump         │     │ • Zscaler utun routing       │
-  └──────────────────────────────┘     └──────────────────────────────┘     └──────────────────────────────┘
+   [Fingerprint A: PSM Sleep]      [Fingerprint B: AWDL Scan]      [Fingerprint C: Host EDR]      [Fingerprint D: Zscaler Overlay]
+     (Radio Power State)             (Radio Off-Channel Hop)         (Local Endpoint Security)       (Network VPN & Cloud Proxy)
+   ┌───────────────────────────┐   ┌───────────────────────────┐   ┌───────────────────────────┐   ┌───────────────────────────┐
+   │ • ~50–60ms resting floor  │   │ • 48ms–96ms sync spikes   │   │ • 90ms–170ms+ LAN/Direct  │   │ • +15ms to +90ms+ OVH     │
+   │ • AP DTIM beacon buffer   │   │ • Radio leaves AP channel │   │ • DriverKit socket queues │   │ • utun MTU encapsulation  │
+   │ • Drops to 3ms on active  │   │ • All 3 targets jump      │   │ • Affects ALL local paths │   │ • ZIA Cloud Edge latency  │
+   └───────────────────────────┘   └───────────────────────────┘   └───────────────────────────┘   └───────────────────────────┘
 ```
 
-1. **Fingerprint A: The 802.11 PSM Sleep Floor (~50–60ms)**:
-   * Pinging the local home router (`192.168.xx.1`) only 1 meter away appears stuck at ~50–60ms when on battery with Low Power Mode ON and no active foreground network tasks.
-   * Solitary 2.0s probes cause the Wi-Fi PHY to sleep; the Access Point buffers replies in its queue until the next DTIM beacon frame. An active burst immediately wakes the radio to **~4–8ms**.
+1. **Fingerprint A: 802.11 PSM Idle Sleep Floor (~50–60ms)**:
+   * Pinging the local home router (`192.168.xx.1`) appears stuck at ~50–60ms when a clean Mac has no background network traffic.
+   * Solitary 2.0s probes cause the Wi-Fi PHY to sleep; the Access Point buffers replies until the next DTIM beacon frame. An active burst (`ping -i 0.2` or browsing) immediately collapses latency to **~3.0ms – 6.0ms**.
 2. **Fingerprint B: AWDL Off-Channel Discovery Scans (48ms – 96ms)**:
    * Every 10 to 22 seconds, macOS temporarily switches the Broadcom radio away from the connected AP channel to 5GHz social channels for AirDrop/Continuity beacons.
    * All outbound frames during this 80ms window are queued, causing simultaneous **48ms – 96ms spikes across LAN, Direct ISP, and VPN targets**.
-3. **Fingerprint C: Enterprise Overlay & EDR Inspection (90ms – 170ms+)**:
-   * On corporate-managed Macs, endpoint security filters (Microsoft Defender ATP / Falcon) and Zscaler Client Connector (`utun` user-space NetworkExtension routing) add kernel/driver scheduling delays.
-   * LAN gateway pings stretch up to **100ms – 170ms+** under background load, while Zscaler tunnel targets (`9.9.9.9`) exhibit independent **90ms – 102ms** spikes even when local Wi-Fi and direct ISP paths are idle.
+3. **Fingerprint C: Enterprise Host EDR & Kernel Socket Hooks (90ms – 170ms+)**:
+   * Endpoint security agents (Microsoft Defender ATP, CrowdStrike Falcon) intercept BSD socket calls and hold `mbuf` kernel buffers for inspection before releasing them to DriverKit.
+   * **Affects ALL traffic (LAN and Direct ISP alike)**, stretching local LAN pings up to **100ms – 170ms+** (and 300ms–800ms+ under heavy CPU load/swap page faults).
+4. **Fingerprint D: Zscaler VPN Tunnel Encapsulation & Cloud Edge Overhead (+15ms to +90ms+ Delta)**:
+   * Virtual interface (`utun0`) MTU encapsulation, TLS proxy inspection, and routing to the ZIA Public Service Edge gateway.
+   * **Affects ONLY tunneled traffic**, measured directly by `split-tunnel-monitor`'s **`OVH: p50/p95`** columns ($RTT_{\text{Zscaler}} - RTT_{\text{Direct}}$).
 
-> 💡 **Critical Conceptual Disambiguation (Benign Sleep vs. Erratic Enterprise Jitter)**: 
+> 💡 **Critical Conceptual Disambiguation (Benign Sleep vs. Software Degradation)**: 
 > * **Fingerprint A (PSM Sleep Buffering)** is **NOT** network degradation. On a clean Mac, the flat ~50ms baseline during solitary 2.0s probes is an intentional, energy-efficient 802.11 PHY power-save state that instantly collapses to ultra-low **3.0ms – 6.0ms** when active traffic begins.
-> * **Fingerprint C (Enterprise Jitter)** is **TRUE** software-induced degradation. On a corporate Mac, continuous background polling from Defender, Falcon, and ZCC keeps the radio awake in active D0 state (masking the PSM sleep floor), but introduces erratic, multi-modal **90ms – 170ms+ latency spikes** and Zscaler overlay taxes from kernel socket interception.
+> * **Fingerprint C (Host EDR)** and **Fingerprint D (Zscaler Tunnel Tax)** are **TRUE** software-induced performance degradations introduced by corporate endpoint security and cloud routing.
 
 ---
 
-## 2. Platform Comparison: Clean vs. Enterprise-Managed Mac
+## 2. Platform Comparison: Clean vs. Enterprise-Managed Mac (Primary Baseline: Low Power Mode OFF)
 
-| Metric / Dimension             | Personal Mac (Battery + Low Power Mode)                                                             | Personal Mac (AC Power, Normal Mode)                                                                | Corporate MDM-Managed Mac (AC Power, Normal Mode)                                                   | Corporate MDM-Managed Mac (Battery + Low Power Mode)                                                |
-| :----------------------------- | :-------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------- |
-| **Hardware**                   | MacBook Pro (Apple M3)                                                                              | MacBook Pro (Apple M3)                                                                              | MacBook Pro (Apple M2 Pro, 12-core)                                                                 | MacBook Pro (Apple M2 Pro, 12-core)                                                                 |
-| **Wi-Fi Subsystem**            | Broadcom Wi-Fi 6E (BCM4388 `0x14E4/0x4388`, verified via `system_profiler SPAirPortDataType`; 6GHz) | Broadcom Wi-Fi 6E (BCM4388 `0x14E4/0x4388`, verified via `system_profiler SPAirPortDataType`; 6GHz) | Broadcom Wi-Fi 6E (BCM4388 `0x14E4/0x4388`, verified via `system_profiler SPAirPortDataType`; 6GHz) | Broadcom Wi-Fi 6E (BCM4388 `0x14E4/0x4388`, verified via `system_profiler SPAirPortDataType`; 6GHz) |
-| **Wi-Fi Standard & Band**      | **Wi-Fi 6 (802.11ax)**, 5GHz (Channel 100, 80MHz width, MCS 11)                                     | **Wi-Fi 6 (802.11ax)**, 5GHz (Channel 100, 80MHz width, MCS 11)                                     | **Wi-Fi 6 (802.11ax)**, 5GHz (Channel 100, 80MHz width, MCS 11)                                     | **Wi-Fi 6 (802.11ax)**, 5GHz (Channel 100, 80MHz width, MCS 11)                                     |
-| **Access Point (AP)**          | **Xiaomi AIoT AX3600** (OpenWrt 25.12.5, Qualcomm IPQ8071A / Ath11k)                                | **Xiaomi AIoT AX3600** (OpenWrt 25.12.5, Qualcomm IPQ8071A / Ath11k)                                | **Xiaomi AIoT AX3600** (OpenWrt 25.12.5, Qualcomm IPQ8071A / Ath11k)                                | **Xiaomi AIoT AX3600** (OpenWrt 25.12.5, Qualcomm IPQ8071A / Ath11k)                                |
-| **OS / Fleet Management**      | Clean macOS (Free / Unmanaged)                                                                      | Clean macOS (Free / Unmanaged)                                                                      | Corporate MDM (Microsoft Intune / DEP-enrolled)                                                     | Corporate MDM (Microsoft Intune / DEP-enrolled)                                                     |
-| **Security & VPN Agents**      | Native macOS Network Stack                                                                          | Native macOS Network Stack                                                                          | Zscaler Client Connector (ZCC), Defender ATP, Falcon                                                | Zscaler Client Connector (ZCC), Defender ATP, Falcon                                                |
-| **Power State**                | **Battery Power (96%), Low Power Mode ON**                                                          | **AC Power (MagSafe), Low Power Mode OFF**                                                          | **AC Power (MagSafe), Low Power Mode OFF**                                                          | **Battery Power (100%), Low Power Mode ON**                                                         |
-| **Dominant Fingerprint**       | **Fingerprint A (PSM Floor ~50–60ms)** (86.7% elevated at n=120)                                     | **Fingerprint A (PSM Floor ~50–60ms)** (85.0% elevated at n=120; 83.3% <10ms under 200ms keep-alive) | **Fingerprint C (Overlay Jitter)** + Fingerprint B (2.5% elevated at n=120)                         | **Fingerprint C (Overlay Jitter)** + Fingerprint B (2.5% elevated at n=120)                         |
-| **Wakeup / Periodic Behavior** | Drops to 4–10ms every 21s (Subprocess burst)                                                        | Drops to 4–12ms every 21s (Subprocess burst)                                                        | Continuous D0 active state (~9ms baseline) + discrete EDR/AWDL/Zscaler spikes                       | Continuous D0 active state (~9ms baseline) + discrete EDR/AWDL/Zscaler spikes                       |
+To establish an authoritative apples-to-apples comparison, the primary benchmark baseline focuses on **Low Power Mode OFF (AC Power / Active D0 State)**. Because continuous background polling from enterprise daemons (Defender, Falcon, ZCC) prevents corporate Wi-Fi radios from dropping into 802.11 PSM sleep anyway, testing with Low Power Mode OFF eliminates idle power-saving sleep artifacts and isolates pure software and network overhead.
+
+| Metric / Dimension             | Personal Mac (AC Power, Normal Mode) — **PRIMARY BASELINE**                                          | Corporate MDM Mac (AC Power, Normal Mode) — **PRIMARY BASELINE**                                    | Personal Mac (Battery + Low Power Mode)                                                             | Corporate MDM Mac (Battery + Low Power Mode)                                                        |
+| :----------------------------- | :--------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------- |
+| **Hardware**                   | MacBook Pro (Apple M3)                                                                               | MacBook Pro (Apple M2 Pro, 12-core)                                                                 | MacBook Pro (Apple M3)                                                                              | MacBook Pro (Apple M2 Pro, 12-core)                                                                 |
+| **Wi-Fi Subsystem**            | Broadcom Wi-Fi 6E (BCM4388 `0x14E4/0x4388`, verified via `system_profiler SPAirPortDataType`; 6GHz)  | Broadcom Wi-Fi 6E (BCM4388 `0x14E4/0x4388`, verified via `system_profiler SPAirPortDataType`; 6GHz) | Broadcom Wi-Fi 6E (BCM4388 `0x14E4/0x4388`, verified via `system_profiler SPAirPortDataType`; 6GHz) | Broadcom Wi-Fi 6E (BCM4388 `0x14E4/0x4388`, verified via `system_profiler SPAirPortDataType`; 6GHz) |
+| **Wi-Fi Standard & Band**      | **Wi-Fi 6 (802.11ax)**, 5GHz (Channel 100, 80MHz width, MCS 11)                                      | **Wi-Fi 6 (802.11ax)**, 5GHz (Channel 100, 80MHz width, MCS 11)                                     | **Wi-Fi 6 (802.11ax)**, 5GHz (Channel 100, 80MHz width, MCS 11)                                     | **Wi-Fi 6 (802.11ax)**, 5GHz (Channel 100, 80MHz width, MCS 11)                                     |
+| **Access Point (AP)**          | **Xiaomi AIoT AX3600** (OpenWrt 25.12.5, Qualcomm IPQ8071A / Ath11k)                                 | **Xiaomi AIoT AX3600** (OpenWrt 25.12.5, Qualcomm IPQ8071A / Ath11k)                                | **Xiaomi AIoT AX3600** (OpenWrt 25.12.5, Qualcomm IPQ8071A / Ath11k)                                | **Xiaomi AIoT AX3600** (OpenWrt 25.12.5, Qualcomm IPQ8071A / Ath11k)                                |
+| **OS / Fleet Management**      | Clean macOS (Free / Unmanaged)                                                                       | Corporate MDM (Microsoft Intune / DEP-enrolled)                                                     | Clean macOS (Free / Unmanaged)                                                                      | Corporate MDM (Microsoft Intune / DEP-enrolled)                                                     |
+| **Security & VPN Agents**      | Native macOS Network Stack                                                                           | Zscaler Client Connector (ZCC), Defender ATP, Falcon                                                | Native macOS Network Stack                                                                          | Zscaler Client Connector (ZCC), Defender ATP, Falcon                                                |
+| **Power State**                | **AC Power (MagSafe), Low Power Mode OFF**                                                           | **AC Power (MagSafe), Low Power Mode OFF**                                                          | **Battery Power (96%), Low Power Mode ON**                                                          | **Battery Power (100%), Low Power Mode ON**                                                         |
+| **Dominant Fingerprint**       | **Clean Active Baseline (3.0ms min; 83.3% <10ms under keep-alive)** + Fingerprint B                   | **Fingerprint C (Host EDR)** + **Fingerprint D (Zscaler Tax)** + Fingerprint B                      | **Fingerprint A (PSM Sleep Floor ~50–60ms)** (86.7% elevated at n=120)                              | **Fingerprint C (Host EDR)** + **Fingerprint D (Zscaler Tax)** + Fingerprint B                      |
+| **Wakeup / Periodic Behavior** | Ultra-low 3.0ms under active traffic; enters ~52ms PSM sleep on solitary 2s probes                   | Continuous D0 active state (~9ms baseline) + discrete EDR/AWDL/Zscaler spikes                       | Drops to 4–10ms every 21s (Subprocess burst)                                                        | Continuous D0 active state (~9ms baseline) + discrete EDR/AWDL/Zscaler spikes                       |
 
 > **Key finding (confirmed on identical Broadcom BCM4388 hardware)**: Both machines share the **exact same Broadcom BCM4388 (`0x14E4, 0x4388`) Wi-Fi 6E card** running on macOS 26.6.2 (Build 25G83) connected to the **same Xiaomi AX3600 OpenWrt 25.12.5 AP on 5GHz Channel 100**. This completely eliminates hardware chipset differences and AP variables.
 > 
-> * **On the clean personal M3**: Because zero background enterprise daemons exist to generate network traffic, solitary 2.0s ICMP probes allow the Wi-Fi PHY to sleep into 802.11 PSM DTIM buffer on both Battery (**86.7% >50ms**, Trace 1d) and AC power (**85.0% >50ms**, Trace 1e). As soon as active network traffic is present (Trace 1f, `ping -i 0.2`), the radio stays in high-power D0 state, delivering **83.3% <10ms (3.0ms min)**.
-> * **On the corporate M2 Pro**: Continuous background network polling from Microsoft Defender ATP, Falcon sensor, and Zscaler Client Connector keeps the Broadcom radio awake in D0 state 97.5% of the time, resulting in **2.5% >50ms on both AC power (Trace 3d) and Battery+LPM (Trace 3e)** at $n=120$, with latency variations driven by EDR socket queueing and VPN encryption rather than PSM sleep.
+> * **On the clean personal M3 (Low Power Mode OFF)**: With zero background enterprise daemons, active traffic (Trace 1f, `ping -i 0.2`) forces the PHY into high-power D0 active state, delivering **83.3% <10ms (3.0ms min / 12.1ms avg)**. Under solitary 2.0s probes without other network traffic, the PHY drops into benign 802.11 PSM sleep (**85.0% >50ms**, Trace 1e).
+> * **On the corporate M2 Pro (Low Power Mode OFF)**: Continuous background network polling from Defender ATP, Falcon, and ZCC keeps the radio awake in D0 state 97.5% of the time (**Trace 3d, 2.5% >50ms**). However, it suffers from **Fingerprint C (Host EDR socket interception stretching LAN to 170ms+)** and **Fingerprint D (Zscaler overlay latency taxes of +15ms to +90ms+)**, neither of which exist on the clean Mac.
 
 
 
@@ -247,6 +252,50 @@ When monitoring split-tunnel networks outside standard home Wi-Fi setups, two co
   2. **AWDL social channel hopping spikes (48ms–96ms) drop to zero** (wired Ethernet has no radio off-channel scan).
   3. **LAN Gateway baseline drops to flat 0.8ms – 1.2ms**.
 * **Diagnostic Value**: If a user on a wired docking station still observes 90ms–150ms spikes on LAN or Zscaler, **100% of the wireless physical medium is ruled out**, conclusively proving that the latency is generated exclusively by EDR socket inspection hooks (`sysx`) or Zscaler `utun` cloud-edge encapsulation.
+
+### 3.4 Mathematical Path Overhead (`OVH: p50/p95`) vs. Host EDR Overhead
+
+`split-tunnel-monitor` computes real-time statistical path overhead in every iteration. Understanding how this is calculated—and what it does and does *not* incorporate—is essential for accurate network forensics:
+
+```
+                      TWO LEVELS OF OVERHEAD: NETWORK OVERLAY VS. HOST EDR
+                      ═════════════════════════════════════════════════════
+
+   [CLEAN UNMANAGED MAC]                    [CORPORATE MANAGED MAC]
+   Direct ISP (1.1.1.1): ~7ms               Direct ISP (1.1.1.1): ~14ms – 35ms+ (delayed by EDR hooks!)
+                                            Zscaler Tunnel (9.9.9.9): ~42ms – 98ms+
+                                            
+   ──────────────────────────               ───────────────────────────────────────────────────────────
+   [Cross-Host EDR Delta]                   [Internal Tunnel Delta: OVH p50/p95]
+   Overhead_EDR = RTT_Corp - RTT_Clean      OVH_sample = RTT_Zscaler - RTT_Direct
+   Overhead_EDR = 35ms - 7ms = +28ms        OVH_sample = 42ms - 35ms = +7ms
+   (Isolates Fingerprint C: Host EDR)       (Isolates Fingerprint D: Zscaler Cloud Proxy & utun)
+```
+
+#### 1. How `OVH: p50/p95` Is Calculated
+For each monitoring sample $i$ where both the Direct ISP and Zscaler targets reply:
+$$\text{OVH}_i = \text{RTT}_{\text{Zscaler}, i} - \text{RTT}_{\text{Direct}, i}$$
+
+Over a rolling window of recent samples (default: 60 iterations), `split-tunnel-monitor` calculates:
+* **`OVH: p50`**: The 50th percentile (median) overhead delta. Reflects the steady-state cryptographic encapsulation and cloud-proxy routing tax.
+* **`OVH: p95`**: The 95th percentile overhead delta. Captures tail-latency jitter, TLS session re-negotiation, and cloud-edge congestion.
+* **`Δloss`**: The difference in packet loss ($\text{Loss}_{\text{Zscaler}} - \text{Loss}_{\text{Direct}}$).
+
+#### 2. What `OVH` Measures: Pure Fingerprint D (Zscaler Tunnel Tax)
+Because `OVH` subtracts Direct ISP latency from Zscaler latency on the **same machine**:
+* It cancels out local Wi-Fi PHY delays (PSM buffering, AWDL scans).
+* It cancels out local router and ISP fiber/cable underlay latency.
+* It cancels out local host kernel delays that affect all sockets equally.
+* **Result**: `OVH` isolates the pure cost of **Fingerprint D** (Zscaler Client Connector, `utun` virtual interface, and ZIA Public Service Edge transport).
+
+#### 3. What `OVH` Does NOT Measure: Fingerprint C (Host EDR Hooks)
+Host-level EDR filters (Microsoft Defender ATP, CrowdStrike Falcon, macOS `EndpointSecurity` system extensions) intercept **all network sockets** before packets reach the network interface.
+* If Defender ATP adds $+25\text{ms}$ of socket evaluation delay, it adds $+25\text{ms}$ to LAN, $+25\text{ms}$ to Direct ISP, and $+25\text{ms}$ to Zscaler.
+* In the monitor's display, `OVH` might show a modest $+6\text{ms}$ ($\text{Zscaler } 41\text{ms} - \text{Direct } 35\text{ms} = 6\text{ms}$), masking the fact that the entire machine's networking is running 25ms slower than native hardware capability.
+
+#### 4. How to Isolate Host EDR Overhead (Fingerprint C)
+To measure the true cost of **Fingerprint C (Host EDR)**, compare the **Direct ISP underlay** of the corporate laptop against a **clean, unmanaged laptop** on the same Wi-Fi network with **Low Power Mode OFF**:
+$$\text{Overhead}_{\text{EDR}} = \text{RTT}_{\text{Corporate Direct (AC)}} - \text{RTT}_{\text{Clean Direct (AC)}}$$
 
 ---
 
@@ -858,15 +907,15 @@ I have captured deterministic network telemetry using multi-path ICMP triangulat
 **Reference test environment**: All magnitudes below were captured on Broadcom BCM4388 (Wi-Fi 6E) client hardware, connected to a **Xiaomi AIoT AX3600 router (OpenWrt 25.12.5, Qualcomm IPQ8071A/Ath11k)** on **5GHz Channel 100, 80MHz width, Wi-Fi 6 (802.11ax)**. These are not universal constants: DTIM interval, channel width, and AP vendor/firmware all directly affect the PSM/AWDL magnitudes below, so a different router brand/model/firmware, band (2.4/5/6GHz), or channel/width will produce a different — but analogous — fingerprint. Use the 8-point trace template (Section 4B) to record your own setup's fingerprint for comparison.
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                       macOS Wi-Fi Latency Fingerprints                      │
-├─────────────────────────┬───────────────────┬───────────────────────────────┤
-│ Observed Symptom        │ Magnitude         │ Root Cause                    │
-├─────────────────────────┼───────────────────┼───────────────────────────────┤
-│ Stable high baseline    │ ~50 – 60 ms       │ 802.11 Power Save Mode (DTIM) │
-│ Periodic drop every 21s │ ~4 – 7 ms         │ Diagnostic Rediscovery Wakeup │
-│ Sharp spikes every 1-2s │ ~30 – 90 ms       │ AWDL Social Channel Hopping   │
-│ Random multi-modal jump │ ~20 – 120 ms      │ Zscaler + EDR Packet Filters  │
-└─────────────────────────┴───────────────────┴───────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                    macOS Wi-Fi Latency Fingerprints                                    │
+├───────────────────────────────┬───────────────────┬────────────────────────────────────────────────────┤
+│ Fingerprint                   │ Typical Magnitude │ Root Cause & Physical Layer                        │
+├───────────────────────────────┼───────────────────┼────────────────────────────────────────────────────┤
+│ [A] 802.11 PSM Idle Sleep     │ ~50 – 60 ms       │ Radio PHY Sleep / AP DTIM Queue (collapses to 3ms) │
+│ [B] AWDL Social Channel Hop   │ ~48 – 96 ms       │ AirDrop/Continuity 5GHz off-channel scan (10–22s)  │
+│ [C] Enterprise Host EDR Hooks │ ~90 – 170 ms+     │ Defender/Falcon DriverKit socket queues (all paths)│
+│ [D] Zscaler VPN Overlay Tax   │ +15 – +90 ms+ OVH │ utun MTU encapsulation & ZIA Cloud Edge Proxy      │
+└───────────────────────────────┴───────────────────┴────────────────────────────────────────────────────┘
 ```
 

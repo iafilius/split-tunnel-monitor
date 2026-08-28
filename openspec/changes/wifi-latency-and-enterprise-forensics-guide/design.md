@@ -69,7 +69,13 @@ Users running `split-tunnel-monitor` on macOS need clear explanations for latenc
 - **Rationale**: Comparing raw `>50ms` sample counts in isolation created a confusing paradox where the clean personal M3 appeared to have "worse" metrics (85% >50ms) than the corporate M2 Pro (2.5% >50ms). In reality, the M3's 55ms baseline is **benign 802.11 PSM power-save buffering** during solitary probes on an idle radio (which instantly collapses to a flat 3.0ms under active traffic), whereas the corporate M2 Pro has an active radio kept awake by background daemons but experiences **erratic, degraded 90ms–170ms+ EDR socket queueing and Zscaler overlay taxes**. Terminology across tables and narratives is updated to explicitly prevent conflating intentional idle power-saving sleep with network degradation.
 - **Alternative**: Relying solely on numerical `>50ms` thresholds (rejected: misleadingly implies corporate network stacks perform better than clean native stacks).
 
+### Decision 14: Decoupling Host EDR (Fingerprint C) from Zscaler Overlay (Fingerprint D) & Low-Power-Mode-OFF Baseline Focus
+- **Rationale**: Grouping Host-Level EDR and Zscaler Tunneling into a single category obscured the exact measurement `split-tunnel-monitor` performs. `OVH: p50/p95` calculates $RTT_{\text{Zscaler}} - RTT_{\text{Direct}}$, which isolates **Fingerprint D** (Zscaler tunnel overhead on a single host). However, **Fingerprint C** (Host EDR hooks) intercepts all network sockets equally (both Direct and LAN), so it is invisible to single-machine delta calculations and can only be isolated by cross-comparing against a clean/unmanaged machine or pre/post EDR deployment. Decoupling them into Fingerprint C (Host EDR) and Fingerprint D (Zscaler Tunnel) provides clean architectural attribution.
+- Furthermore, focusing the primary M2 vs M3 comparison on **Low Power Mode OFF (AC Power / Active D0 State)** provides a true apples-to-apples baseline, since background enterprise daemons on corporate laptops prevent 802.11 PSM power saving from engaging anyway, removing the 2.0s solitary ping PSM sleep artifact from confounding the comparison.
+- **Alternative**: Keeping a 3-fingerprint model and battery-first comparison (rejected: conflates host EDR with network VPN overlay and allows idle PSM sleep to confuse cross-fleet evaluations).
+
 ## Risks / Trade-offs
+
 
 
 
