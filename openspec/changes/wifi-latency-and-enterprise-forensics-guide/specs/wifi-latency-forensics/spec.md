@@ -168,6 +168,14 @@ The forensics guide SHALL document the architectural mechanics of EDR/antivirus 
   1. Benign 802.11 PSM Idle Sleep Buffering (~50–60ms flat baseline on clean idle systems with 0% socket contention, instantly collapsing to 3.0ms on active traffic), and
   2. Erratic Enterprise Jitter & EDR Socket Queueing (wild multi-modal swings to 90ms–170ms+ and Zscaler overlay taxes caused by endpoint inspection software), preventing misinterpretation of benign power-saving idle buffering as network degradation.
 
+#### Scenario: Cumulative Enterprise Stack Waterfall & Multi-Modal Jitter Analysis
+
+- **WHEN** analyzing the performance impact across individual enterprise features
+- **THEN** the guide provides:
+  1. An additive Cumulative Enterprise Stack Waterfall table quantifying both median latency ($p50$) and tail jitter spread ($p95 - p50$) across raw Wi-Fi, AWDL scanning, Host EDR (Defender/Falcon), and Zscaler tunnel overlay.
+  2. Visual ASCII latency and jitter distribution profiles showing the transition from unimodal clustering (clean Mac) to multi-modal and tail-heavy dispersion (corporate Mac).
+  3. Formal definitions of jitter metrics (Percentile Spread $\Delta_{p95-p50}$, IPDV / RFC 3393, and Coefficient of Variation $CV$).
+
 #### Scenario: IT Support & Security Helpdesk Escalation Playbook
 
 - **WHEN** an employee needs to report network performance degradation to corporate IT/Security

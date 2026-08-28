@@ -127,3 +127,12 @@
 - [x] 17.3 Restructure Section 2 and Section 6 to anchor on the **Low Power Mode OFF (Normal / AC Power)** condition as the primary apples-to-apples baseline.
 - [x] 17.4 Synchronize Antigravity Knowledge Base artifact `findings.md` and validate with `openspec validate --all` and `pytest -v`.
 
+## 18. Cumulative Enterprise Stack Waterfall & Latency vs. Jitter Decomposition
+
+- [x] 18.1 Add Section 3.5 to `docs/macos_wifi_latency_and_enterprise_forensics.md` with:
+  - Cumulative Enterprise Stack Waterfall table (median p50 vs tail p95-p50 spread across raw Wi-Fi, AWDL, Host EDR, and Zscaler).
+  - ASCII Latency & Jitter Distribution Profiles illustrating unimodal clustering vs. multi-modal EDR and Zscaler scatter.
+  - Formal mathematical definitions of jitter metrics (Percentile Spread $\Delta_{\text{p95-p50}}$, IPDV / RFC 3393, and Coefficient of Variation $CV$).
+- [x] 18.2 Update Section 9 (Summary Reference Card) with typical jitter spread metrics.
+- [x] 18.3 Synchronize Antigravity Knowledge Base artifact `findings.md` and validate with `openspec validate --all` and `pytest -v`.
+

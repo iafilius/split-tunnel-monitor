@@ -299,6 +299,59 @@ $$\text{Overhead}_{\text{EDR}} = \text{RTT}_{\text{Corporate Direct (AC)}} - \te
 
 ---
 
+### 3.5 Decomposing Latency vs. Jitter: The Cumulative Enterprise Stack Waterfall
+
+Comparing only *average* latency conceals the primary driver of poor user experience (Zoom audio drops, sluggish SSH typing, IDE terminal lag): **Jitter and Tail Dispersion** ($\text{p95} - \text{p50}$ spread, $\sigma$, and multi-modal clustering). While an average might only rise from $5\text{ms}$ to $18\text{ms}$, the **jitter profile** completely destabilizes, introducing unpredictable $100\text{ms} - 170\text{ms}+$ stalls.
+
+#### A. Cumulative Enterprise Layer Waterfall (Latency + Jitter Spread)
+
+Each successive enterprise software layer adds an additive "tax" to both the **Median Baseline (p50)** and the **Tail Jitter Spread ($\text{p95} - \text{p50}$)**:
+
+| Enterprise Layer / Feature | Typical p50 (Median) | Typical p95 (Tail) | Jitter Spread ($\text{p95} - \text{p50}$) | Max Outliers | Jitter Mechanism / Physical Impact |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **0. Raw Wi-Fi Medium (Clean M3, keep-alive)** | **~3.8 ms** | **~5.8 ms** | **+2.0 ms** *(Rock solid)* | 12.8 ms | Flat single-modal Gaussian distribution; zero software interference. |
+| **+ Layer 1: AWDL Background Scan** | ~4.5 ms | ~15.2 ms | **+10.7 ms** | 48–96 ms | Periodic 80ms off-channel hop every 10–22s; discrete isolated spikes. |
+| **+ Layer 2: Enterprise Host EDR (Defender/Falcon)** | **~8.9 ms** | **~32.5 ms** | **+23.6 ms** *(10x jitter increase!)* | 90–170 ms+ | Multi-modal socket queuing; random kernel-to-daemon context-switch delays across **all** traffic (LAN & Direct). |
+| **+ Layer 3: Zscaler Tunnel Overlay (`utun0` + ZIA Edge)** | **~24.5 ms** | **~98.2 ms** | **+73.7 ms** *(Severe tail spread)* | 120–250 ms+ | Virtual MTU encapsulation, TLS proxy inspection, and cloud edge routing. |
+
+#### B. Latency & Jitter Distribution Profiles
+
+```
+                            LATENCY & JITTER DISTRIBUTION PROFILES
+                            ══════════════════════════════════════
+
+ 1. CLEAN UNMANAGED MAC (Native Wi-Fi 6 Stack):
+    Latency Range:  [3ms]───[6ms]──────[12ms]
+    Distribution:   ████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+    Jitter Profile: 95% of packets tightly clustered in a 2ms window (3–5ms). Minimal jitter.
+
+ 2. CORPORATE MAC (Direct Underlay + Host EDR / Defender ATP):
+    Latency Range:  [6ms]─────────[25ms]───────────────[96ms]───────────────[170ms+]
+    Distribution:   ██████░░░░░░░░████░░░░░░░░░░░░░░░░░░██░░░░░░░░░░░░░░░░░░█
+    Jitter Profile: MULTI-MODAL JITTER. Packets scatter across 3 distinct clusters due to
+                    EDR daemon thread scheduling and mbuf socket inspection.
+
+ 3. CORPORATE MAC (Zscaler VPN Tunnel Overlay):
+    Latency Range:  [18ms]───────────────[45ms]──────────────────[102ms]────────────[240ms+]
+    Distribution:   ░░░░██████░░░░░░░░░░░████░░░░░░░░░░░░░░░░░░░████░░░░░░░░░░░░░░░░░█
+    Jitter Profile: SEVERE TAIL JITTER. Wide dispersion (+75ms p95-p50 spread) driven by
+                    TLS deep-packet proxy inspection and cloud-edge routing variations.
+```
+
+#### C. Formal Jitter Metrics Defined
+
+1. **Percentile Spread ($\Delta_{\text{p95-p50}} = \text{p95} - \text{p50}$)**:
+   * Measures tail latency inflation without distortion from a single outlier.
+   * *Clean M3*: $\Delta_{\text{p95-p50}} \approx 2\text{ms}$.
+   * *Corporate M2 Pro Direct (Host EDR)*: $\Delta_{\text{p95-p50}} \approx 24\text{ms}$.
+   * *Corporate M2 Pro Zscaler (Tunnel)*: $\Delta_{\text{p95-p50}} \approx 74\text{ms}$.
+2. **Inter-Packet Delay Variation (IPDV / RFC 3393)**:
+   * The difference in latency between consecutive packets: $\text{IPDV}_i = |RTT_{i+1} - RTT_i|$. Measures packet-to-packet smoothness.
+3. **Coefficient of Variation ($CV = \frac{\sigma}{\mu}$)**:
+   * Standard deviation divided by the mean. High CV (>0.8) indicates severe unpredictability.
+
+---
+
 ### Authoritative Multi-Path Fault Domain Triangulation
 
 | Monitored Pattern           | LAN (`192.168.xx.1`)   | ISP Direct (`1.1.1.1`)  | Zscaler (`9.9.9.9`)     | Root Cause / Fault Domain                               |
@@ -907,15 +960,15 @@ I have captured deterministic network telemetry using multi-path ICMP triangulat
 **Reference test environment**: All magnitudes below were captured on Broadcom BCM4388 (Wi-Fi 6E) client hardware, connected to a **Xiaomi AIoT AX3600 router (OpenWrt 25.12.5, Qualcomm IPQ8071A/Ath11k)** on **5GHz Channel 100, 80MHz width, Wi-Fi 6 (802.11ax)**. These are not universal constants: DTIM interval, channel width, and AP vendor/firmware all directly affect the PSM/AWDL magnitudes below, so a different router brand/model/firmware, band (2.4/5/6GHz), or channel/width will produce a different — but analogous — fingerprint. Use the 8-point trace template (Section 4B) to record your own setup's fingerprint for comparison.
 
 ```
-┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│                                    macOS Wi-Fi Latency Fingerprints                                    │
-├───────────────────────────────┬───────────────────┬────────────────────────────────────────────────────┤
-│ Fingerprint                   │ Typical Magnitude │ Root Cause & Physical Layer                        │
-├───────────────────────────────┼───────────────────┼────────────────────────────────────────────────────┤
-│ [A] 802.11 PSM Idle Sleep     │ ~50 – 60 ms       │ Radio PHY Sleep / AP DTIM Queue (collapses to 3ms) │
-│ [B] AWDL Social Channel Hop   │ ~48 – 96 ms       │ AirDrop/Continuity 5GHz off-channel scan (10–22s)  │
-│ [C] Enterprise Host EDR Hooks │ ~90 – 170 ms+     │ Defender/Falcon DriverKit socket queues (all paths)│
-│ [D] Zscaler VPN Overlay Tax   │ +15 – +90 ms+ OVH │ utun MTU encapsulation & ZIA Cloud Edge Proxy      │
-└───────────────────────────────┴───────────────────┴────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                            macOS Wi-Fi Latency Fingerprints                                            │
+├───────────────────────────────┬───────────────────┬───────────────────┬────────────────────────────────────────────────┤
+│ Fingerprint                   │ Typical Magnitude │ Jitter Spread     │ Root Cause & Physical Layer                    │
+├───────────────────────────────┼───────────────────┼───────────────────┼────────────────────────────────────────────────┤
+│ [A] 802.11 PSM Idle Sleep     │ ~50 – 60 ms       │ +2.0 ms (flat)    │ Radio PHY Sleep / AP DTIM Queue (drops to 3ms) │
+│ [B] AWDL Social Channel Hop   │ ~48 – 96 ms       │ +10.7 ms (spikes) │ AirDrop/Continuity 5GHz off-channel scan (15s) │
+│ [C] Enterprise Host EDR Hooks │ ~90 – 170 ms+     │ +23.6 ms (10x!)   │ Defender/Falcon DriverKit socket queues (all)  │
+│ [D] Zscaler VPN Overlay Tax   │ +15 – +90 ms+ OVH │ +73.7 ms (severe) │ utun MTU encapsulation & ZIA Cloud Edge Proxy  │
+└───────────────────────────────┴───────────────────┴───────────────────┴────────────────────────────────────────────────┘
 ```
 

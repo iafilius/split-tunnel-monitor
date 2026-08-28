@@ -74,7 +74,12 @@ Users running `split-tunnel-monitor` on macOS need clear explanations for latenc
 - Furthermore, focusing the primary M2 vs M3 comparison on **Low Power Mode OFF (AC Power / Active D0 State)** provides a true apples-to-apples baseline, since background enterprise daemons on corporate laptops prevent 802.11 PSM power saving from engaging anyway, removing the 2.0s solitary ping PSM sleep artifact from confounding the comparison.
 - **Alternative**: Keeping a 3-fingerprint model and battery-first comparison (rejected: conflates host EDR with network VPN overlay and allows idle PSM sleep to confuse cross-fleet evaluations).
 
+### Decision 15: Decomposing Cumulative Enterprise Layer Overhead (Latency vs. Jitter Spread)
+- **Rationale**: Comparing average latency alone obscures the true driver of poor real-time user experience (Zoom/Teams drops, SSH stutter, IDE input lag): **Jitter and Tail Dispersion** ($\text{p95} - \text{p50}$ spread, $\sigma$, and multi-modal clustering). By providing an additive "Stack Waterfall" table, ASCII latency distribution profiles, and formal jitter metrics ($\Delta_{\text{p95-p50}}$, IPDV / RFC 3393, and CV), users and network engineers can pinpoint exactly how much jitter is introduced by raw Wi-Fi, AWDL radio scans, Host EDR socket hooks, and Zscaler cloud proxying.
+- **Alternative**: Reporting only mean/average latency (rejected: averages hide 170ms+ tail spikes and multi-modal jitter).
+
 ## Risks / Trade-offs
+
 
 
 
