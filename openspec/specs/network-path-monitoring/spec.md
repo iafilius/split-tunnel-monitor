@@ -150,7 +150,7 @@ The system SHALL perform a routing-layer verification each probe iteration and d
 - **THEN** path verification is recalculated using the new `utun` interface within the same iteration, so the very next probe line reflects the new tunnel state
 
 ### Requirement: ICMP Traceroute Background Path Verification
-The system SHALL run ICMP-mode traceroute (`traceroute -I`) as a background task every 30 probe iterations to supplement route-based checks with stronger hop-level evidence, and SHALL additionally trigger an immediate background re-check when the route-based `zsc_status` changes value between iterations, so the two indicators do not display contradictory information for longer than necessary. If a re-check's result still disagrees with the current iteration's `zsc_status` (e.g. because the tunnel had not yet finished settling when the check ran), the system SHALL trigger a further re-check immediately, up to a bounded number of consecutive attempts, rather than only reacting to the original transition instant. Results SHALL appear as `TRACE(D=OK,Z=OK)`, `TRACE(D=OK,Z=BYPASSED)`, `TRACE(D=OK,Z=DIRECT)`, or `TRACE(D=OK,Z=UNCERTAIN)` in the console line once available, and as `TRACE(PENDING)` while the first result is outstanding. The Zscaler trace status SHALL be derived from the current iteration's own hop evidence for the Zscaler target, not from a cached system-wide adapter-existence flag. Trace verification SHALL be on by default and MAY be disabled with `--no-trace-verify`.
+The system SHALL run ICMP-mode traceroute (`traceroute -I`) as a background task every 30 probe iterations to supplement route-based checks with stronger hop-level evidence, and SHALL additionally trigger an immediate background re-check when the route-based `zsc_status` changes value between iterations, so the two indicators do not display contradictory information for longer than necessary. If a re-check's result still disagrees with the current iteration's `zsc_status` (e.g. because the tunnel had not yet finished settling when the check ran), the system SHALL trigger a further re-check immediately, up to a bounded number of consecutive attempts, rather than only reacting to the original transition instant. Results SHALL appear as `TRACE(D=OK,Z=OK)`, `TRACE(D=OK,Z=BYPASSED)`, `TRACE(D=OK,Z=DIRECT)`, or `TRACE(D=OK,Z=UNCERTAIN)` in the console line once available, and as `TRACE(PENDING)` while the first result is outstanding. The Zscaler trace status SHALL be derived from the current iteration's own hop evidence for the Zscaler target, not from a cached system-wide adapter-existence flag. Trace verification SHALL be on by default and MAY be disabled with `--no-trace-verify`. The traceroute check for each target SHALL use the same source-address binding as the corresponding ping probe for that same target, so the trace evidence and the RTT measurement for a given path are guaranteed to describe the same route rather than silently diverging.
 
 #### Scenario: Direct trace verified
 - **WHEN** ICMP traceroute to the ISP target resolves hop1 to the LAN gateway IP or to the target itself
@@ -191,6 +191,14 @@ The system SHALL run ICMP-mode traceroute (`traceroute -I`) as a background task
 #### Scenario: traceroute disabled at startup
 - **WHEN** `traceroute` is not installed OR the user passes `--no-trace-verify`
 - **THEN** no `TRACE(...)` indicator appears in console output.
+
+#### Scenario: Direct trace path matches the direct ping probe's source binding
+- **WHEN** the background traceroute check runs for the ISP-direct target
+- **THEN** it is source-bound to the same local physical IP as the ISP-direct ping probe (bypassing the Zscaler tunnel), so `TRACE(D=...)` and the `ISP_Direct_RTT_ms` column always describe the same physical route
+
+#### Scenario: Zscaler trace path matches the Zscaler ping probe's default routing
+- **WHEN** the background traceroute check runs for the Zscaler target
+- **THEN** it is NOT source-bound, taking the default route exactly like the Zscaler ping probe, so `TRACE(Z=...)` and the `Zscaler_RTT_ms` column always describe the same route (the tunnel, when Zscaler is active)
 
 ### Requirement: Structured Logging and ISO Timestamped Output
 The system SHALL output real-time compact status line updates to the terminal console and append structured CSV log rows containing local ISO 8601 dates, timestamps, round-trip times (RTT), and outage classifications to a uniquely named CSV file per session run. Probe target IP and RTT SHALL be written as separate atomic columns (not combined into a single field), and a missing/failed RTT SHALL be written as an empty cell rather than a text placeholder.
