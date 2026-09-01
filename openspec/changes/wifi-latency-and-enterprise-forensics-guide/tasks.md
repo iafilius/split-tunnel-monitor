@@ -107,7 +107,7 @@
 
 - [x] 15.1 Re-capture Trace 3c (Corporate M2 Pro, AC Power, Zscaler Active) at `--count 120` (this machine's current state: AC Power, Low Power Mode off, Zscaler active — capturable immediately). Captured as Trace 3d: 120 samples, 3/120 (~2.5%) elevated (>50ms), computed programmatically from the raw logfile. Includes one large 244–248ms all-three-rise outlier (sample 47) — kept in the doc rather than excluded, as a real illustration that a single capture is still one data point even at a compliant N.
 - [x] 15.2 Re-capture Trace 3a (Corporate M2 Pro, Battery + Low Power Mode, Zscaler Active) at `--count 120` — user unplugged AC power and enabled Low Power Mode. Captured as Trace 3e: 120 samples, 3/120 (~2.5%) elevated — **identical to Trace 3d's 2.5% (AC power)**, directly refuting the earlier n=41-based "Battery+LPM increases jitter frequency" claim once sample size is actually adequate. Operational note: the first capture attempt was run in async terminal mode and, after the tool reported it moved to background, a second overlapping capture was started into the same `--logfile` before confirming the first had truly finished — producing a contaminated double-length log (242 lines instead of 120). Discarded and redone as a single **sync**-mode run (blocks until `--count` triggers its own clean exit), which cannot overlap with a second invocation since the tool call itself doesn't return until the process exits.
-- [ ] 15.3 Re-capture Trace 3b (Corporate M2 Pro, AC Power, Zscaler Bypassed) at `--count 120` — requires disabling Zscaler Internet Access in the ZCC UI first (manual toggle, to execute on corporate laptop).
+- [x] 15.3 Re-capture Trace 3b (Corporate M2 Pro, AC Power, Zscaler Bypassed) at `--count 120` — requires disabling Zscaler Internet Access in the ZCC UI first (manual toggle, to execute on corporate laptop). Completed under task 22.2 (captured as Trace 3f, after the detour bug fix in 22.1b); this checkbox was left unticked at the time.
 - [x] 15.4 Re-capture Trace 1a (Personal M3, Battery + Low Power Mode) and Trace 1b (Personal M3, AC Power) at `--count 120` — on the M3 laptop:
   - Captured Trace 1d (Battery + LPM, n=120): 104/120 (86.7%) >50ms (avg 55.3ms), with 12/120 (10.0%) periodic 21s rediscovery drops to <30ms.
   - Captured Trace 1e (AC Power, LPM off, n=120): 102/120 (85.0%) >50ms (avg 52.5ms), with 14/120 (11.7%) periodic 21s rediscovery drops.
@@ -163,24 +163,11 @@
 
 ## 22. Corporate M2 Pro Laptop: Capture Trace 3b (Zscaler Bypassed, n=120) & Final Archiving (to execute on the M2 Pro)
 
-- [ ] 22.1 `git pull origin fb_fb20260826jvdw` — picks up the newly renamed timestamped raw logs in `docs/traces/`, updated doc links, and this task list.
-- [ ] 22.2 Execute Trace 3b Re-capture at $n=120$ with Zscaler Bypassed (Task 15.3):
-  - **Why**: Completes the final statistically powered ($n=120$) capture. Isolates pure host EDR / local MDM stack from Zscaler `utun` tunnel overhead on AC power with exact temporal provenance.
-  - **How**: Ensure MagSafe AC power is connected (Low Power Mode OFF). In Zscaler Client Connector (ZCC) UI, toggle "Internet Security" / "Zscaler Internet Access" to OFF.
-  - **Capture Command** (insert current date/time in filename, e.g. `20260829-090000`):
-    ```bash
-    python3 ping_checker.py -i 2.0 -n 120 --logfile "docs/traces/trace-3b-m2pro-ac-zscaler-bypassed-$(date +%Y%m%d-%H%M%S)-n120.log"
-    ```
-  - **Telemetry Command**:
-    ```bash
-    sw_vers && uptime && memory_pressure && pmset -g live
-    ```
-- [ ] 22.3 Update Trace 3b entry in Section 5 of `docs/macos_wifi_latency_and_enterprise_forensics.md`:
-  - Link the raw log `docs/traces/trace-3b-m2pro-ac-zscaler-bypassed-<timestamp>-n120.log`.
-  - Update sample count (120), timestamps, telemetry, and programmatic elevated-sample percentage.
-  - Update Section 6 capture conditions table row for Trace 3b.
-- [ ] 22.4 Fact-check and update Section 3.5's "Cumulative Enterprise Layer Waterfall" table:
-  - Use the real recomputed values from `trace-3b-m2pro-ac-zscaler-bypassed-*-n120.log` to confirm or refine the "Layer 2: Host EDR" baseline.
+- [x] 22.1 `git pull origin fb_fb20260826jvdw` — picked up the renamed timestamped raw logs, updated doc links, and this task list.
+- [x] 22.1b **Detour — found and fixed a real bug before capturing**: the first capture attempt showed `LAN (N/A): TIMEOUT/FAIL` for all 120 samples. Investigated instead of accepting it as the already-documented "vgw-collision" side effect (per the user: "local GW silent? that can not be true"). Root cause: `NetworkDiscovery.get_zscaler_info()` reported `is_active=True` and captured the real LAN gateway's own IP as the Zscaler virtual gateway, purely because a `utun` interface remained configured (with its own distinct IP) even though Zscaler was genuinely bypassed and not routing traffic — confirmed live via `route -n get 9.9.9.9` (went via `en0`/real LAN gateway) vs. `ifconfig` (still showed `utun0` with its own `100.64.0.1`). Filed and completed a separate OpenSpec change (`fix-zscaler-bypass-false-active-detection`) with the fix, a regression test (179/179 passing), and a design.md rationale. The original (pre-fix) contaminated capture was discarded.
+- [x] 22.2 Executed Trace 3b re-capture at $n=120$ with Zscaler Bypassed, AC power, Low Power Mode off, **after the fix** — captured as Trace 3f: 120 samples, LAN gateway correctly tracked throughout (no more blanking), 38/120 (~31.7%) elevated (>50ms).
+- [x] 22.3 Added Trace 3f entry in Section 5 with the raw log link (`docs/traces/trace-3b-m2pro-ac-zscaler-bypassed-20260829-002130-n120.log`), sample count, telemetry, and the programmatically-computed elevated percentage; corrected the old Trace 3b's observation text (it had misattributed the LAN blanking to a legitimate vgw-collision, which is now known to be this bug instead); added the Trace 3f row to Section 6's capture conditions table.
+- [x] 22.4 **Investigated, deliberately did not update** Section 3.5's Waterfall "Host EDR" row: Trace 3f's Direct ISP path shows p50=10.4ms/p95=97.2ms — dramatically higher than Trace 3d's p50=10.5ms/p95=16.9ms for the *same* Direct-ISP path, captured ~6 hours earlier in the day. Since Direct ISP intentionally bypasses the Zscaler tunnel via `-S local_ip` in both traces, whether Zscaler itself is active or bypassed shouldn't materially change it — the gap looks like time-of-day/background-load variance between sessions (see Section 23's diurnal-load theme), not a property of the bypass state. Per Decision 16 (numbers must cite one specific trace, not conflate sessions), leaving the Waterfall grounded in Trace 3d alone rather than mixing in Trace 3f's very different reading without a controlled same-time-of-day comparison.
 - [ ] 22.5 Run test suite, validate OpenSpec, commit, and archive the change:
   - **Validate**: `openspec validate --all && pytest -v`
   - **Commit**: `git add docs/ openspec/ && git commit -m "docs(traces): add Trace 3b n=120 bypassed capture and complete forensics guide"`

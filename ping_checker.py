@@ -167,15 +167,21 @@ class NetworkDiscovery:
             iface_match = re.search(r"interface:\s*(utun\d+)", route_out)
             gw_match = re.search(r"gateway:\s*(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})", route_out)
 
+            # Only trust the "gateway:" field once we've confirmed the default route
+            # actually traverses a utun interface — otherwise (e.g. Zscaler bypassed)
+            # this is the real LAN router's IP, not a Zscaler virtual gateway.
             if iface_match:
                 z_info["is_active"] = True
                 z_info["interface"] = iface_match.group(1)
-            if gw_match:
-                z_info["gateway_ip"] = gw_match.group(1)
+                if gw_match:
+                    z_info["gateway_ip"] = gw_match.group(1)
         except Exception:
             pass
 
-        # 3. Scan ifconfig for IPv4 utun interfaces (e.g., inet 100.64.X.X -> 100.64.Y.Y)
+        # 3. Scan ifconfig for IPv4 utun interfaces (e.g., inet 100.64.X.X -> 100.64.Y.Y).
+        # Supplementary interface/virtual-IP metadata only — a utun interface can remain
+        # configured with a valid point-to-point IP even when Zscaler is bypassed and no
+        # traffic is actually routing through it, so this must NOT set is_active.
         try:
             res = subprocess.run(["ifconfig"], capture_output=True, text=True, timeout=2)
             ifconfig_out = res.stdout
@@ -184,10 +190,10 @@ class NetworkDiscovery:
             for block in utun_blocks:
                 match = re.search(r"inet\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s+-->\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})", block)
                 if match:
-                    z_info["is_active"] = True
-                    iface_match = re.search(r"^(utun\d+)", block)
-                    if iface_match:
-                        z_info["interface"] = iface_match.group(1)
+                    if not z_info["interface"]:
+                        iface_match = re.search(r"^(utun\d+)", block)
+                        if iface_match:
+                            z_info["interface"] = iface_match.group(1)
                     z_info["virtual_ip"] = match.group(1)
                     if not z_info["gateway_ip"]:
                         z_info["gateway_ip"] = match.group(2)

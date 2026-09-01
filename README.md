@@ -292,6 +292,41 @@ python3 ping_checker.py [OPTIONS]
 
 ---
 
+## Desktop Notifications: Setup, Testing & Troubleshooting
+
+Notifications matter most in `--silent`/background mode (see above) — they're how you find out about an outage without watching the terminal. This section documents how to verify they actually work and the real-world reasons they silently don't, found while debugging exactly this on a corporate-managed Mac.
+
+### How it works
+`_notify()` prefers [`terminal-notifier`](https://github.com/julienXX/terminal-notifier) (`brew install terminal-notifier`) and falls back to `osascript` if it's not installed. Delivery is non-blocking and failure-tolerant — a broken notification backend never interrupts monitoring (see `openspec/specs/desktop-notifications/spec.md`).
+
+### Test it directly (bypasses ping_checker.py entirely)
+```bash
+terminal-notifier -title 'Test' -message 'Can you see this?' -sound default
+```
+If a banner appears, you're done. If not, work through the checklist below — **in this order**, since each layer can look fine while a different one is actually the problem:
+
+1. **First run / TCC permission not yet granted.** The very first invocation prints a warning directly in the terminal if notifications aren't authorized yet:
+   ```
+   Notifications are turned off for this application.
+   Enable them in System Settings > Notifications, or reset the
+   permission so it can be asked for again:
+     tccutil reset UserNotification fr.julienxx.oss.terminal-notifier
+   ```
+   Run that `tccutil reset` command, then go to **System Settings > Notifications > terminal-notifier** and turn "Allow Notifications" on. Re-run the test command.
+
+2. **Alert Style set to "None".** In the same Settings pane, below "Allow Notifications", there's a separate **Alert Style** selector: *None / Temporary / Persistent*. If it's "None", the notification is still delivered and silently added to Notification Center, but no banner ever renders on screen. Set it to "Temporary" or "Persistent".
+
+3. **An active Focus mode is silencing it (the most likely culprit, and the hardest to notice).** Look at the menu bar for a Focus/crescent-moon icon. An active Focus mode delivers notifications quietly (added to Notification Center, no banner, no sound) for any app not on its allow-list — even though `terminal-notifier` itself, TCC, and Alert Style are all configured correctly. This exactly matches: notification succeeds, shows up if you click the date/time in the menu bar, but no banner or sound.
+   - **Fix**: System Settings > Focus > (the active Focus) > Apps — add `terminal-notifier` to the allowed list, or turn the Focus off to test.
+   - **Why it turns on automatically without you touching it**: Microsoft Teams for Mac can sync your presence (In a Meeting / Presenting / Busy) to macOS Focus automatically, and/or a calendar-linked Focus schedule (via your Exchange/Outlook calendar, common on Intune-managed corporate Macs) can activate Focus for the duration of a meeting. Check Teams' profile-picture menu for a status/Focus-sync setting, and System Settings > Focus for any calendar- or time-based schedule.
+
+4. **Confirm delivery independently of the visual banner.** Click the date/time in the menu bar to open Notification Center. If the "Test" notification is listed there but you never saw a banner, that's conclusive proof of case 2 or 3 above — the pipeline works, only the on-screen rendering is suppressed.
+
+### Known limitation (by design, not a bug)
+There is no reliable way for `ping_checker.py` (or any unprivileged process) to detect *"is a Focus mode currently active and would it silence me"* — macOS's Focus state (`~/Library/DoNotDisturb/DB/*.json`) is SIP-protected and unreadable even via `sudo` without Full Disk Access. The tool can only ever confirm the TCC-level "am I authorized to send notifications at all" state, not transient Focus-mode suppression. If an outage notification doesn't show up, check Focus mode first before assuming the monitor or the notification backend is broken.
+
+---
+
 ## Outage Investigation & Incident Reports
 
 When an outage or degradation is detected in the logs, the `zscaler-outage-analysis` skill produces a professional per-incident evidence report correlated with ZCC (Zscaler Client Connector) local logs.

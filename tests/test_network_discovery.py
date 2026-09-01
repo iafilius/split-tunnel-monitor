@@ -135,6 +135,34 @@ class TestGetZscalerInfo:
         assert info["is_active"] is False
         assert info["virtual_ip"] == ""
 
+    def test_bypassed_with_lingering_utun_interface_is_not_reported_active(self, fixtures_dir):
+        """Regression: Zscaler Internet Access bypassed via the ZCC UI leaves the utun
+        interface configured (with its own valid 100.64.x.x point-to-point IP) even
+        though no traffic is routing through it. The default route to a public IP goes
+        via the real LAN gateway on en0. This must NOT be reported as active, and the
+        real LAN gateway's IP must NOT be captured as the Zscaler virtual gateway —
+        doing so previously caused NetworkDiscovery.discover_all()'s vgw-collision guard
+        to blank a perfectly valid, distinct LAN gateway reading for the whole session."""
+        ifconfig_fixture = load_fixture(fixtures_dir, "ifconfig_zscaler_active.txt")
+        route_fixture = load_fixture(fixtures_dir, "route_get_direct.txt")
+
+        def side_effect(cmd, **kwargs):
+            if "pgrep" in cmd:
+                return _subproc_mock("12345\n")
+            if "route" in cmd:
+                return _subproc_mock(route_fixture)
+            if "ifconfig" in cmd:
+                return _subproc_mock(ifconfig_fixture)
+            return _subproc_mock("")
+
+        with patch("subprocess.run", side_effect=side_effect):
+            info = NetworkDiscovery.get_zscaler_info()
+
+        assert info["is_active"] is False
+        assert info["gateway_ip"] != "192.168.1.1"  # the real LAN gateway from route_get_direct.txt
+        assert info["gateway_ip"] == "100.64.1.1"    # the real (unused) Zscaler vgw from ifconfig
+        assert info["virtual_ip"] == "100.64.1.5"
+
 
 class TestGetIpAssignmentMode:
     def test_dhcp_lease_present(self):
