@@ -898,6 +898,15 @@ A major source of multi-temporal latency variance on enterprise-managed devices 
 3. **Requirement for Temporal Provenance**:
    * Because a `+15ms` Zscaler overhead at 23:00 on Friday may become `+65ms` at 14:00 on Tuesday on the exact same Wi-Fi, all empirical traces in `docs/traces/` MUST retain exact compact ISO timestamps in their filenames (`trace-<id>-<device>-<power>-<state>-<YYYYMMDD-HHMMSS>-n<count>.log`) to enable future multi-temporal load curve studies.
 
+### Target Pool Rotation & Edge Rate-Limit Mitigation
+
+Continuous 24/7 ICMP monitoring from residential NAT gateways can trigger automated Layer-4 edge defenses (such as Cloudflare's eBPF/XDP *L4Drop / Gatebot* rate limiting on `1.1.1.1`), creating false-positive "DEGRADED" alerts when the local Wi-Fi and ISP are 100% healthy.
+
+To prevent edge drops while preserving cross-machine comparability:
+* **Deterministic Absolute-Time Slotting**: `split-tunnel-monitor` rotates across an 8-node IPv4 Anycast pool (`1.1.1.1`, `1.0.0.1`, `8.8.8.8`, `8.8.4.4`, `9.9.9.9`, `149.112.112.112`, `208.67.222.222`, `208.67.220.220`) using UTC epoch time: $\text{slot} = \left\lfloor \frac{\text{epoch\_time}}{\text{rotate\_interval}} \right\rfloor \pmod{\text{len}(\text{pool})}$.
+* **Fleet Synchronization**: Multiple testing laptops (e.g. Personal M3 and Corporate M2 Pro) synchronize target transitions to the exact same second via standard NTP without network coordination.
+* **Overhead Invariance**: Both Direct underlay (`-S local_ip`) and Zscaler tunnel (`utun`) paths probe the *same active target* concurrently, cancelling out provider-specific transit differences in the $\text{OVH}$ delta.
+
 ### Recommendation for engineers using this guide
 Treat any single capture as one data point. For a credible "is this network healthy" judgment, capture multiple sessions across different times of day (peak vs. off-peak), and where root-causing matters, corroborate with `airport -I` (RSSI/channel/noise), a packet capture, or a controlled AWDL-disabled comparison (Section 7, Step 2) rather than a single ad-hoc trace.
 

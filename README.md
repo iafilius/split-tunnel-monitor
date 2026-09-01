@@ -273,22 +273,24 @@ split-tunnel-monitor [OPTIONS]
 python3 ping_checker.py [OPTIONS]
 ```
 
-| Option                        | Default   | Description                                                                |
-| ----------------------------- | --------- | -------------------------------------------------------------------------- |
-| `-i`, `--interval`            | `2.0`     | Ping interval in seconds                                                   |
-| `-n`, `--count`               | off       | Stop automatically after N samples and print the session summary           |
-| `--isp-target`                | `1.1.1.1` | Direct ISP probe target IP                                                 |
-| `--zscaler-target`            | `9.9.9.9` | Zscaler tunnel probe target IP                                             |
-| `--no-trace-verify`           | off       | Disable background ICMP traceroute verification                            |
-| `--silent`                    | off       | Suppress HEALTHY output; print only alerts and heartbeat                   |
-| `--heartbeat-minutes`         | `30`      | Liveness heartbeat interval in minutes (only in `--silent` mode)           |
-| `--no-rotate-daily`           | off       | Disable daily midnight logfile rotation (rotation is on by default)        |
-| `--no-compress-rotated`       | off       | Disable background gzip of rotated logfiles (compression is on by default) |
-| `--overhead-window`           | `60`      | Rolling overhead window size (samples)                                     |
-| `--overhead-baseline-samples` | `30`      | Samples before baseline is established (~60 s at default interval)         |
-| `--overhead-alert-ms`         | `20.0`    | Alert when rolling p50 exceeds baseline by this many ms                    |
-| `--logfile`                   | auto      | Custom logfile path; default: `ping_checker_YYYYMMDD_HHMMSS.log`           |
-| `--no-notify`                 | off       | Disable macOS desktop notifications (on by default)                        |
+| Option                                 | Default                                                                                    | Description                                                                 |
+| -------------------------------------- | ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
+| `-i`, `--interval`                     | `2.0`                                                                                      | Ping interval in seconds                                                    |
+| `-n`, `--count`                        | off                                                                                        | Stop automatically after N samples and print the session summary            |
+| `--target-pool`                        | `1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220`   | Comma-separated list of IPv4 Anycast targets for deterministic rotation     |
+| `-r`, `--rotate-interval`              | `900`                                                                                      | Rotation interval in seconds (default: 15 min; 0 disables rotation)         |
+| `--isp-target`, `--target-direct`      | off                                                                                        | Direct ISP probe target override (disables pool rotation for direct path)   |
+| `--zscaler-target`, `--target-zscaler`  | off                                                                                        | Zscaler tunnel target override (disables pool rotation for tunneled path)   |
+| `--no-trace-verify`                    | off                                                                                        | Disable background ICMP traceroute verification                             |
+| `--silent`                             | off                                                                                        | Suppress HEALTHY output; print only alerts and heartbeat                    |
+| `--heartbeat-minutes`                  | `30`                                                                                       | Liveness heartbeat interval in minutes (only in `--silent` mode)            |
+| `--no-rotate-daily`                    | off                                                                                        | Disable daily midnight logfile rotation (rotation is on by default)         |
+| `--no-compress-rotated`                | off                                                                                        | Disable background gzip of rotated logfiles (compression is on by default)  |
+| `--overhead-window`                    | `60`                                                                                       | Rolling overhead window size (samples)                                      |
+| `--overhead-baseline-samples`          | `30`                                                                                       | Samples before baseline is established (~60 s at default interval)          |
+| `--overhead-alert-ms`                  | `20.0`                                                                                     | Alert when rolling p50 exceeds baseline by this many ms                     |
+| `--logfile`                            | auto                                                                                       | Custom logfile path; default: `ping_checker_YYYYMMDD_HHMMSS.log`            |
+| `--no-notify`                          | off                                                                                        | Disable macOS desktop notifications (on by default)                         |
 
 ---
 

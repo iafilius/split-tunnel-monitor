@@ -107,12 +107,23 @@ class TestCliConsistency:
             )
 
     def test_string_defaults_match_readme(self):
-        """String argparse defaults (IP targets) must match the README table."""
+        """String argparse defaults must match the README table."""
         readme = _readme_table_flags()
-        for flag in ("--isp-target", "--zscaler-target"):
+        for flag in ("--target-pool",):
             action = _parser_flags().get(flag)
             if action is None or flag not in readme:
                 continue
             assert action.default == readme[flag], (
                 f"{flag}: argparse default {action.default!r} != README '{readme[flag]}'"
+            )
+
+    def test_optional_override_defaults_match_readme(self):
+        """Optional string overrides (default None) must show 'off' in README."""
+        readme = _readme_table_flags()
+        for flag in ("--isp-target", "--target-direct", "--zscaler-target", "--target-zscaler"):
+            action = _parser_flags().get(flag)
+            if action is None or flag not in readme:
+                continue
+            assert readme[flag] == "off", (
+                f"{flag}: optional override default {action.default!r} != README '{readme[flag]}'"
             )

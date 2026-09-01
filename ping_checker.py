@@ -31,14 +31,82 @@ import shutil
 import signal
 import statistics as _stats
 import collections
+import ipaddress
 from datetime import datetime
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 __log_schema__ = 1
 
-# Default public targets for ISP (direct) and Zscaler (tunneled) probing
+# Curated default IPv4 Anycast target pool for deterministic synchronized rotation
+DEFAULT_IPV4_TARGET_POOL = [
+    "1.1.1.1",
+    "1.0.0.1",
+    "8.8.8.8",
+    "8.8.4.4",
+    "9.9.9.9",
+    "149.112.112.112",
+    "208.67.222.222",
+    "208.67.220.220",
+]
+DEFAULT_ROTATE_INTERVAL = 900.0  # 15 minutes in seconds
+
+# Legacy static defaults retained for explicit overrides / backward compatibility
 DEFAULT_ISP_TARGET = "1.1.1.1"       # Probed via ping -S <local_ip> (Physical ISP path)
 DEFAULT_ZSCALER_TARGET = "9.9.9.9"  # Probed standard ping (Routed via utun / Zscaler)
+
+
+def parse_target_pool(pool_input: str | list[str]) -> list[str]:
+    """Parse and validate a comma-separated string or list of IPv4 addresses.
+
+    Raises ValueError if any item is not a valid IPv4 address.
+    """
+    if isinstance(pool_input, str):
+        raw_items = [x.strip() for x in pool_input.split(",") if x.strip()]
+    elif isinstance(pool_input, (list, tuple)):
+        raw_items = [str(x).strip() for x in pool_input if str(x).strip()]
+    else:
+        raise ValueError(f"Invalid target pool input type: {type(pool_input).__name__}")
+
+    if not raw_items:
+        raise ValueError("Target pool cannot be empty.")
+
+    validated: list[str] = []
+    for item in raw_items:
+        try:
+            ip_obj = ipaddress.ip_address(item)
+            if ip_obj.version != 4:
+                raise ValueError(f"Target '{item}' is an IPv6 address. Target pool supports IPv4 addresses only.")
+            validated.append(str(ip_obj))
+        except ValueError as exc:
+            if "Target pool supports IPv4 addresses only" in str(exc):
+                raise
+            raise ValueError(f"Invalid IPv4 address in target pool: '{item}'") from exc
+    return validated
+
+
+def get_active_target(
+    pool: list[str],
+    rotate_interval: float | int,
+    now: float | None = None,
+) -> tuple[str, int]:
+    """Calculate the deterministic active target and slot index from UTC epoch time.
+
+    Formula:
+        slot = int(now // rotate_interval) % len(pool)
+        active_target = pool[slot]
+
+    If rotate_interval <= 0 or len(pool) == 1, returns (pool[0], 0).
+    """
+    if not pool:
+        raise ValueError("Target pool cannot be empty.")
+    if rotate_interval <= 0 or len(pool) == 1:
+        return pool[0], 0
+
+    if now is None:
+        now = time.time()
+
+    slot = int(now // rotate_interval) % len(pool)
+    return pool[slot], slot
 
 
 class NetworkDiscovery:
@@ -973,8 +1041,10 @@ def _build_parser() -> argparse.ArgumentParser:
     """Build and return the CLI argument parser. Extracted for testability."""
     parser = argparse.ArgumentParser(description="Zscaler & Dual-Path macOS Network Outage Monitor")
     parser.add_argument("-i", "--interval", type=float, default=2.0, help="Ping interval in seconds (default: 2.0)")
-    parser.add_argument("--isp-target", type=str, default=DEFAULT_ISP_TARGET, help=f"Direct ISP target IP (default: {DEFAULT_ISP_TARGET})")
-    parser.add_argument("--zscaler-target", type=str, default=DEFAULT_ZSCALER_TARGET, help=f"Zscaler tunneled target IP (default: {DEFAULT_ZSCALER_TARGET})")
+    parser.add_argument("--target-pool", type=str, default=",".join(DEFAULT_IPV4_TARGET_POOL), help=f"Comma-separated list of IPv4 targets for rotation (default: {','.join(DEFAULT_IPV4_TARGET_POOL)})")
+    parser.add_argument("-r", "--rotate-interval", type=float, default=DEFAULT_ROTATE_INTERVAL, help=f"Target rotation interval in seconds (default: {int(DEFAULT_ROTATE_INTERVAL)}; 0 disables rotation)")
+    parser.add_argument("--isp-target", "--target-direct", dest="isp_target", type=str, default=None, help="Direct ISP target override (pins direct path to static IP; default: dynamic pool rotation)")
+    parser.add_argument("--zscaler-target", "--target-zscaler", dest="zscaler_target", type=str, default=None, help="Zscaler tunneled target override (pins tunneled path to static IP; default: dynamic pool rotation)")
     parser.add_argument("--no-trace-verify", action="store_true", help="Disable background ICMP traceroute path verification")
     parser.add_argument("--overhead-window", type=int, default=60, help="Rolling overhead window size in samples (default: 60)")
     parser.add_argument("--overhead-baseline-samples", type=int, default=30, help="Samples before baseline is set (default: 30)")
@@ -998,6 +1068,25 @@ async def main():
     args.compress_rotated = not args.no_compress_rotated
     if args.count is not None and args.count <= 0:
         parser.error("--count/-n must be a positive integer")
+    if args.rotate_interval < 0:
+        parser.error("--rotate-interval/-r cannot be negative")
+
+    if args.target_pool is not None:
+        try:
+            target_pool = parse_target_pool(args.target_pool)
+        except ValueError as exc:
+            parser.error(str(exc))
+    else:
+        target_pool = list(DEFAULT_IPV4_TARGET_POOL)
+
+    direct_override = args.isp_target
+    zscaler_override = args.zscaler_target
+    pool_rotation_enabled = (args.rotate_interval > 0 and len(target_pool) > 1 and direct_override is None and zscaler_override is None)
+
+    init_target, init_slot = get_active_target(target_pool, args.rotate_interval) if pool_rotation_enabled else (target_pool[0], 0)
+    current_isp_target = direct_override if direct_override is not None else init_target
+    current_zsc_target = zscaler_override if zscaler_override is not None else init_target
+    prev_active_target = init_target if pool_rotation_enabled else None
 
     logfile = args.logfile if args.logfile else init_logfile()
     print("=" * 90)
@@ -1005,8 +1094,16 @@ async def main():
     print("=" * 90)
     print(f"Monitor Version:           {__version__} (log-schema: {__log_schema__})")
     print(f"Logging to:                {os.path.abspath(logfile)}")
-    print(f"ISP Direct Probe Target:   {args.isp_target}")
-    print(f"Zscaler Tunnel Target:     {args.zscaler_target}")
+    if pool_rotation_enabled:
+        print(f"Target Pool:               {', '.join(target_pool)} ({len(target_pool)} IPv4 Anycast targets)")
+        print(f"Target Rotation:           ENABLED (every {int(args.rotate_interval)}s / {args.rotate_interval/60:.1f}m, initial: {init_target} [Slot {init_slot + 1}/{len(target_pool)}])")
+    else:
+        if direct_override or zscaler_override:
+            print(f"Target Rotation:           DISABLED (static override: ISP={current_isp_target}, ZSC={current_zsc_target})")
+        else:
+            print(f"Target Rotation:           DISABLED (--rotate-interval 0, static target: {current_isp_target})")
+    print(f"ISP Direct Probe Target:   {current_isp_target}")
+    print(f"Zscaler Tunnel Target:     {current_zsc_target}")
 
     # Tool availability check
     tools = check_required_tools()
@@ -1026,13 +1123,10 @@ async def main():
 
     network_info = NetworkDiscovery.discover_all()
     
-    # Keep tunnel virtual gateway for diagnostics; default tunneled probe target remains a routed public endpoint.
-    zscaler_target = args.zscaler_target
-
     z_iface = network_info['zscaler'].get('interface') or "N/A"
     z_vgw = network_info['zscaler'].get('gateway_ip') or "N/A"
     z_status = f"Active ({z_iface}, vgw={z_vgw})" if network_info['zscaler']['is_active'] else "Inactive / Standard Route"
-    network_info["path_verification"] = assess_path_verification(network_info, args.isp_target, zscaler_target)
+    network_info["path_verification"] = assess_path_verification(network_info, current_isp_target, current_zsc_target)
     startup_pathv = network_info["path_verification"]
 
     print(f"Detected Interface:        {network_info['interface']}")
@@ -1040,8 +1134,8 @@ async def main():
     print(f"Detected LAN Gateway:      {network_info['gateway_ip'] or 'Searching...'}")
     print(f"Detected Zscaler Tunnel:   {z_status}")
     print(f"Zscaler Virtual Next-Hop:  {z_vgw}")
-    print(f"ISP Direct Target:         {args.isp_target}")
-    print(f"Zscaler Target:            {zscaler_target}")
+    print(f"ISP Direct Target:         {current_isp_target}")
+    print(f"Zscaler Target:            {current_zsc_target}")
     zsc_v_tag = "VERIFIED" if startup_pathv.get("zsc_status") == "OK" else startup_pathv.get("zsc_status", "UNCERTAIN")
     print(f"Direct Path Verification:  {'VERIFIED' if startup_pathv['direct_verified'] else 'UNCERTAIN'} ({startup_pathv['direct_reason']})")
     print(f"Zscaler Verification:      {zsc_v_tag} ({startup_pathv['zsc_reason']})")
@@ -1052,7 +1146,7 @@ async def main():
         print(f"Trace Verification:        ENABLED (background, every {trace_verify_every} iterations)")
         trace_info_snapshot = dict(network_info)
         trace_verify_task = asyncio.create_task(
-            asyncio.to_thread(assess_traceroute_verification, trace_info_snapshot, args.isp_target, zscaler_target)
+            asyncio.to_thread(assess_traceroute_verification, trace_info_snapshot, current_isp_target, current_zsc_target)
         )
 
     if args.silent:
@@ -1118,6 +1212,15 @@ async def main():
         while True:
             iteration += 1
 
+            # Target pool rotation evaluation
+            if pool_rotation_enabled:
+                active_target, active_slot = get_active_target(target_pool, args.rotate_interval)
+                if prev_active_target is not None and active_target != prev_active_target:
+                    print(f"[{_ts()}] [TARGET ROTATION] Target changed: {prev_active_target} → {active_target} (Slot {active_slot + 1}/{len(target_pool)})", flush=True)
+                prev_active_target = active_target
+                current_isp_target = active_target
+                current_zsc_target = active_target
+
             # Daily logfile rotation at midnight
             if args.rotate_daily:
                 today = datetime.now().date()
@@ -1157,7 +1260,7 @@ async def main():
                     last_heartbeat_time = time.time()
                     # Force fresh path verification using the new interface
                     network_info = fresh_info
-                    network_info["path_verification"] = assess_path_verification(network_info, args.isp_target, zscaler_target)
+                    network_info["path_verification"] = assess_path_verification(network_info, current_isp_target, current_zsc_target)
                 if new_zsc_iface:
                     current_zsc_iface = new_zsc_iface
                 # ─────────────────────────────────────────────────────────────
@@ -1179,8 +1282,7 @@ async def main():
 
             gw_ip = network_info['gateway_ip']
             local_ip = network_info['local_ip']
-            zsc_target = args.zscaler_target
-            network_info["path_verification"] = assess_path_verification(network_info, args.isp_target, zsc_target)
+            network_info["path_verification"] = assess_path_verification(network_info, current_isp_target, current_zsc_target)
             zsc_status = network_info["path_verification"].get("zsc_status")
             zsc_status_changed = previous_zsc_status is not None and zsc_status != previous_zsc_status
             if zsc_status_changed:
@@ -1211,21 +1313,21 @@ async def main():
                 if trace_verify_task is None and should_trigger_trace_recheck(iteration, trace_verify_every, zsc_status_changed or reconcile_retry_needed):
                     trace_info_snapshot = dict(network_info)
                     trace_verify_task = asyncio.create_task(
-                        asyncio.to_thread(assess_traceroute_verification, trace_info_snapshot, args.isp_target, zsc_target)
+                        asyncio.to_thread(assess_traceroute_verification, trace_info_snapshot, current_isp_target, current_zsc_target)
                     )
 
             # Run 3-way concurrent ping probes
             tasks = [
                 ping_target(gw_ip, timeout_sec=2) if gw_ip else asyncio.sleep(0, result=ProbeResult("N/A", False, -1.0, "No Gateway")),
-                ping_target(args.isp_target, source_ip=local_ip, timeout_sec=2) if local_ip else ping_target(args.isp_target, timeout_sec=2),
-                ping_target(zsc_target, timeout_sec=2)
+                ping_target(current_isp_target, source_ip=local_ip, timeout_sec=2) if local_ip else ping_target(current_isp_target, timeout_sec=2),
+                ping_target(current_zsc_target, timeout_sec=2)
             ]
 
             lan_res, isp_res, zsc_res = await asyncio.gather(*tasks)
 
             # Evaluate Outage Classification Matrix
             zsc_virtual_gateway = network_info.get("zscaler", {}).get("gateway_ip", "")
-            zsc_target_is_virtual_gateway = bool(zsc_virtual_gateway and zsc_target == zsc_virtual_gateway)
+            zsc_target_is_virtual_gateway = bool(zsc_virtual_gateway and current_zsc_target == zsc_virtual_gateway)
 
             status, fault = determine_status_and_fault(
                 local_ip,
@@ -1276,8 +1378,8 @@ async def main():
             # Formulate compact Live Terminal Console string
             time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             lan_str = f"LAN ({gw_ip or 'N/A'}): {lan_res.format_rtt()}"
-            isp_str = f"ISP Direct ({args.isp_target}): {isp_res.format_rtt()}"
-            zsc_str = f"Zscaler ({zsc_target}): {zsc_res.format_rtt()}"
+            isp_str = f"ISP Direct ({current_isp_target}): {isp_res.format_rtt()}"
+            zsc_str = f"Zscaler ({current_zsc_target}): {zsc_res.format_rtt()}"
 
             if status == "HEALTHY":
                 status_color = "\033[92m[HEALTHY]\033[0m"
