@@ -295,3 +295,23 @@ class TestCheckRequiredTools:
         assert tools["traceroute"]["path"] == "NOT FOUND"
         assert tools["ping"]["ok"] is True
 
+
+class TestWifiPhyDiscovery:
+    def test_get_wifi_phy_metadata_defaults(self):
+        from ping_checker import _get_wifi_phy_metadata
+        res = _get_wifi_phy_metadata("")
+        assert res["medium"] == "Unknown"
+        assert res["is_wifi"] is False
+
+    def test_discover_all_contains_medium_and_wifi(self):
+        with patch.object(NetworkDiscovery, "get_physical_interface", return_value="en0"), \
+             patch.object(NetworkDiscovery, "get_local_ip", return_value="192.168.1.50"), \
+             patch.object(NetworkDiscovery, "get_lan_gateway", return_value="192.168.1.1"), \
+             patch.object(NetworkDiscovery, "get_zscaler_info", return_value={"is_active": False}), \
+             patch.object(NetworkDiscovery, "get_ip_assignment_mode", return_value="dhcp"), \
+             patch("ping_checker._get_wifi_phy_metadata", return_value={"medium": "Wi-Fi", "is_wifi": True, "channel": 100, "rssi": -48}):
+            info = NetworkDiscovery.discover_all()
+        assert info["medium"] == "Wi-Fi"
+        assert info["wifi"]["channel"] == 100
+        assert info["wifi"]["rssi"] == -48
+

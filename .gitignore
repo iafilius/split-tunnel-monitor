@@ -1,10 +1,16 @@
 # Log files
 *.log
 *.log.gz
+*.csv
+*.csv.gz
+*.meta.json
 ping_checker_*.log*
+ping_checker_*.csv*
+ping_checker_*.meta.json
 
 # Except curated raw trace evidence committed for the Wi-Fi latency forensics guide
 !docs/traces/**/*.log
+!docs/traces/**/*.csv
 
 # IDE & temporary files
 .DS_Store

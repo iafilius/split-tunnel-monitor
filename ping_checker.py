@@ -29,15 +29,18 @@ import argparse
 import subprocess
 import shutil
 import signal
+import platform
 import statistics as _stats
 import collections
 import ipaddress
 import csv
 import json
+import ctypes
+import ctypes.util
 from datetime import datetime
 
-__version__ = "1.3.0"
-__log_schema__ = 3
+__version__ = "1.4.0"
+__log_schema__ = 4
 
 # Curated default IPv4 Anycast target pool for deterministic synchronized rotation
 DEFAULT_IPV4_TARGET_POOL = [
@@ -51,6 +54,24 @@ DEFAULT_IPV4_TARGET_POOL = [
     "208.67.220.220",
 ]
 DEFAULT_ROTATE_INTERVAL = 900.0  # 15 minutes in seconds
+
+# Human-readable labels for well-known target IPs
+TARGET_ALIASES: dict[str, str] = {
+    "1.1.1.1": "Cloudflare-Primary",
+    "1.0.0.1": "Cloudflare-Secondary",
+    "8.8.8.8": "Google-Primary",
+    "8.8.4.4": "Google-Secondary",
+    "9.9.9.9": "Quad9-Primary",
+    "149.112.112.112": "Quad9-Secondary",
+    "208.67.222.222": "OpenDNS-Primary",
+    "208.67.220.220": "OpenDNS-Secondary",
+}
+
+
+def get_target_alias(ip: str) -> str:
+    """Return a human-readable alias for well-known target IPs, or 'Custom-Target'."""
+    return TARGET_ALIASES.get(ip, "Custom-Target")
+
 
 # Legacy static defaults retained for explicit overrides / backward compatibility
 DEFAULT_ISP_TARGET = "1.1.1.1"       # Probed via ping -S <local_ip> (Physical ISP path)
@@ -288,8 +309,13 @@ class NetworkDiscovery:
         if zscaler_info.get("is_active") and gw_ip and zsc_vgw and gw_ip == zsc_vgw:
             gw_ip = ""
 
+        wifi_phy = _get_wifi_phy_metadata(iface)
+        medium = wifi_phy.get("medium", "Ethernet")
+
         return {
             "interface": iface,
+            "medium": medium,
+            "wifi": wifi_phy,
             "local_ip": local_ip,
             "gateway_ip": gw_ip,
             "ip_assignment_mode": ip_assignment_mode,
@@ -769,16 +795,210 @@ def _ts() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _get_host_and_os_metadata() -> dict:
+    """Collect host, architecture, and macOS version metadata."""
+    host = platform.node() or "unknown-host"
+    arch = platform.machine() or "unknown-arch"
+    mac_ver = platform.mac_ver()[0] or "unknown-macOS"
+    build_ver = ""
+    try:
+        res = subprocess.run(["sw_vers", "-buildVersion"], capture_output=True, text=True, timeout=1)
+        if res.returncode == 0:
+            build_ver = res.stdout.strip()
+    except Exception:
+        pass
+    os_str = f"macOS {mac_ver}" + (f" ({build_ver})" if build_ver else "")
+    return {
+        "hostname": host,
+        "architecture": arch,
+        "os": os_str,
+    }
+
+
+def _get_power_metadata() -> dict:
+    """Query AC power status and Low Power Mode state via pmset."""
+    power_source = "Unknown"
+    low_power_mode = "Unknown"
+    try:
+        batt_res = subprocess.run(["pmset", "-g", "batt"], capture_output=True, text=True, timeout=1)
+        if batt_res.returncode == 0:
+            if "AC Power" in batt_res.stdout:
+                power_source = "AC Power"
+            elif "Battery Power" in batt_res.stdout:
+                power_source = "Battery"
+    except Exception:
+        pass
+
+    try:
+        live_res = subprocess.run(["pmset", "-g", "live"], capture_output=True, text=True, timeout=1)
+        if live_res.returncode == 0:
+            if "lowpowermode         1" in live_res.stdout or "lowpowermode 1" in live_res.stdout:
+                low_power_mode = "Enabled"
+            elif "lowpowermode         0" in live_res.stdout or "lowpowermode 0" in live_res.stdout:
+                low_power_mode = "Disabled"
+    except Exception:
+        pass
+
+    return {
+        "power_source": power_source,
+        "low_power_mode": low_power_mode,
+    }
+
+
+def _get_wifi_phy_metadata(interface: str = "en0") -> dict:
+    """Capture physical layer state (Medium, Channel, Band, RSSI, Noise, SNR, TxRate, SSID, BSSID)
+
+    via CoreWLAN ctypes binding (<1ms) and macOS system discovery with non-blocking fallbacks.
+    """
+    telemetry = {
+        "is_wifi": False,
+        "medium": "Ethernet",
+        "ssid": "",
+        "bssid": "",
+        "channel": 0,
+        "band": "",
+        "rssi": None,
+        "noise": None,
+        "snr": None,
+        "tx_rate": None,
+    }
+    if not interface:
+        telemetry["medium"] = "Unknown"
+        return telemetry
+
+    # 1. Query CoreWLAN for Radio metrics (<1ms) via ctypes
+    try:
+        objc_lib = ctypes.util.find_library("objc")
+        if objc_lib:
+            objc = ctypes.cdll.LoadLibrary(objc_lib)
+            corewlan = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreWLAN.framework/CoreWLAN")
+
+            objc.objc_getClass.restype = ctypes.c_void_p
+            objc.objc_getClass.argtypes = [ctypes.c_char_p]
+            objc.sel_registerName.restype = ctypes.c_void_p
+            objc.sel_registerName.argtypes = [ctypes.c_char_p]
+
+            msg_p_p = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)(("objc_msgSend", objc))
+            msg_l_p = ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p)(("objc_msgSend", objc))
+            msg_d_p = ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_void_p, ctypes.c_void_p)(("objc_msgSend", objc))
+
+            CWWiFiClient = objc.objc_getClass(b"CWWiFiClient")
+            if CWWiFiClient:
+                client = msg_p_p(CWWiFiClient, objc.sel_registerName(b"sharedWiFiClient"))
+                if client:
+                    iface = msg_p_p(client, objc.sel_registerName(b"interface"))
+                    if iface:
+                        rssi = msg_l_p(iface, objc.sel_registerName(b"rssiValue"))
+                        noise = msg_l_p(iface, objc.sel_registerName(b"noiseMeasurement"))
+                        tx_rate = msg_d_p(iface, objc.sel_registerName(b"transmitRate"))
+                        if rssi != 0:
+                            telemetry["rssi"] = int(rssi)
+                            telemetry["is_wifi"] = True
+                            telemetry["medium"] = "Wi-Fi"
+                        if noise != 0:
+                            telemetry["noise"] = int(noise)
+                        if telemetry["rssi"] is not None and telemetry["noise"] is not None:
+                            telemetry["snr"] = telemetry["rssi"] - telemetry["noise"]
+                        if tx_rate > 0:
+                            telemetry["tx_rate"] = round(tx_rate, 1)
+
+                        ch_obj = msg_p_p(iface, objc.sel_registerName(b"wlanChannel"))
+                        if ch_obj:
+                            ch_num = msg_l_p(ch_obj, objc.sel_registerName(b"channelNumber"))
+                            band_num = msg_l_p(ch_obj, objc.sel_registerName(b"channelBand"))
+                            if ch_num > 0:
+                                telemetry["channel"] = int(ch_num)
+                                telemetry["is_wifi"] = True
+                                telemetry["medium"] = "Wi-Fi"
+                            band_map = {1: "2.4GHz", 2: "5GHz", 3: "6GHz"}
+                            telemetry["band"] = band_map.get(band_num, "")
+    except Exception:
+        pass
+
+    # 2. Check hardware port type via networksetup if medium is not yet determined
+    try:
+        hw_res = subprocess.run(["networksetup", "-listallhardwareports"], capture_output=True, text=True, timeout=1)
+        if hw_res.returncode == 0:
+            current_port = ""
+            for line in hw_res.stdout.splitlines():
+                if line.startswith("Hardware Port:"):
+                    current_port = line.split(":", 1)[1].strip()
+                elif line.startswith("Device:") and line.split(":", 1)[1].strip() == interface:
+                    if "Wi-Fi" in current_port or "AirPort" in current_port:
+                        telemetry["is_wifi"] = True
+                        telemetry["medium"] = "Wi-Fi"
+                    elif "Thunderbolt" in current_port:
+                        telemetry["medium"] = "Thunderbolt"
+                    elif "Ethernet" in current_port:
+                        telemetry["medium"] = "Ethernet"
+                    elif "Cellular" in current_port or "iPhone" in current_port:
+                        telemetry["medium"] = "Cellular"
+                    elif not telemetry.get("is_wifi"):
+                        telemetry["medium"] = current_port or "Ethernet"
+                    break
+    except Exception:
+        pass
+
+    # 3. Query ipconfig getsummary for SSID and BSSID
+    try:
+        sum_res = subprocess.run(["ipconfig", "getsummary", interface], capture_output=True, text=True, timeout=1)
+        if sum_res.returncode == 0:
+            for line in sum_res.stdout.splitlines():
+                if "  SSID :" in line:
+                    telemetry["ssid"] = line.split(":", 1)[1].strip()
+                    telemetry["is_wifi"] = True
+                    telemetry["medium"] = "Wi-Fi"
+                elif "  BSSID :" in line:
+                    telemetry["bssid"] = line.split(":", 1)[1].strip()
+    except Exception:
+        pass
+
+    return telemetry
+
+
+def _get_vpn_process_metadata(info: dict | None = None) -> dict:
+    """Return Zscaler / VPN process and tunnel interface state."""
+    zsc_info = (info or {}).get("zscaler")
+    if zsc_info is None:
+        try:
+            zsc_info = NetworkDiscovery.get_zscaler_info()
+        except Exception:
+            zsc_info = {}
+    zsc_running = bool(zsc_info.get("process_running"))
+    tun_iface = zsc_info.get("interface", "")
+    tun_gw = zsc_info.get("gateway_ip", "")
+    return {
+        "zscaler_process_active": zsc_running,
+        "tunnel_interface": tun_iface or "None",
+        "tunnel_virtual_gateway": tun_gw or "N/A",
+    }
+
+
 CSV_COLUMNS = [
-    "Timestamp_ISO", "Interface", "Local_IP",
-    "LAN_GW_IP", "LAN_GW_RTT_ms",
-    "ISP_Direct_IP", "ISP_Direct_RTT_ms",
-    "Zscaler_IP", "Zscaler_RTT_ms",
-    "Zscaler_Virtual_Next_Hop",
-    "Direct_Verified", "Zscaler_Verified",
-    "Status", "Fault_Domain",
-    "OVH_p50_ms", "OVH_p95_ms", "OVH_baseline_p50_ms", "OVH_loss_delta_pct",
-    "OVH_alert", "OVH_alert_reason",
+    "Timestamp_ISO",
+    "Interface",
+    "Medium",
+    "Local_IP",
+    "LAN_GW_IP",
+    "LAN_GW_RTT_ms",
+    "Channel",
+    "RSSI_dBm",
+    "Target_IP",
+    "Target_Alias",
+    "Target_Pool_Index",
+    "Direct_ISP_RTT_ms",
+    "Tunnel_RTT_ms",
+    "Direct_Route_Verified",
+    "Tunnel_Route_Verified",
+    "Tunnel_Virtual_Next_Hop",
+    "Status",
+    "Fault_Domain",
+    "Overhead_Delta_p50_ms",
+    "Overhead_Delta_p95_ms",
+    "Overhead_Baseline_p50_ms",
+    "Overhead_Loss_Delta_pct",
+    "Overhead_Alert",
+    "Overhead_Alert_Reason",
 ]
 
 
@@ -789,16 +1009,66 @@ def _meta_sidecar_path(csv_path: str) -> str:
     return csv_path + ".meta.json"
 
 
-def init_logfile() -> str:
-    """Creates a unique timestamped CSV logfile (plus a JSON metadata sidecar) in current directory."""
+def init_logfile(network_info: dict | None = None, target_pool: list[str] | None = None) -> str:
+    """Creates a unique timestamped CSV logfile with embedded # metadata comments (plus a JSON sidecar)."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"ping_checker_{timestamp}.csv"
+
+    host_meta = _get_host_and_os_metadata()
+    power_meta = _get_power_metadata()
+    iface = (network_info or {}).get("interface", "en0")
+    wifi_meta = (network_info or {}).get("wifi") or _get_wifi_phy_metadata(iface)
+    vpn_meta = _get_vpn_process_metadata(network_info)
+
+    targets_str = ", ".join(target_pool) if target_pool else ", ".join(DEFAULT_IPV4_TARGET_POOL)
+    now_iso = datetime.now().astimezone().isoformat()
+
+    if wifi_meta.get("is_wifi"):
+        ch_num = wifi_meta.get("channel", 0)
+        band_str = wifi_meta.get("band", "")
+        ch_str = f"Channel {ch_num} ({band_str})" if ch_num and band_str else (f"Channel {ch_num}" if ch_num else "Channel N/A")
+        rssi_str = f"RSSI: {wifi_meta['rssi']} dBm" if wifi_meta.get("rssi") is not None else "RSSI: N/A"
+        noise_str = f"Noise: {wifi_meta['noise']} dBm" if wifi_meta.get("noise") is not None else "Noise: N/A"
+        snr_str = f"SNR: {wifi_meta['snr']} dB" if wifi_meta.get("snr") is not None else "SNR: N/A"
+        tx_str = f"TxRate: {wifi_meta['tx_rate']} Mbps" if wifi_meta.get("tx_rate") is not None else "TxRate: N/A"
+        ssid_val = wifi_meta.get("ssid") or "N/A"
+        bssid_val = wifi_meta.get("bssid") or "N/A"
+        iface_desc = f"{iface} (Wi-Fi, SSID: {ssid_val}, BSSID: {bssid_val}, {ch_str}, {rssi_str}, {noise_str}, {snr_str}, {tx_str})"
+    else:
+        med_str = (network_info or {}).get("medium") or wifi_meta.get("medium") or "Ethernet"
+        iface_desc = f"{iface} ({med_str} / Wired)"
+
+    header_comments = [
+        "# ==============================================================================",
+        "# ping_checker telemetry capture log",
+        f"# script_version: {__version__}",
+        f"# schema_version: {__log_schema__}",
+        f"# started_at: {now_iso}",
+        f"# host: {host_meta['hostname']} ({host_meta['architecture']}, {host_meta['os']})",
+        f"# interface: {iface_desc}",
+        f"# power_profile: Source={power_meta['power_source']}, LowPowerMode={power_meta['low_power_mode']}",
+        f"# vpn_agent: Zscaler (ProcessActive={vpn_meta['zscaler_process_active']}, TunnelIface={vpn_meta['tunnel_interface']}, VirtualGW={vpn_meta['tunnel_virtual_gateway']})",
+        "# probe_methodology: Dual-Path Concurrent ICMP Echo.",
+        "#   - Direct ISP Path: Bound to physical interface using ping -S <Local_IP> (bypasses tunnel).",
+        "#   - Tunnel Path: Standard routed ping to target (traverses default route / virtual tunnel).",
+        "#   - Overhead Delta: Direct_ISP_RTT - LAN_GW_RTT. Negative values occur during Wi-Fi 802.11 PSM DTIM wake-ups.",
+        f"# target_pool: {targets_str} (Rotated periodically to prevent remote edge rate-limiting)",
+        "# ==============================================================================",
+    ]
+
     with open(filename, "w", encoding="utf-8", newline="") as f:
+        for comment in header_comments:
+            f.write(comment + "\n")
         csv.writer(f).writerow(CSV_COLUMNS)
+
     meta = {
         "script_version": __version__,
         "log_schema": __log_schema__,
-        "started_at": datetime.now().astimezone().isoformat(),
+        "started_at": now_iso,
+        "host": host_meta,
+        "power": power_meta,
+        "wifi": wifi_meta,
+        "vpn": vpn_meta,
         "path_verification_note": "routing-based assurance only (not packet-capture proof).",
     }
     with open(_meta_sidecar_path(filename), "w", encoding="utf-8") as f:
@@ -904,13 +1174,26 @@ class OverheadStats:
         return p50 > self.baseline_p50 + threshold_ms
 
 
-def log_entry(filename: str, info: dict, lan: ProbeResult, isp: ProbeResult, zsc: ProbeResult, status: str, fault: str, overhead: "OverheadStats | None" = None, overhead_alert_ms: float = 20.0):
-    """Appends one structured CSV row to the log file."""
+def log_entry(
+    filename: str,
+    info: dict,
+    lan: ProbeResult,
+    isp: ProbeResult,
+    zsc: ProbeResult,
+    status: str,
+    fault: str,
+    overhead: "OverheadStats | None" = None,
+    overhead_alert_ms: float = 20.0,
+    target_pool_index: int = 0,
+):
+    """Appends one structured CSV row to the log file (Schema v4)."""
     now_iso = datetime.now().astimezone().isoformat()
     zsc_virtual_gateway = info.get("zscaler", {}).get("gateway_ip", "") or "N/A"
     pathv = info.get("path_verification", {})
     direct_verified = "YES" if pathv.get("direct_verified") else "NO"
     zsc_verified = "YES" if pathv.get("zsc_verified") else "NO"
+    target_ip = isp.target
+    target_alias = get_target_alias(target_ip)
 
     def _rtt(probe: ProbeResult) -> str:
         return f"{probe.rtt_ms:.1f}" if probe.success and probe.rtt_ms >= 0 else ""
@@ -933,16 +1216,40 @@ def log_entry(filename: str, info: dict, lan: ProbeResult, isp: ProbeResult, zsc
         ovh_alert = "N/A"
         ovh_alert_reason = "N/A"
 
+    # Physical medium and Wi-Fi radio columns
+    medium = info.get("medium") or info.get("wifi", {}).get("medium") or "Ethernet"
+    wifi_info = info.get("wifi") or {}
+    ch_num = wifi_info.get("channel", 0)
+    band_str = wifi_info.get("band", "")
+    channel_display = f"{ch_num} ({band_str})" if ch_num and band_str else (str(ch_num) if ch_num else "N/A")
+    rssi_val = wifi_info.get("rssi")
+    rssi_display = str(rssi_val) if rssi_val is not None else "N/A"
+
     row = [
-        now_iso, info["interface"], info["local_ip"],
-        info["gateway_ip"], _rtt(lan),
-        isp.target, _rtt(isp),
-        zsc.target, _rtt(zsc),
+        now_iso,
+        info["interface"],
+        medium,
+        info["local_ip"],
+        info["gateway_ip"],
+        _rtt(lan),
+        channel_display,
+        rssi_display,
+        target_ip,
+        target_alias,
+        target_pool_index,
+        _rtt(isp),
+        _rtt(zsc),
+        direct_verified,
+        zsc_verified,
         zsc_virtual_gateway,
-        direct_verified, zsc_verified,
-        status, fault,
-        ovh_p50, ovh_p95, ovh_base, ovh_loss,
-        ovh_alert, ovh_alert_reason,
+        status,
+        fault,
+        ovh_p50,
+        ovh_p95,
+        ovh_base,
+        ovh_loss,
+        ovh_alert,
+        ovh_alert_reason,
     ]
     with open(filename, "a", encoding="utf-8", newline="") as f:
         csv.writer(f).writerow(row)
@@ -1023,7 +1330,18 @@ def _print_session_summary(
     print(sep)
     print(f" Version:     {__version__} (log-schema: {__log_schema__})")
     print(f" Duration:    {_fmt_duration(total_secs)}  ({session_start.strftime('%Y-%m-%d %H:%M:%S')} \u2013 {now.strftime('%Y-%m-%d %H:%M:%S')})")
-    print(f" Interface:   {network_info.get('interface', 'N/A')}")
+    iface_str = network_info.get('interface', 'N/A')
+    wifi_data = network_info.get("wifi", {})
+    if wifi_data.get("is_wifi"):
+        ch_num = wifi_data.get("channel", 0)
+        band_str = wifi_data.get("band", "")
+        rssi_val = wifi_data.get("rssi")
+        ch_tag = f", Ch {ch_num} {band_str}".rstrip() if ch_num else ""
+        rssi_tag = f", RSSI: {rssi_val} dBm" if rssi_val is not None else ""
+        iface_str += f" (Wi-Fi{ch_tag}{rssi_tag})"
+    elif network_info.get("medium"):
+        iface_str += f" ({network_info['medium']})"
+    print(f" Interface:   {iface_str}")
     print(f" Samples:     {total:,}")
     print()
 
@@ -1127,7 +1445,7 @@ async def main():
     current_zsc_target = zscaler_override if zscaler_override is not None else init_target
     prev_active_target = init_target if pool_rotation_enabled else None
 
-    logfile = args.logfile if args.logfile else init_logfile()
+    logfile = args.logfile if args.logfile else init_logfile(target_pool=target_pool)
     print("=" * 90)
     print(f" Zscaler & Multi-Path macOS Network Outage Monitor (v{__version__})")
     print("=" * 90)
@@ -1168,7 +1486,23 @@ async def main():
     network_info["path_verification"] = assess_path_verification(network_info, current_isp_target, current_zsc_target)
     startup_pathv = network_info["path_verification"]
 
-    print(f"Detected Interface:        {network_info['interface']}")
+    wifi_data = network_info.get("wifi", {})
+    medium_name = network_info.get("medium", "Ethernet")
+    if wifi_data.get("is_wifi"):
+        ch_num = wifi_data.get("channel", 0)
+        band_str = wifi_data.get("band", "")
+        ch_disp = f"Channel {ch_num} ({band_str})" if ch_num and band_str else (f"Channel {ch_num}" if ch_num else "N/A")
+        rssi_disp = f"{wifi_data['rssi']} dBm" if wifi_data.get("rssi") is not None else "N/A"
+        noise_disp = f"{wifi_data['noise']} dBm" if wifi_data.get("noise") is not None else "N/A"
+        snr_disp = f"SNR: {wifi_data['snr']} dB" if wifi_data.get("snr") is not None else "SNR: N/A"
+        tx_disp = f"{wifi_data['tx_rate']} Mbps" if wifi_data.get("tx_rate") is not None else "N/A"
+        ssid_disp = wifi_data.get("ssid") or "N/A"
+        print(f"Detected Interface:        {network_info['interface']} (Wi-Fi)")
+        print(f"Wi-Fi Radio:               {ch_disp}, RSSI: {rssi_disp}, Noise: {noise_disp} ({snr_disp})")
+        print(f"Wi-Fi Link Speed:          {tx_disp} (SSID: {ssid_disp})")
+    else:
+        print(f"Detected Interface:        {network_info['interface']} ({medium_name})")
+
     print(f"Detected Local IPv4:       {format_local_ip_line(network_info['local_ip'], network_info.get('ip_assignment_mode', ''))}")
     print(f"Detected LAN Gateway:      {network_info['gateway_ip'] or 'Searching...'}")
     print(f"Detected Zscaler Tunnel:   {z_status}")
@@ -1268,7 +1602,7 @@ async def main():
                     _write_log_footer(logfile, status_counts=status_counts, reason="END OF DAY — Rotated")
                     old_logfile = logfile
                     # Open new logfile for the new day
-                    logfile = init_logfile()
+                    logfile = init_logfile(network_info=network_info, target_pool=target_pool)
                     current_log_date = today
                     # Reset overhead stats for fresh baseline
                     overhead = OverheadStats(window_size=args.overhead_window)
@@ -1386,7 +1720,19 @@ async def main():
                 print(f"\n[{_ts()}] [BASELINE] Overhead baseline established: p50={overhead.baseline_p50:+.1f}ms (after {args.overhead_baseline_samples} samples)")
 
             # Log to file (always, regardless of silent mode)
-            log_entry(logfile, network_info, lan_res, isp_res, zsc_res, status, fault, overhead=overhead, overhead_alert_ms=args.overhead_alert_ms)
+            active_slot_idx = active_slot if pool_rotation_enabled else 0
+            log_entry(
+                logfile,
+                network_info,
+                lan_res,
+                isp_res,
+                zsc_res,
+                status,
+                fault,
+                overhead=overhead,
+                overhead_alert_ms=args.overhead_alert_ms,
+                target_pool_index=active_slot_idx,
+            )
 
             # ── Incident lifecycle ────────────────────────────────────────────
             status_counts[status] += 1

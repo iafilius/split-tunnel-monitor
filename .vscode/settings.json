@@ -1,0 +1,8 @@
+{
+  "files.associations": {
+    "*.csv": "csv"
+  },
+  "rainbow_csv.enable_context_menu_head": true,
+  "rainbow_csv.enable_context_menu_tail": true,
+  "rainbow_csv.virtual_alignment_mode": "manual"
+}
