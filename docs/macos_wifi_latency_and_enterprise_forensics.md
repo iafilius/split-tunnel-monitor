@@ -934,8 +934,13 @@ sudo ifconfig awdl0 down
 ### Step 3: Differentiate LAN Jitter from ISP/VPN Jitter
 Using [`split-tunnel-monitor`](../ping_checker.py):
 ```bash
+# Real-time interactive inspection:
 split-tunnel-monitor
+
+# Recommended all-day background monitoring (silent mode, zero screen scrolling):
+split-tunnel-monitor -i 2.0 --silent --heartbeat-minutes 30
 ```
+* **Why `--silent` is recommended for long-term monitoring**: Suppresses the ~43,200 continuous green `[HEALTHY]` lines per day that cause distracting screen scrolling, outputting only actionable state changes (`DEGRADED`, `OUTAGE`), target rotations, and 30-minute `[ALIVE]` liveness heartbeats (~50 lines/day) while still logging 100% of telemetry to disk.
 * Look at the **Overhead (`OVH`)** column:
   - If **LAN, ISP, and Zscaler all rise together by +50ms**, the delay is 100% on the local Wi-Fi hop.
   - If **LAN is 5ms, ISP is 10ms, but Zscaler is 95ms**, the overhead is genuinely inside the Zscaler cloud edge or corporate tunnel.

@@ -220,12 +220,26 @@ Each session writes a unique `ping_checker_YYYYMMDD_HHMMSS.log` file. Columns ar
 
 ## Long-term Background Monitoring
 
-The monitor supports two usage patterns:
+### Recommended Long-Term Usage Command
 
-| Pattern                          | Command                            | Console output                           |
-| -------------------------------- | ---------------------------------- | ---------------------------------------- |
-| **Active / real-time** (default) | `python3 ping_checker.py`          | Every sample — 43,000+ lines/day         |
-| **Background / silent**          | `python3 ping_checker.py --silent` | Alert events + heartbeat — ~50 lines/day |
+For continuous all-day background monitoring without terminal clutter, run:
+
+```bash
+split-tunnel-monitor -i 2.0 --silent --heartbeat-minutes 30
+# or with Python directly:
+python3 ping_checker.py -i 2.0 --silent --heartbeat-minutes 30
+```
+
+### Why This Is the Most Efficient Mode
+1. **Zero Terminal Spam & No Screen Scrolling**: Suppresses the ~43,200 continuous green `[HEALTHY]` lines emitted each day that would otherwise scroll incessantly and blind you in your terminal.
+2. **Actionable Alerts Only**: Only state changes (`HEALTHY → DEGRADED / OUTAGE`), incident resolution summaries, target rotation notifications, and 30-minute `[ALIVE]` liveness heartbeats appear on screen (~50 lines/day).
+3. **100% Telemetry Logged**: Every single 2.0s sample is still captured to the diagnostic logfile on disk with daily rotation and background gzip compression.
+4. **Desktop Notifications**: Delivers instant banners via macOS Notification Center / `terminal-notifier` when network state degrades or resolves.
+
+| Pattern                          | Command                                                        | Console output                           |
+| -------------------------------- | -------------------------------------------------------------- | ---------------------------------------- |
+| **Active / real-time** (default) | `python3 ping_checker.py`                                      | Every sample — 43,000+ lines/day         |
+| **Background / silent** (recommended) | `python3 ping_checker.py -i 2.0 --silent --heartbeat-minutes 30` | Alert events + heartbeat — ~50 lines/day |
 
 **Logfile volume at default 2-second interval:**
 
@@ -238,27 +252,31 @@ The monitor supports two usage patterns:
 
 Daily logfile rotation is **on by default** — each calendar day gets its own logfile. Rotated logfiles are **gzip-compressed in the background at low CPU priority** (nice 10) by default, replacing `ping_checker_YYYYMMDD.log` with `ping_checker_YYYYMMDD.log.gz`. Use `--no-compress-rotated` to keep uncompressed `.log` files. Use `--no-rotate-daily` to disable rotation entirely.
 
-**Typical background invocation:**
-```bash
-python3 ping_checker.py --silent
-```
-
-In this mode you'll see:
-```
-[08:00:01] Monitor started — silent mode. Logfile: ping_checker_20260731_080001.log
+**Typical background session output:**
+```text
+==========================================================================================
+ Zscaler & Multi-Path macOS Network Outage Monitor (v1.3.0)
+==========================================================================================
+Logging to:                /Users/you/ping_checker_20260901_080001.log
+Target Pool:               1.1.1.1, 1.0.0.1, 8.8.8.8, 8.8.4.4, 9.9.9.9, ... (8 IPv4 Anycast targets)
+Target Rotation:           ENABLED (every 900s / 15.0m, initial: 1.1.1.1 [Slot 1/8])
 Silent Mode:               ENABLED (alerts only; heartbeat every 30 min)
 Daily Log Rotation:        ENABLED (rotates at midnight, baseline resets)
 Rotated Log Compression:   ENABLED (gzip background, nice 10)
+------------------------------------------------------------------------------------------
+Press Ctrl+C to stop monitoring.
 
-[ALIVE 09:00] Healthy ×1800 | OVH baseline: +4.8ms | log: ping_checker_20260731_080001.log
+[2026-09-01 08:30:00] [ALIVE] Healthy ×900 | OVH baseline: +1.2ms | log: ping_checker_20260901_080001.log
+[2026-09-01 09:00:00] [ALIVE] Healthy ×900 | OVH baseline: +1.2ms | log: ping_checker_20260901_080001.log
 
-[STATUS CHANGE] HEALTHY → OUTAGE
-[10:22:15] [OUTAGE] LAN (192.168.1.1): 6.1ms | ISP Direct: TIMEOUT | Zscaler: TIMEOUT ==> ISP Issue
-[10:24:48] [HEALTHY] LAN (192.168.1.1): 6.3ms | ISP Direct: 5.9ms | Zscaler: 10.2ms | ...
+[2026-09-01 10:22:15] [STATUS CHANGE] HEALTHY → OUTAGE
+[2026-09-01 10:22:15] [OUTAGE] LAN (192.168.1.1): 6.1ms | ISP Direct (8.8.8.8): TIMEOUT | Zscaler (8.8.8.8): TIMEOUT ==> ISP Issue
+[2026-09-01 10:24:48] [HEALTHY] LAN (192.168.1.1): 6.3ms | ISP Direct (8.8.8.8): 5.9ms | Zscaler (8.8.8.8): 10.2ms | ...
+[2026-09-01 10:24:48] [INCIDENT #1 RESOLVED] Domain: ISP Issue | Status: OUTAGE | Duration: 2m 33s | 2026-09-01 10:22:15 – 2026-09-01 10:24:48
 
-[ALIVE 10:30] Healthy ×430 | OVH baseline: +4.8ms | log: ping_checker_20260731_080001.log
-[ROTATE] New logfile: ping_checker_20260801_000001.log | baseline reset
-[COMPRESS] ping_checker_20260731_080001.log → .gz (background)
+[2026-09-01 10:30:00] [ALIVE] Healthy ×155 | OVH baseline: +1.2ms | log: ping_checker_20260901_080001.log
+[2026-09-01 00:00:01] [ROTATE] New logfile: ping_checker_20260902_000001.log | baseline reset
+[2026-09-01 00:00:01] [COMPRESS] ping_checker_20260901_080001.log → .gz (background)
 ```
 
 At midnight, the current logfile is closed with a footer and a new dated logfile is opened automatically — no restart needed. The overhead baseline resets for the new day.
