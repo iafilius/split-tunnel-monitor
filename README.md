@@ -214,7 +214,8 @@ Each session writes a unique `ping_checker_YYYYMMDD_HHMMSS.log` file. Columns ar
 | `OVH_p95`              | Rolling p95 overhead (`N/A` before baseline)         |
 | `OVH_baseline_p50`     | Session baseline p50 (`N/A` before established)      |
 | `OVH_loss_delta`       | VPN minus direct packet-loss% (`N/A` before data)    |
-| `OVH_alert`            | `WARN` if alerting, `OK` otherwise                   |
+| `OVH_alert`            | `WARN` if alerting, `OK` otherwise (uses the same `--overhead-alert-ms` threshold as the console) |
+| `OVH_alert_reason`     | `+Xms above baseline (threshold: Yms)` when `WARN`, `N/A` otherwise |
 
 ---
 
