@@ -1,9 +1,9 @@
 """
-Tests for log_entry() — pipe-delimited field count, overhead columns, N/A defaults.
+Tests for log_entry() — CSV field count, overhead columns, empty-cell defaults.
 """
-import os
+import csv
 import pytest
-from ping_checker import log_entry, ProbeResult, OverheadStats
+from ping_checker import log_entry, ProbeResult, OverheadStats, CSV_COLUMNS
 
 
 def _network_info() -> dict:
@@ -23,10 +23,18 @@ def _ok(target: str, rtt: float = 10.0) -> ProbeResult:
     return ProbeResult(target=target, success=True, rtt_ms=rtt)
 
 
+def _fail(target: str) -> ProbeResult:
+    return ProbeResult(target=target, success=False, rtt_ms=-1.0)
+
+
+def _read_row(logfile: str) -> list:
+    with open(logfile, newline="") as f:
+        return next(csv.reader(f))
+
+
 class TestLogEntryFieldCount:
-    def test_16_fields_with_overhead(self, tmp_path):
-        logfile = str(tmp_path / "test.log")
-        # Pre-create file
+    def test_20_fields_with_overhead(self, tmp_path):
+        logfile = str(tmp_path / "test.csv")
         with open(logfile, "w") as f:
             f.write("")
 
@@ -38,46 +46,70 @@ class TestLogEntryFieldCount:
         log_entry(logfile, _network_info(), _ok("192.168.1.1"), _ok("1.1.1.1"), _ok("9.9.9.9"),
                   "HEALTHY", "None", overhead=stats)
 
-        with open(logfile) as f:
-            line = f.readline().strip()
+        fields = _read_row(logfile)
+        assert len(fields) == len(CSV_COLUMNS) == 20, f"Expected 20 fields, got {len(fields)}: {fields}"
 
-        fields = line.split(" | ")
-        assert len(fields) == 17, f"Expected 17 fields, got {len(fields)}: {fields}"
-
-    def test_16_fields_without_overhead(self, tmp_path):
-        logfile = str(tmp_path / "test.log")
+    def test_20_fields_without_overhead(self, tmp_path):
+        logfile = str(tmp_path / "test.csv")
         with open(logfile, "w") as f:
             f.write("")
 
         log_entry(logfile, _network_info(), _ok("192.168.1.1"), _ok("1.1.1.1"), _ok("9.9.9.9"),
                   "HEALTHY", "None", overhead=None)
 
-        with open(logfile) as f:
-            line = f.readline().strip()
+        fields = _read_row(logfile)
+        assert len(fields) == 20
 
-        fields = line.split(" | ")
-        assert len(fields) == 17
+
+class TestLogEntryAtomicColumns:
+    def test_ip_and_rtt_are_separate_columns(self, tmp_path):
+        logfile = str(tmp_path / "test.csv")
+        with open(logfile, "w") as f:
+            f.write("")
+
+        log_entry(logfile, _network_info(), _ok("192.168.1.1", 5.5), _ok("1.1.1.1", 9.2), _ok("9.9.9.9", 11.3),
+                  "HEALTHY", "None", overhead=None)
+
+        fields = _read_row(logfile)
+        idx = {name: i for i, name in enumerate(CSV_COLUMNS)}
+        assert fields[idx["LAN_GW_IP"]] == "192.168.1.1"
+        assert fields[idx["LAN_GW_RTT_ms"]] == "5.5"
+        assert fields[idx["ISP_Direct_IP"]] == "1.1.1.1"
+        assert fields[idx["ISP_Direct_RTT_ms"]] == "9.2"
+        assert fields[idx["Zscaler_IP"]] == "9.9.9.9"
+        assert fields[idx["Zscaler_RTT_ms"]] == "11.3"
+
+    def test_failed_probe_rtt_is_empty_cell(self, tmp_path):
+        logfile = str(tmp_path / "test.csv")
+        with open(logfile, "w") as f:
+            f.write("")
+
+        log_entry(logfile, _network_info(), _fail("192.168.1.1"), _ok("1.1.1.1"), _ok("9.9.9.9"),
+                  "OUTAGE", "Local Network Issue", overhead=None)
+
+        fields = _read_row(logfile)
+        idx = {name: i for i, name in enumerate(CSV_COLUMNS)}
+        assert fields[idx["LAN_GW_RTT_ms"]] == "", "Failed probe RTT should be an empty cell, not TIMEOUT/FAIL text"
 
 
 class TestLogEntryOverheadColumns:
-    def test_na_when_overhead_is_none(self, tmp_path):
-        logfile = str(tmp_path / "test.log")
+    def test_empty_when_overhead_is_none(self, tmp_path):
+        logfile = str(tmp_path / "test.csv")
         with open(logfile, "w") as f:
             f.write("")
 
         log_entry(logfile, _network_info(), _ok("192.168.1.1"), _ok("1.1.1.1"), _ok("9.9.9.9"),
                   "HEALTHY", "None", overhead=None)
 
-        with open(logfile) as f:
-            line = f.readline().strip()
-
-        fields = line.split(" | ")
-        # Fields 12-17 (0-indexed 11-16) are OVH_p50, OVH_p95, OVH_baseline, OVH_loss_delta, OVH_alert, OVH_alert_reason
-        ovh_fields = fields[11:17]
-        assert all(f == "N/A" for f in ovh_fields), f"Expected all N/A, got {ovh_fields}"
+        fields = _read_row(logfile)
+        idx = {name: i for i, name in enumerate(CSV_COLUMNS)}
+        for col in ("OVH_p50_ms", "OVH_p95_ms", "OVH_baseline_p50_ms", "OVH_loss_delta_pct"):
+            assert fields[idx[col]] == "", f"Expected empty cell for {col}, got {fields[idx[col]]!r}"
+        assert fields[idx["OVH_alert"]] == "N/A"
+        assert fields[idx["OVH_alert_reason"]] == "N/A"
 
     def test_overhead_values_formatted_when_stats_populated(self, tmp_path):
-        logfile = str(tmp_path / "test.log")
+        logfile = str(tmp_path / "test.csv")
         with open(logfile, "w") as f:
             f.write("")
 
@@ -89,15 +121,14 @@ class TestLogEntryOverheadColumns:
         log_entry(logfile, _network_info(), _ok("192.168.1.1"), _ok("1.1.1.1"), _ok("9.9.9.9"),
                   "HEALTHY", "None", overhead=stats)
 
-        with open(logfile) as f:
-            line = f.readline().strip()
+        fields = _read_row(logfile)
+        idx = {name: i for i, name in enumerate(CSV_COLUMNS)}
+        ovh_p50 = fields[idx["OVH_p50_ms"]]
+        ovh_alert = fields[idx["OVH_alert"]]
+        ovh_alert_reason = fields[idx["OVH_alert_reason"]]
 
-        fields = line.split(" | ")
-        ovh_p50 = fields[11]
-        ovh_alert = fields[15]
-        ovh_alert_reason = fields[16]
-
-        assert ovh_p50 != "N/A", "p50 should be computed"
+        assert ovh_p50 != "", "p50 should be computed"
+        float(ovh_p50)  # must parse as a plain number, no unit suffix
         assert ovh_alert in ("OK", "WARN"), f"alert should be OK or WARN, got {ovh_alert!r}"
         if ovh_alert == "OK":
             assert ovh_alert_reason == "N/A"
@@ -106,12 +137,11 @@ class TestLogEntryOverheadColumns:
 
     def test_alert_threshold_matches_console_default(self, tmp_path):
         """Logfile OVH_alert must use the same threshold as the console (--overhead-alert-ms), not a hardcoded 0."""
-        logfile = str(tmp_path / "test.log")
+        logfile = str(tmp_path / "test.csv")
         with open(logfile, "w") as f:
             f.write("")
 
         stats = OverheadStats()
-        # Baseline established at overhead ~10ms (zsc 20 - isp 10)
         for _ in range(20):
             stats.add_sample(_ok("1.1.1.1", 10.0), _ok("9.9.9.9", 20.0))
         stats.maybe_set_baseline(20)
@@ -122,15 +152,13 @@ class TestLogEntryOverheadColumns:
         log_entry(logfile, _network_info(), _ok("192.168.1.1"), _ok("1.1.1.1"), _ok("9.9.9.9"),
                   "HEALTHY", "None", overhead=stats, overhead_alert_ms=20.0)
 
-        with open(logfile) as f:
-            line = f.readline().strip()
-
-        fields = line.split(" | ")
-        assert fields[15] == "OK", f"Expected OK at 0.5ms drift with a 20ms threshold, got {fields[15]!r}"
-        assert fields[16] == "N/A"
+        fields = _read_row(logfile)
+        idx = {name: i for i, name in enumerate(CSV_COLUMNS)}
+        assert fields[idx["OVH_alert"]] == "OK", f"Expected OK at 0.5ms drift with a 20ms threshold, got {fields[idx['OVH_alert']]!r}"
+        assert fields[idx["OVH_alert_reason"]] == "N/A"
 
     def test_alert_reason_states_delta_and_threshold_when_warning(self, tmp_path):
-        logfile = str(tmp_path / "test.log")
+        logfile = str(tmp_path / "test.csv")
         with open(logfile, "w") as f:
             f.write("")
 
@@ -146,27 +174,26 @@ class TestLogEntryOverheadColumns:
         log_entry(logfile, _network_info(), _ok("192.168.1.1"), _ok("1.1.1.1"), _ok("9.9.9.9"),
                   "HEALTHY", "None", overhead=stats, overhead_alert_ms=20.0)
 
-        with open(logfile) as f:
-            line = f.readline().strip()
-
-        fields = line.split(" | ")
-        assert fields[15] == "WARN"
-        assert "above baseline" in fields[16]
-        assert "threshold: 20.0ms" in fields[16]
+        fields = _read_row(logfile)
+        idx = {name: i for i, name in enumerate(CSV_COLUMNS)}
+        assert fields[idx["OVH_alert"]] == "WARN"
+        assert "above baseline" in fields[idx["OVH_alert_reason"]]
+        assert "threshold: 20.0ms" in fields[idx["OVH_alert_reason"]]
 
     def test_status_and_fault_in_line(self, tmp_path):
-        logfile = str(tmp_path / "test.log")
+        logfile = str(tmp_path / "test.csv")
         with open(logfile, "w") as f:
             f.write("")
 
         log_entry(logfile, _network_info(), _ok("192.168.1.1"), _ok("1.1.1.1"), _ok("9.9.9.9"),
-                  "OUTAGE", "ISP Issue", overhead=None)
+                  "OUTAGE", "ISP Issue (with, a comma)", overhead=None)
 
-        with open(logfile) as f:
-            line = f.readline()
-
-        assert "OUTAGE" in line
-        assert "ISP Issue" in line
+        fields = _read_row(logfile)
+        idx = {name: i for i, name in enumerate(CSV_COLUMNS)}
+        assert fields[idx["Status"]] == "OUTAGE"
+        assert fields[idx["Fault_Domain"]] == "ISP Issue (with, a comma)", (
+            "Comma-containing free text must survive CSV round-trip via proper quoting"
+        )
 
 
 class TestVersionMetadata:
@@ -182,17 +209,28 @@ class TestVersionMetadata:
         assert isinstance(ping_checker.__log_schema__, int)
         assert ping_checker.__log_schema__ >= 1
 
-    def test_init_logfile_writes_version_header_lines(self, tmp_path):
+    def test_init_logfile_writes_csv_header_and_meta_sidecar(self, tmp_path):
         import ping_checker
         import os
+        import json
         orig = os.getcwd()
         os.chdir(tmp_path)
         try:
             logfile = ping_checker.init_logfile()
-            with open(logfile) as f:
-                content = f.read()
+            assert logfile.endswith(".csv")
+            with open(logfile, newline="") as f:
+                header = next(csv.reader(f))
+                assert header == ping_checker.CSV_COLUMNS
+                # The CSV must contain only the header row — no metadata/comment lines.
+                assert f.readline() == ""
+
+            sidecar = ping_checker._meta_sidecar_path(logfile)
+            with open(sidecar) as f:
+                meta = json.load(f)
         finally:
             os.chdir(orig)
 
-        assert f"# Script-Version: {ping_checker.__version__}" in content
-        assert f"# Log-Schema: {ping_checker.__log_schema__}" in content
+        assert meta["script_version"] == ping_checker.__version__
+        assert meta["log_schema"] == ping_checker.__log_schema__
+        assert "started_at" in meta
+

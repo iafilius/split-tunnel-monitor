@@ -32,10 +32,12 @@ import signal
 import statistics as _stats
 import collections
 import ipaddress
+import csv
+import json
 from datetime import datetime
 
 __version__ = "1.3.0"
-__log_schema__ = 2
+__log_schema__ = 3
 
 # Curated default IPv4 Anycast target pool for deterministic synchronized rotation
 DEFAULT_IPV4_TARGET_POOL = [
@@ -767,42 +769,69 @@ def _ts() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+CSV_COLUMNS = [
+    "Timestamp_ISO", "Interface", "Local_IP",
+    "LAN_GW_IP", "LAN_GW_RTT_ms",
+    "ISP_Direct_IP", "ISP_Direct_RTT_ms",
+    "Zscaler_IP", "Zscaler_RTT_ms",
+    "Zscaler_Virtual_Next_Hop",
+    "Direct_Verified", "Zscaler_Verified",
+    "Status", "Fault_Domain",
+    "OVH_p50_ms", "OVH_p95_ms", "OVH_baseline_p50_ms", "OVH_loss_delta_pct",
+    "OVH_alert", "OVH_alert_reason",
+]
+
+
+def _meta_sidecar_path(csv_path: str) -> str:
+    """Derive the JSON metadata sidecar path for a given CSV logfile path."""
+    if csv_path.endswith(".csv"):
+        return csv_path[:-4] + ".meta.json"
+    return csv_path + ".meta.json"
+
+
 def init_logfile() -> str:
-    """Creates a unique timestamped log file in current directory."""
+    """Creates a unique timestamped CSV logfile (plus a JSON metadata sidecar) in current directory."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"ping_checker_{timestamp}.log"
-    header = (
-        f"# Zscaler & Network Outage Checker Log\n"
-        f"# Started At: {datetime.now().astimezone().isoformat()}\n"
-        f"# Script-Version: {__version__}\n"
-        f"# Log-Schema: {__log_schema__}\n"
-        f"# Format: Timestamp_ISO | Interface | Local_IP | LAN_GW (RTT) | ISP_Direct (RTT) | Zscaler_Tunnel (RTT) | Zscaler_Virtual_Next_Hop | Direct_Verified | Zscaler_Verified | Status | Fault_Domain | OVH_p50 | OVH_p95 | OVH_baseline_p50 | OVH_loss_delta | OVH_alert | OVH_alert_reason\n"
-        f"# Path_Verification: routing-based assurance only (not packet-capture proof).\n"
-        f"----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------\n"
-    )
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(header)
+    filename = f"ping_checker_{timestamp}.csv"
+    with open(filename, "w", encoding="utf-8", newline="") as f:
+        csv.writer(f).writerow(CSV_COLUMNS)
+    meta = {
+        "script_version": __version__,
+        "log_schema": __log_schema__,
+        "started_at": datetime.now().astimezone().isoformat(),
+        "path_verification_note": "routing-based assurance only (not packet-capture proof).",
+    }
+    with open(_meta_sidecar_path(filename), "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
+        f.write("\n")
     return filename
 
 
 def _write_log_footer(filename: str, status_counts: dict | None = None, reason: str = "Session Stopped") -> None:
-    """Appends a structured termination footer comment to the active logfile."""
+    """Updates the CSV's JSON metadata sidecar with end-of-session information."""
     try:
-        now_iso = datetime.now().astimezone().isoformat()
-        counts_str = ""
+        sidecar = _meta_sidecar_path(filename)
+        meta = {}
+        if os.path.exists(sidecar):
+            with open(sidecar, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+        meta["ended_at"] = datetime.now().astimezone().isoformat()
+        meta["reason"] = reason
+        meta["script_version"] = __version__
+        meta["log_schema"] = __log_schema__
         if status_counts:
-            total = sum(status_counts.values())
-            counts_str = f" | Total Samples: {total} (HEALTHY: {status_counts.get('HEALTHY', 0)}, DEGRADED: {status_counts.get('DEGRADED', 0)}, OUTAGE: {status_counts.get('OUTAGE', 0)}, INFO: {status_counts.get('INFO', 0)})"
-        sep = "----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------\n"
-        footer = (
-            f"{sep}"
-            f"# {reason}: {now_iso} | Version: {__version__} | Schema: {__log_schema__}{counts_str}\n"
-        )
-        with open(filename, "a", encoding="utf-8") as f:
-            f.write(footer)
+            meta["total_samples"] = sum(status_counts.values())
+            meta["status_counts"] = {
+                "HEALTHY": status_counts.get("HEALTHY", 0),
+                "DEGRADED": status_counts.get("DEGRADED", 0),
+                "OUTAGE": status_counts.get("OUTAGE", 0),
+                "INFO": status_counts.get("INFO", 0),
+            }
+        with open(sidecar, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+            f.write("\n")
     except Exception:
         pass
-
 
 
 class OverheadStats:
@@ -876,39 +905,47 @@ class OverheadStats:
 
 
 def log_entry(filename: str, info: dict, lan: ProbeResult, isp: ProbeResult, zsc: ProbeResult, status: str, fault: str, overhead: "OverheadStats | None" = None, overhead_alert_ms: float = 20.0):
-    """Appends structured log record to log file."""
+    """Appends one structured CSV row to the log file."""
     now_iso = datetime.now().astimezone().isoformat()
     zsc_virtual_gateway = info.get("zscaler", {}).get("gateway_ip", "") or "N/A"
     pathv = info.get("path_verification", {})
     direct_verified = "YES" if pathv.get("direct_verified") else "NO"
     zsc_verified = "YES" if pathv.get("zsc_verified") else "NO"
+
+    def _rtt(probe: ProbeResult) -> str:
+        return f"{probe.rtt_ms:.1f}" if probe.success and probe.rtt_ms >= 0 else ""
+
     # Overhead statistics columns
     if overhead is not None:
         p50 = overhead.rolling_p50()
         p95 = overhead.rolling_p95()
         bl = overhead.baseline_p50
         ld = overhead.loss_delta_pct()
-        ovh_p50 = f"{p50:+.1f}ms" if p50 is not None else "N/A"
-        ovh_p95 = f"{p95:+.1f}ms" if p95 is not None else "N/A"
-        ovh_base = f"{bl:+.1f}ms" if bl is not None else "N/A"
-        ovh_loss = f"{ld:+.1f}%" if ld is not None else "N/A"
+        ovh_p50 = f"{p50:.1f}" if p50 is not None else ""
+        ovh_p95 = f"{p95:.1f}" if p95 is not None else ""
+        ovh_base = f"{bl:.1f}" if bl is not None else ""
+        ovh_loss = f"{ld:.1f}" if ld is not None else ""
         is_warn = p50 is not None and bl is not None and overhead.is_alerting(overhead_alert_ms)
         ovh_alert = "WARN" if is_warn else "OK"
-        ovh_alert_reason = f"{p50 - bl:+.1f}ms above baseline (threshold: {overhead_alert_ms:.1f}ms)" if is_warn else "N/A"
+        ovh_alert_reason = f"+{p50 - bl:.1f}ms above baseline (threshold: {overhead_alert_ms:.1f}ms)" if is_warn else "N/A"
     else:
-        ovh_p50 = ovh_p95 = ovh_base = ovh_loss = ovh_alert = ovh_alert_reason = "N/A"
-    line = (
-        f"{now_iso} | {info['interface']} | {info['local_ip']} | "
-        f"{info['gateway_ip']} ({lan.format_rtt()}) | "
-        f"{isp.target} ({isp.format_rtt()}) | "
-        f"{zsc.target} ({zsc.format_rtt()}) | "
-        f"{zsc_virtual_gateway} | "
-        f"{direct_verified} | {zsc_verified} | "
-        f"{status} | {fault} | "
-        f"{ovh_p50} | {ovh_p95} | {ovh_base} | {ovh_loss} | {ovh_alert} | {ovh_alert_reason}\n"
-    )
-    with open(filename, "a", encoding="utf-8") as f:
-        f.write(line)
+        ovh_p50 = ovh_p95 = ovh_base = ovh_loss = ""
+        ovh_alert = "N/A"
+        ovh_alert_reason = "N/A"
+
+    row = [
+        now_iso, info["interface"], info["local_ip"],
+        info["gateway_ip"], _rtt(lan),
+        isp.target, _rtt(isp),
+        zsc.target, _rtt(zsc),
+        zsc_virtual_gateway,
+        direct_verified, zsc_verified,
+        status, fault,
+        ovh_p50, ovh_p95, ovh_base, ovh_loss,
+        ovh_alert, ovh_alert_reason,
+    ]
+    with open(filename, "a", encoding="utf-8", newline="") as f:
+        csv.writer(f).writerow(row)
 
 
 def check_required_tools() -> dict:
@@ -1055,7 +1092,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--heartbeat-minutes", type=int, default=30, help="Liveness heartbeat interval in minutes when --silent is active (default: 30)")
     parser.add_argument("--no-rotate-daily", action="store_true", help="Disable midnight logfile rotation (rotation is on by default)")
     parser.add_argument("--no-compress-rotated", action="store_true", help="Disable background gzip compression of rotated logfiles (compression is on by default)")
-    parser.add_argument("--logfile", type=str, default="", help="Custom logfile path (default: auto-generated unique filename)")
+    parser.add_argument("--logfile", type=str, default="", help="Custom logfile path (default: auto-generated unique .csv filename)")
     parser.add_argument("--version", action="version", version=f"ping_checker {__version__} (log-schema: {__log_schema__})")
     parser.add_argument("--no-notify", action="store_true", help="Disable macOS desktop notifications (notifications are on by default)")
     parser.add_argument("-n", "--count", type=int, default=None, help="Stop automatically after N samples and print the session summary (default: run until interrupted)")

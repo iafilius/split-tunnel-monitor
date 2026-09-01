@@ -214,14 +214,22 @@ class TestSessionSummary:
         assert f"Version:     {__version__}" in output
 
     def test_write_log_footer(self, tmp_path):
-        from ping_checker import _write_log_footer, __version__, __log_schema__
-        test_file = tmp_path / "test.log"
-        test_file.write_text("# header\n")
-        _write_log_footer(str(test_file), status_counts={"HEALTHY": 10, "DEGRADED": 2, "OUTAGE": 0, "INFO": 1})
-        content = test_file.read_text()
-        assert "# Session Stopped:" in content
-        assert f"Version: {__version__}" in content
-        assert f"Schema: {__log_schema__}" in content
-        assert "Total Samples: 13" in content
+        import json
+        from ping_checker import _write_log_footer, _meta_sidecar_path, __version__, __log_schema__
+        test_file = tmp_path / "test.csv"
+        test_file.write_text("Timestamp_ISO,...\n")
+        _write_log_footer(str(test_file), status_counts={"HEALTHY": 10, "DEGRADED": 2, "OUTAGE": 0, "INFO": 1}, reason="Session Stopped")
+
+        # The CSV file itself must remain untouched — no footer line appended.
+        assert test_file.read_text() == "Timestamp_ISO,...\n"
+
+        with open(_meta_sidecar_path(str(test_file))) as f:
+            meta = json.load(f)
+        assert meta["reason"] == "Session Stopped"
+        assert meta["script_version"] == __version__
+        assert meta["log_schema"] == __log_schema__
+        assert meta["total_samples"] == 13
+        assert meta["status_counts"] == {"HEALTHY": 10, "DEGRADED": 2, "OUTAGE": 0, "INFO": 1}
+        assert "ended_at" in meta
 
 

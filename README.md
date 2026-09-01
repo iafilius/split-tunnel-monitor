@@ -30,7 +30,7 @@ The underlying split-tunnel multipath monitoring pattern applies to any corporat
 - **Incident Tracking**: Automatically opens and closes incidents on status transitions. Prints an `[INCIDENT #N RESOLVED]` summary line (domain, duration, timestamps) inline when connectivity recovers.
 - **Session Exit Summary**: On Ctrl+C, prints a human-readable report — duration, status breakdown, full incident timeline, overhead statistics, and logfile path — ready to paste into a helpdesk ticket.
 - **macOS Desktop Notifications**: Fires a notification (via `terminal-notifier` or `osascript`) on every notable state transition — outage start/end, degraded start/end, overhead-warn entry/exit. On by default; suppress with `--no-notify`.
-- **Timestamped Session Logs**: Writes ISO 8601 formatted records to unique session logfiles (`ping_checker_YYYYMMDD_HHMMSS.log`).
+- **Timestamped Session Logs**: Writes ISO 8601 formatted records to unique session CSV files (`ping_checker_YYYYMMDD_HHMMSS.csv`), plus a `.meta.json` sidecar.
 
 ---
 
@@ -89,7 +89,7 @@ python3 ping_checker.py
 ==========================================================================================
  Zscaler & Multi-Path macOS Network Outage Monitor
 ==========================================================================================
-Logging to: /Users/you/ping_checker_20260730_113947.log
+Logging to: /Users/you/ping_checker_20260730_113947.csv
 ISP Direct Probe Target:   1.1.1.1
 Zscaler Tunnel Target:     9.9.9.9
 Tool Check:                OK (ping, traceroute, scutil, ipconfig, route, pgrep, ifconfig available)
@@ -150,7 +150,7 @@ On Ctrl+C, a session summary is printed:
  Overhead (session):
    baseline p50=+4.8ms  current p50=+5.1ms  p95=+8.2ms  peak=+34.0ms at 08:47:12
 ──────────────────────────────────────────────────
- Log: /Users/you/ping_checker_20260730_081500.log
+ Log: /Users/you/ping_checker_20260730_081500.csv
 ──────────────────────────────────────────────────
 ```
 
@@ -195,27 +195,32 @@ The **baseline** is the p50 computed from the first `--overhead-baseline-samples
 
 ## Logfile Format
 
-Each session writes a unique `ping_checker_YYYYMMDD_HHMMSS.log` file. Columns are pipe-separated:
+Each session writes a unique `ping_checker_YYYYMMDD_HHMMSS.csv` file plus a companion `ping_checker_YYYYMMDD_HHMMSS.meta.json` sidecar. The CSV contains **only** a header row and data rows — no comments or footer text — so it opens cleanly as a table in tools like VS Code's [Rainbow CSV](https://marketplace.visualstudio.com/items?itemName=mechatroner.rainbow-csv) extension (colorized columns, SQL-like `RBQL` filtering) or any spreadsheet app. Columns are comma-separated:
 
-| Column                 | Content                                                                                           |
-| ---------------------- | ------------------------------------------------------------------------------------------------- |
-| `Timestamp_ISO`        | ISO 8601 local datetime of the sample                                                             |
-| `Interface`            | Active physical network interface (e.g. `en0`)                                                    |
-| `Local_IP`             | Local IPv4 address on the physical interface                                                      |
-| `LAN_GW (RTT)`         | LAN gateway IP and round-trip time                                                                |
-| `ISP_Direct (RTT)`     | Direct ISP probe target and RTT                                                                   |
-| `VPN_Tunnel (RTT)`     | VPN tunnel probe target and RTT                                                                   |
-| `VPN_Virtual_Next_Hop` | Discovered virtual tunnel gateway IP (informational)                                              |
-| `Direct_Verified`      | `YES`/`NO` — route check confirmed direct path                                                    |
-| `VPN_Verified`         | `YES`/`NO` — route check confirmed VPN path                                                       |
-| `Status`               | `HEALTHY`, `DEGRADED`, or `OUTAGE`                                                                |
-| `Fault_Domain`         | Root cause label or `None`                                                                        |
-| `OVH_p50`              | Rolling p50 overhead (`N/A` before baseline)                                                      |
-| `OVH_p95`              | Rolling p95 overhead (`N/A` before baseline)                                                      |
-| `OVH_baseline_p50`     | Session baseline p50 (`N/A` before established)                                                   |
-| `OVH_loss_delta`       | VPN minus direct packet-loss% (`N/A` before data)                                                 |
-| `OVH_alert`            | `WARN` if alerting, `OK` otherwise (uses the same `--overhead-alert-ms` threshold as the console) |
-| `OVH_alert_reason`     | `+Xms above baseline (threshold: Yms)` when `WARN`, `N/A` otherwise                               |
+| Column                     | Content                                                                                            |
+| -------------------------- | --------------------------------------------------------------------------------------------------- |
+| `Timestamp_ISO`            | ISO 8601 local datetime of the sample                                                              |
+| `Interface`                | Active physical network interface (e.g. `en0`)                                                     |
+| `Local_IP`                 | Local IPv4 address on the physical interface                                                       |
+| `LAN_GW_IP`                | LAN gateway IP                                                                                      |
+| `LAN_GW_RTT_ms`            | LAN gateway round-trip time in ms (empty cell if the probe timed out/failed)                        |
+| `ISP_Direct_IP`            | Direct ISP probe target                                                                             |
+| `ISP_Direct_RTT_ms`        | Direct ISP RTT in ms (empty cell if timed out/failed)                                                |
+| `Zscaler_IP`                | VPN tunnel probe target                                                                             |
+| `Zscaler_RTT_ms`            | VPN tunnel RTT in ms (empty cell if timed out/failed)                                               |
+| `Zscaler_Virtual_Next_Hop` | Discovered virtual tunnel gateway IP, or `N/A` if undiscovered (informational, not numeric)          |
+| `Direct_Verified`          | `YES`/`NO` — route check confirmed direct path                                                      |
+| `Zscaler_Verified`         | `YES`/`NO` — route check confirmed VPN path                                                         |
+| `Status`                   | `HEALTHY`, `DEGRADED`, or `OUTAGE`                                                                  |
+| `Fault_Domain`              | Root cause label or `None`                                                                          |
+| `OVH_p50_ms`                | Rolling p50 overhead in ms, a bare number (empty cell before baseline established)                  |
+| `OVH_p95_ms`                | Rolling p95 overhead in ms (empty cell before baseline established)                                 |
+| `OVH_baseline_p50_ms`       | Session baseline p50 in ms (empty cell before established)                                          |
+| `OVH_loss_delta_pct`        | VPN minus direct packet-loss percentage points (empty cell before data)                              |
+| `OVH_alert`                 | `WARN` if alerting, `OK` otherwise (uses the same `--overhead-alert-ms` threshold as the console)   |
+| `OVH_alert_reason`          | `+Xms above baseline (threshold: Yms)` when `WARN`, `N/A` otherwise                                  |
+
+The `.meta.json` sidecar carries everything that used to live in comment/header/footer lines: `script_version`, `log_schema`, `started_at`, `path_verification_note`, and — once the session ends or rotates — `ended_at`, `reason`, `total_samples`, and a per-status sample-count breakdown.
 
 ---
 
@@ -251,14 +256,14 @@ python3 ping_checker.py -i 2.0 --silent --heartbeat-minutes 30
 | 1 week  | 302,400   | ~75 MB       | ~7 MB                      |
 | 1 month | 1,296,000 | ~321 MB      | ~30 MB                     |
 
-Daily logfile rotation is **on by default** — each calendar day gets its own logfile. Rotated logfiles are **gzip-compressed in the background at low CPU priority** (nice 10) by default, replacing `ping_checker_YYYYMMDD.log` with `ping_checker_YYYYMMDD.log.gz`. Use `--no-compress-rotated` to keep uncompressed `.log` files. Use `--no-rotate-daily` to disable rotation entirely.
+Daily logfile rotation is **on by default** — each calendar day gets its own CSV file. Rotated CSVs are **gzip-compressed in the background at low CPU priority** (nice 10) by default, replacing `ping_checker_YYYYMMDD.csv` with `ping_checker_YYYYMMDD.csv.gz`. The `.meta.json` sidecar is left uncompressed. Use `--no-compress-rotated` to keep uncompressed `.csv` files. Use `--no-rotate-daily` to disable rotation entirely.
 
 **Typical background session output:**
 ```text
 ==========================================================================================
  Zscaler & Multi-Path macOS Network Outage Monitor (v1.3.0)
 ==========================================================================================
-Logging to:                /Users/you/ping_checker_20260901_080001.log
+Logging to:                /Users/you/ping_checker_20260901_080001.csv
 Target Pool:               1.1.1.1, 1.0.0.1, 8.8.8.8, 8.8.4.4, 9.9.9.9, ... (8 IPv4 Anycast targets)
 Target Rotation:           ENABLED (every 900s / 15.0m, initial: 1.1.1.1 [Slot 1/8])
 Silent Mode:               ENABLED (alerts only; heartbeat every 30 min)
@@ -267,20 +272,20 @@ Rotated Log Compression:   ENABLED (gzip background, nice 10)
 ------------------------------------------------------------------------------------------
 Press Ctrl+C to stop monitoring.
 
-[2026-09-01 08:30:00] [ALIVE] Healthy ×900 | OVH baseline: +1.2ms | log: ping_checker_20260901_080001.log
-[2026-09-01 09:00:00] [ALIVE] Healthy ×900 | OVH baseline: +1.2ms | log: ping_checker_20260901_080001.log
+[2026-09-01 08:30:00] [ALIVE] Healthy ×900 | OVH baseline: +1.2ms | log: ping_checker_20260901_080001.csv
+[2026-09-01 09:00:00] [ALIVE] Healthy ×900 | OVH baseline: +1.2ms | log: ping_checker_20260901_080001.csv
 
 [2026-09-01 10:22:15] [STATUS CHANGE] HEALTHY → OUTAGE
 [2026-09-01 10:22:15] [OUTAGE] LAN (192.168.1.1): 6.1ms | ISP Direct (8.8.8.8): TIMEOUT | Zscaler (8.8.8.8): TIMEOUT ==> ISP Issue
 [2026-09-01 10:24:48] [HEALTHY] LAN (192.168.1.1): 6.3ms | ISP Direct (8.8.8.8): 5.9ms | Zscaler (8.8.8.8): 10.2ms | ...
 [2026-09-01 10:24:48] [INCIDENT #1 RESOLVED] Domain: ISP Issue | Status: OUTAGE | Duration: 2m 33s | 2026-09-01 10:22:15 – 2026-09-01 10:24:48
 
-[2026-09-01 10:30:00] [ALIVE] Healthy ×155 | OVH baseline: +1.2ms | log: ping_checker_20260901_080001.log
-[2026-09-01 00:00:01] [ROTATE] New logfile: ping_checker_20260902_000001.log | baseline reset
-[2026-09-01 00:00:01] [COMPRESS] ping_checker_20260901_080001.log → .gz (background)
+[2026-09-01 10:30:00] [ALIVE] Healthy ×155 | OVH baseline: +1.2ms | log: ping_checker_20260901_080001.csv
+[2026-09-01 00:00:01] [ROTATE] New logfile: ping_checker_20260902_000001.csv | baseline reset
+[2026-09-01 00:00:01] [COMPRESS] ping_checker_20260901_080001.csv → .gz (background)
 ```
 
-At midnight, the current logfile is closed with a footer and a new dated logfile is opened automatically — no restart needed. The overhead baseline resets for the new day.
+At midnight, the current CSV's `.meta.json` sidecar is updated with an end-of-day footer and a new dated CSV (plus its own sidecar) is opened automatically — no restart needed. The overhead baseline resets for the new day.
 
 ---
 
@@ -303,12 +308,12 @@ python3 ping_checker.py [OPTIONS]
 | `--no-trace-verify`                    | off                                                                                     | Disable background ICMP traceroute verification                            |
 | `--silent`                             | off                                                                                     | Suppress HEALTHY output; print only alerts and heartbeat                   |
 | `--heartbeat-minutes`                  | `30`                                                                                    | Liveness heartbeat interval in minutes (only in `--silent` mode)           |
-| `--no-rotate-daily`                    | off                                                                                     | Disable daily midnight logfile rotation (rotation is on by default)        |
-| `--no-compress-rotated`                | off                                                                                     | Disable background gzip of rotated logfiles (compression is on by default) |
+| `--no-rotate-daily`                    | off                                                                                     | Disable daily midnight CSV rotation (rotation is on by default)        |
+| `--no-compress-rotated`                | off                                                                                     | Disable background gzip of rotated CSVs (compression is on by default) |
 | `--overhead-window`                    | `60`                                                                                    | Rolling overhead window size (samples)                                     |
 | `--overhead-baseline-samples`          | `30`                                                                                    | Samples before baseline is established (~60 s at default interval)         |
 | `--overhead-alert-ms`                  | `20.0`                                                                                  | Alert when rolling p50 exceeds baseline by this many ms                    |
-| `--logfile`                            | auto                                                                                    | Custom logfile path; default: `ping_checker_YYYYMMDD_HHMMSS.log`           |
+| `--logfile`                            | auto                                                                                    | Custom logfile path; default: `ping_checker_YYYYMMDD_HHMMSS.csv`           |
 | `--no-notify`                          | off                                                                                     | Disable macOS desktop notifications (on by default)                        |
 
 ---
@@ -354,8 +359,8 @@ When an outage or degradation is detected in the logs, the `zscaler-outage-analy
 
 ```bash
 python3 .github/skills/zscaler-outage-analysis/incident_report.py \
-  ping_checker_20260730_200436.log.gz \
-  ping_checker_20260731_000001.log
+  ping_checker_20260730_200436.csv.gz \
+  ping_checker_20260731_000001.csv
 ```
 
 For each incident the report independently verifies:
