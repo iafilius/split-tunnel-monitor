@@ -941,6 +941,7 @@ split-tunnel-monitor
 split-tunnel-monitor -i 2.0 --silent --heartbeat-minutes 30
 ```
 * **Why `--silent` is recommended for long-term monitoring**: Suppresses the ~43,200 continuous green `[HEALTHY]` lines per day that cause distracting screen scrolling, outputting only actionable state changes (`DEGRADED`, `OUTAGE`), target rotations, and 30-minute `[ALIVE]` liveness heartbeats (~50 lines/day) while still logging 100% of telemetry to disk.
+* **Packet Capture Note (`ICMP Time Exceeded`)**: If you inspect raw traffic with `tcpdump -n -i en0 icmp`, you may occasionally see `ICMP time exceeded in-transit` (Type 11) replies from intermediate routers (`192.168.31.1`, upstream modem, ISP gateway). These are **normal and expected artifacts** of background hop verification (`--trace-verify`, running every 30 iterations to probe hop 1 with `TTL=1, 2, ...`). They do not affect the primary ICMP Echo Request (`TTL=64`) monitoring. If pure ICMP traffic without traceroute packets is desired, pass `--no-trace-verify`.
 * Look at the **Overhead (`OVH`)** column:
   - If **LAN, ISP, and Zscaler all rise together by +50ms**, the delay is 100% on the local Wi-Fi hop.
   - If **LAN is 5ms, ISP is 10ms, but Zscaler is 95ms**, the overhead is genuinely inside the Zscaler cloud edge or corporate tunnel.
