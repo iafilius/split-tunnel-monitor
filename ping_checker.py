@@ -35,7 +35,7 @@ import ipaddress
 from datetime import datetime
 
 __version__ = "1.3.0"
-__log_schema__ = 1
+__log_schema__ = 2
 
 # Curated default IPv4 Anycast target pool for deterministic synchronized rotation
 DEFAULT_IPV4_TARGET_POOL = [
@@ -776,7 +776,7 @@ def init_logfile() -> str:
         f"# Started At: {datetime.now().astimezone().isoformat()}\n"
         f"# Script-Version: {__version__}\n"
         f"# Log-Schema: {__log_schema__}\n"
-        f"# Format: Timestamp_ISO | Interface | Local_IP | LAN_GW (RTT) | ISP_Direct (RTT) | Zscaler_Tunnel (RTT) | Zscaler_Virtual_Next_Hop | Direct_Verified | Zscaler_Verified | Status | Fault_Domain | OVH_p50 | OVH_p95 | OVH_baseline_p50 | OVH_loss_delta | OVH_alert\n"
+        f"# Format: Timestamp_ISO | Interface | Local_IP | LAN_GW (RTT) | ISP_Direct (RTT) | Zscaler_Tunnel (RTT) | Zscaler_Virtual_Next_Hop | Direct_Verified | Zscaler_Verified | Status | Fault_Domain | OVH_p50 | OVH_p95 | OVH_baseline_p50 | OVH_loss_delta | OVH_alert | OVH_alert_reason\n"
         f"# Path_Verification: routing-based assurance only (not packet-capture proof).\n"
         f"----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------\n"
     )
@@ -875,7 +875,7 @@ class OverheadStats:
         return p50 > self.baseline_p50 + threshold_ms
 
 
-def log_entry(filename: str, info: dict, lan: ProbeResult, isp: ProbeResult, zsc: ProbeResult, status: str, fault: str, overhead: "OverheadStats | None" = None):
+def log_entry(filename: str, info: dict, lan: ProbeResult, isp: ProbeResult, zsc: ProbeResult, status: str, fault: str, overhead: "OverheadStats | None" = None, overhead_alert_ms: float = 20.0):
     """Appends structured log record to log file."""
     now_iso = datetime.now().astimezone().isoformat()
     zsc_virtual_gateway = info.get("zscaler", {}).get("gateway_ip", "") or "N/A"
@@ -892,9 +892,11 @@ def log_entry(filename: str, info: dict, lan: ProbeResult, isp: ProbeResult, zsc
         ovh_p95 = f"{p95:+.1f}ms" if p95 is not None else "N/A"
         ovh_base = f"{bl:+.1f}ms" if bl is not None else "N/A"
         ovh_loss = f"{ld:+.1f}%" if ld is not None else "N/A"
-        ovh_alert = "WARN" if (overhead is not None and p50 is not None and bl is not None and overhead.is_alerting(0)) else "OK"
+        is_warn = p50 is not None and bl is not None and overhead.is_alerting(overhead_alert_ms)
+        ovh_alert = "WARN" if is_warn else "OK"
+        ovh_alert_reason = f"{p50 - bl:+.1f}ms above baseline (threshold: {overhead_alert_ms:.1f}ms)" if is_warn else "N/A"
     else:
-        ovh_p50 = ovh_p95 = ovh_base = ovh_loss = ovh_alert = "N/A"
+        ovh_p50 = ovh_p95 = ovh_base = ovh_loss = ovh_alert = ovh_alert_reason = "N/A"
     line = (
         f"{now_iso} | {info['interface']} | {info['local_ip']} | "
         f"{info['gateway_ip']} ({lan.format_rtt()}) | "
@@ -903,7 +905,7 @@ def log_entry(filename: str, info: dict, lan: ProbeResult, isp: ProbeResult, zsc
         f"{zsc_virtual_gateway} | "
         f"{direct_verified} | {zsc_verified} | "
         f"{status} | {fault} | "
-        f"{ovh_p50} | {ovh_p95} | {ovh_base} | {ovh_loss} | {ovh_alert}\n"
+        f"{ovh_p50} | {ovh_p95} | {ovh_base} | {ovh_loss} | {ovh_alert} | {ovh_alert_reason}\n"
     )
     with open(filename, "a", encoding="utf-8") as f:
         f.write(line)
@@ -1347,7 +1349,7 @@ async def main():
                 print(f"\n[{_ts()}] [BASELINE] Overhead baseline established: p50={overhead.baseline_p50:+.1f}ms (after {args.overhead_baseline_samples} samples)")
 
             # Log to file (always, regardless of silent mode)
-            log_entry(logfile, network_info, lan_res, isp_res, zsc_res, status, fault, overhead=overhead)
+            log_entry(logfile, network_info, lan_res, isp_res, zsc_res, status, fault, overhead=overhead, overhead_alert_ms=args.overhead_alert_ms)
 
             # ── Incident lifecycle ────────────────────────────────────────────
             status_counts[status] += 1
