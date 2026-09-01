@@ -197,28 +197,28 @@ The **baseline** is the p50 computed from the first `--overhead-baseline-samples
 
 Each session writes a unique `ping_checker_YYYYMMDD_HHMMSS.csv` file plus a companion `ping_checker_YYYYMMDD_HHMMSS.meta.json` sidecar. The CSV contains **only** a header row and data rows — no comments or footer text — so it opens cleanly as a table in tools like VS Code's [Rainbow CSV](https://marketplace.visualstudio.com/items?itemName=mechatroner.rainbow-csv) extension (colorized columns, SQL-like `RBQL` filtering) or any spreadsheet app. Columns are comma-separated:
 
-| Column                     | Content                                                                                            |
-| -------------------------- | --------------------------------------------------------------------------------------------------- |
-| `Timestamp_ISO`            | ISO 8601 local datetime of the sample                                                              |
-| `Interface`                | Active physical network interface (e.g. `en0`)                                                     |
-| `Local_IP`                 | Local IPv4 address on the physical interface                                                       |
-| `LAN_GW_IP`                | LAN gateway IP                                                                                      |
-| `LAN_GW_RTT_ms`            | LAN gateway round-trip time in ms (empty cell if the probe timed out/failed)                        |
-| `ISP_Direct_IP`            | Direct ISP probe target                                                                             |
-| `ISP_Direct_RTT_ms`        | Direct ISP RTT in ms (empty cell if timed out/failed)                                                |
-| `Zscaler_IP`                | VPN tunnel probe target                                                                             |
-| `Zscaler_RTT_ms`            | VPN tunnel RTT in ms (empty cell if timed out/failed)                                               |
-| `Zscaler_Virtual_Next_Hop` | Discovered virtual tunnel gateway IP, or `N/A` if undiscovered (informational, not numeric)          |
-| `Direct_Verified`          | `YES`/`NO` — route check confirmed direct path                                                      |
-| `Zscaler_Verified`         | `YES`/`NO` — route check confirmed VPN path                                                         |
-| `Status`                   | `HEALTHY`, `DEGRADED`, or `OUTAGE`                                                                  |
-| `Fault_Domain`              | Root cause label or `None`                                                                          |
-| `OVH_p50_ms`                | Rolling p50 overhead in ms, a bare number (empty cell before baseline established)                  |
-| `OVH_p95_ms`                | Rolling p95 overhead in ms (empty cell before baseline established)                                 |
-| `OVH_baseline_p50_ms`       | Session baseline p50 in ms (empty cell before established)                                          |
-| `OVH_loss_delta_pct`        | VPN minus direct packet-loss percentage points (empty cell before data)                              |
-| `OVH_alert`                 | `WARN` if alerting, `OK` otherwise (uses the same `--overhead-alert-ms` threshold as the console)   |
-| `OVH_alert_reason`          | `+Xms above baseline (threshold: Yms)` when `WARN`, `N/A` otherwise                                  |
+| Column                     | Content                                                                                           |
+| -------------------------- | ------------------------------------------------------------------------------------------------- |
+| `Timestamp_ISO`            | ISO 8601 local datetime of the sample                                                             |
+| `Interface`                | Active physical network interface (e.g. `en0`)                                                    |
+| `Local_IP`                 | Local IPv4 address on the physical interface                                                      |
+| `LAN_GW_IP`                | LAN gateway IP                                                                                    |
+| `LAN_GW_RTT_ms`            | LAN gateway round-trip time in ms (empty cell if the probe timed out/failed)                      |
+| `ISP_Direct_IP`            | Direct ISP probe target                                                                           |
+| `ISP_Direct_RTT_ms`        | Direct ISP RTT in ms (empty cell if timed out/failed)                                             |
+| `Zscaler_IP`               | VPN tunnel probe target                                                                           |
+| `Zscaler_RTT_ms`           | VPN tunnel RTT in ms (empty cell if timed out/failed)                                             |
+| `Zscaler_Virtual_Next_Hop` | Discovered virtual tunnel gateway IP, or `N/A` if undiscovered (informational, not numeric)       |
+| `Direct_Verified`          | `YES`/`NO` — route check confirmed direct path                                                    |
+| `Zscaler_Verified`         | `YES`/`NO` — route check confirmed VPN path                                                       |
+| `Status`                   | `HEALTHY`, `DEGRADED`, or `OUTAGE`                                                                |
+| `Fault_Domain`             | Root cause label or `None`                                                                        |
+| `OVH_p50_ms`               | Rolling p50 overhead in ms, a bare number (empty cell before baseline established)                |
+| `OVH_p95_ms`               | Rolling p95 overhead in ms (empty cell before baseline established)                               |
+| `OVH_baseline_p50_ms`      | Session baseline p50 in ms (empty cell before established)                                        |
+| `OVH_loss_delta_pct`       | VPN minus direct packet-loss percentage points (empty cell before data)                           |
+| `OVH_alert`                | `WARN` if alerting, `OK` otherwise (uses the same `--overhead-alert-ms` threshold as the console) |
+| `OVH_alert_reason`         | `+Xms above baseline (threshold: Yms)` when `WARN`, `N/A` otherwise                               |
 
 The `.meta.json` sidecar carries everything that used to live in comment/header/footer lines: `script_version`, `log_schema`, `started_at`, `path_verification_note`, and — once the session ends or rotates — `ended_at`, `reason`, `total_samples`, and a per-status sample-count breakdown.
 
@@ -297,24 +297,24 @@ split-tunnel-monitor [OPTIONS]
 python3 ping_checker.py [OPTIONS]
 ```
 
-| Option                                 | Default                                                                                 | Description                                                                |
-| -------------------------------------- | --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| `-i`, `--interval`                     | `2.0`                                                                                   | Ping interval in seconds                                                   |
-| `-n`, `--count`                        | off                                                                                     | Stop automatically after N samples and print the session summary           |
-| `--target-pool`                        | `1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220` | Comma-separated list of IPv4 Anycast targets for deterministic rotation    |
-| `-r`, `--rotate-interval`              | `900`                                                                                   | Rotation interval in seconds (default: 15 min; 0 disables rotation)        |
-| `--isp-target`, `--target-direct`      | off                                                                                     | Direct ISP probe target override (disables pool rotation for direct path)  |
-| `--zscaler-target`, `--target-zscaler` | off                                                                                     | Zscaler tunnel target override (disables pool rotation for tunneled path)  |
-| `--no-trace-verify`                    | off                                                                                     | Disable background ICMP traceroute verification                            |
-| `--silent`                             | off                                                                                     | Suppress HEALTHY output; print only alerts and heartbeat                   |
-| `--heartbeat-minutes`                  | `30`                                                                                    | Liveness heartbeat interval in minutes (only in `--silent` mode)           |
-| `--no-rotate-daily`                    | off                                                                                     | Disable daily midnight CSV rotation (rotation is on by default)        |
-| `--no-compress-rotated`                | off                                                                                     | Disable background gzip of rotated CSVs (compression is on by default) |
-| `--overhead-window`                    | `60`                                                                                    | Rolling overhead window size (samples)                                     |
-| `--overhead-baseline-samples`          | `30`                                                                                    | Samples before baseline is established (~60 s at default interval)         |
-| `--overhead-alert-ms`                  | `20.0`                                                                                  | Alert when rolling p50 exceeds baseline by this many ms                    |
-| `--logfile`                            | auto                                                                                    | Custom logfile path; default: `ping_checker_YYYYMMDD_HHMMSS.csv`           |
-| `--no-notify`                          | off                                                                                     | Disable macOS desktop notifications (on by default)                        |
+| Option                                 | Default                                                                                 | Description                                                               |
+| -------------------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `-i`, `--interval`                     | `2.0`                                                                                   | Ping interval in seconds                                                  |
+| `-n`, `--count`                        | off                                                                                     | Stop automatically after N samples and print the session summary          |
+| `--target-pool`                        | `1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220` | Comma-separated list of IPv4 Anycast targets for deterministic rotation   |
+| `-r`, `--rotate-interval`              | `900`                                                                                   | Rotation interval in seconds (default: 15 min; 0 disables rotation)       |
+| `--isp-target`, `--target-direct`      | off                                                                                     | Direct ISP probe target override (disables pool rotation for direct path) |
+| `--zscaler-target`, `--target-zscaler` | off                                                                                     | Zscaler tunnel target override (disables pool rotation for tunneled path) |
+| `--no-trace-verify`                    | off                                                                                     | Disable background ICMP traceroute verification                           |
+| `--silent`                             | off                                                                                     | Suppress HEALTHY output; print only alerts and heartbeat                  |
+| `--heartbeat-minutes`                  | `30`                                                                                    | Liveness heartbeat interval in minutes (only in `--silent` mode)          |
+| `--no-rotate-daily`                    | off                                                                                     | Disable daily midnight CSV rotation (rotation is on by default)           |
+| `--no-compress-rotated`                | off                                                                                     | Disable background gzip of rotated CSVs (compression is on by default)    |
+| `--overhead-window`                    | `60`                                                                                    | Rolling overhead window size (samples)                                    |
+| `--overhead-baseline-samples`          | `30`                                                                                    | Samples before baseline is established (~60 s at default interval)        |
+| `--overhead-alert-ms`                  | `20.0`                                                                                  | Alert when rolling p50 exceeds baseline by this many ms                   |
+| `--logfile`                            | auto                                                                                    | Custom logfile path; default: `ping_checker_YYYYMMDD_HHMMSS.csv`          |
+| `--no-notify`                          | off                                                                                     | Disable macOS desktop notifications (on by default)                       |
 
 ---
 
