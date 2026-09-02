@@ -1058,6 +1058,38 @@ def format_wifi_link_speed(wifi_data: dict) -> str:
     return f"{active:.1f} Mbps (SSID: {ssid})"
 
 
+def detect_wifi_roam(old_wifi: dict, new_wifi: dict) -> str | None:
+    """Compare prior and fresh Wi-Fi telemetry to detect channel switch or AP roam."""
+    if not old_wifi or not new_wifi:
+        return None
+    if not old_wifi.get("is_wifi") or not new_wifi.get("is_wifi"):
+        return None
+
+    old_ch = old_wifi.get("channel", 0)
+    new_ch = new_wifi.get("channel", 0)
+    old_band = old_wifi.get("band", "")
+    new_band = new_wifi.get("band", "")
+    new_rssi = new_wifi.get("rssi")
+    new_ssid = new_wifi.get("ssid") or "N/A"
+    old_bssid = old_wifi.get("bssid", "")
+    new_bssid = new_wifi.get("bssid", "")
+
+    # 1. Radio channel switch (e.g. Channel 36 -> Channel 100 or 2.4GHz <-> 5GHz)
+    if old_ch > 0 and new_ch > 0 and new_ch != old_ch:
+        old_ch_str = f"Channel {old_ch} ({old_band})" if old_band else f"Channel {old_ch}"
+        new_ch_str = f"Channel {new_ch} ({new_band})" if new_band else f"Channel {new_ch}"
+        rssi_str = f" | RSSI: {new_rssi} dBm" if new_rssi is not None else ""
+        return f"[WIFI ROAM] {old_ch_str} → {new_ch_str}{rssi_str} (SSID: {new_ssid})"
+
+    # 2. Same-channel AP BSSID roam
+    if old_bssid and new_bssid and new_bssid != old_bssid:
+        rssi_str = f", RSSI: {new_rssi} dBm" if new_rssi is not None else ""
+        ch_str = f", Channel {new_ch}" if new_ch > 0 else ""
+        return f"[WIFI ROAM] AP BSSID {old_bssid} → {new_bssid} (SSID: {new_ssid}{ch_str}{rssi_str})"
+
+    return None
+
+
 def _get_vpn_process_metadata(info: dict | None = None) -> dict:
     """Return Zscaler / VPN process and tunnel interface state."""
     zsc_info = (info or {}).get("zscaler")
@@ -1919,6 +1951,7 @@ async def main():
     current_log_date = datetime.now().date()    # for --rotate-daily
     current_zsc_iface = network_info['zscaler'].get('interface', '')  # for tunnel change detection
     current_gw_ip = network_info['gateway_ip']   # for LAN gateway identity change detection
+    current_wifi = dict(network_info.get("wifi", {}))  # for Wi-Fi roam / channel switch detection
     previous_zsc_status = startup_pathv.get('zsc_status')  # for immediate trace re-check on status change
     trace_reconcile_attempts = 0         # consecutive disagreeing re-checks since last transition
     trace_reconcile_max_attempts = 20    # cap on reconciliation retries per transition (~60s; real tunnel re-establishment observed taking up to ~12s)
@@ -2006,6 +2039,21 @@ async def main():
                 net_changed = (fresh_info['interface'] != network_info['interface'] or fresh_info['local_ip'] != network_info['local_ip'])
                 if net_changed:
                     network_info = fresh_info
+
+                # ── Wi-Fi channel & roaming change detection ──────────────────
+                fresh_wifi = fresh_info.get("wifi", {})
+                if fresh_wifi.get("is_wifi"):
+                    roam_msg = detect_wifi_roam(current_wifi, fresh_wifi)
+                    if roam_msg:
+                        full_roam_msg = f"[{_ts()}] {roam_msg}"
+                        _log_event(_event_log_path(logfile), full_roam_msg)
+                        print(full_roam_msg, flush=True)
+                    # Preserve idle_tx_rate established at startup
+                    if "idle_tx_rate" in network_info.get("wifi", {}):
+                        fresh_wifi["idle_tx_rate"] = network_info["wifi"]["idle_tx_rate"]
+                    network_info["wifi"] = fresh_wifi
+                    current_wifi = dict(fresh_wifi)
+                # ─────────────────────────────────────────────────────────────
 
                 # ── Tunnel interface change detection ─────────────────────────
                 new_zsc_iface = fresh_info['zscaler'].get('interface', '')
