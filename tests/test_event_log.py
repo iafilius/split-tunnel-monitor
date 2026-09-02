@@ -110,7 +110,7 @@ class TestThreeTierLogging:
             assert os.path.exists(event_log_path)
             with open(event_log_path) as f:
                 event_content = f.read()
-            assert "Zscaler & Multi-Path macOS Network Outage Monitor" in event_content
+            assert "Tri-Path Split-Tunnel Network & Root-Cause Outage Analyzer" in event_content
             assert "Event Log" in event_content
             assert "Started At:" in event_content
             assert "Keep-Awake:      udp-tick" in event_content

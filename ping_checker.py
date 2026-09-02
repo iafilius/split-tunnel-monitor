@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """
-Zscaler & Dual-Path Network Outage Checker for macOS
+Tri-Path Split-Tunnel Network & Root-Cause Outage Analyzer for macOS
 Dynamically discovers physical network interfaces, local IP, and LAN default gateway.
 Runs concurrent ICMP probes across 3 isolated network paths:
-  1. LAN Gateway (Next Hop)
-  2. ISP Direct (bypassing Zscaler via interface binding: ping -S <local_ip>)
-  3. Zscaler Tunnel (routed via utun / default routing table)
+  1. Local Network (LAN): Gateway next-hop (Wi-Fi / local router reachability)
+  2. Generic Internet (ISP WAN): Direct path bypassing VPN via interface binding (ping -S <local_ip>)
+  3. Corporate Tunnel (Zscaler): Encapsulated path routed via utun / default routing table
 
-Classifies network state into failure domains: Healthy, Local Network Issue, ISP Issue, Zscaler Issue.
-Generates unique ISO-timestamped log files and live terminal UI updates.
+Pinpoints failure root causes across 3 distinct domains:
+  - Local Network Issue (Wi-Fi drop, 802.11 PSM sleep doze, AWDL scan, LAN gateway failure)
+  - Generic Internet / ISP Issue (Home broadband WAN down, ISP peering/bufferbloat)
+  - Corporate Tunnel / Zscaler Issue (VPN client crash, utun MTU issue, ZIA cloud edge latency)
+
+Generates pure RFC-4180 CSV, structured JSON sidecars, human-readable event timelines, and live terminal updates.
 
 Repository: https://github.com/iafilius/split-tunnel-monitor
 License: GNU General Public License v3.0 (GPLv3)
@@ -1200,7 +1204,8 @@ def init_logfile(network_info: dict | None = None, target_pool: list[str] | None
     try:
         with open(event_log, "w", encoding="utf-8") as f:
             f.write("=" * 80 + "\n")
-            f.write(f" Zscaler & Multi-Path macOS Network Outage Monitor (v{__version__}) - Event Log\n")
+            f.write(f" Tri-Path Split-Tunnel Network & Root-Cause Outage Analyzer (v{__version__}) - Event Log\n")
+            f.write(" Pinpointing: [1] Local Network (LAN) · [2] Generic Internet (ISP) · [3] Corporate Tunnel (Zscaler)\n")
             f.write("=" * 80 + "\n")
             f.write(f"Started At:      {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write(f"Host / OS:       {host_meta['hostname']} ({host_meta['architecture']}, {host_meta['os']})\n")
@@ -1574,7 +1579,7 @@ def _print_session_summary(
 
 def _build_parser() -> argparse.ArgumentParser:
     """Build and return the CLI argument parser. Extracted for testability."""
-    parser = argparse.ArgumentParser(description="Zscaler & Dual-Path macOS Network Outage Monitor")
+    parser = argparse.ArgumentParser(description="Tri-Path Split-Tunnel Network & Root-Cause Outage Analyzer for macOS")
     parser.add_argument("-i", "--interval", type=float, default=2.0, help="Ping interval in seconds (default: 2.0)")
     parser.add_argument("--target-pool", type=str, default=",".join(DEFAULT_IPV4_TARGET_POOL), help=f"Comma-separated list of IPv4 targets for rotation (default: {','.join(DEFAULT_IPV4_TARGET_POOL)})")
     parser.add_argument("-r", "--rotate-interval", type=float, default=DEFAULT_ROTATE_INTERVAL, help=f"Target rotation interval in seconds (default: {int(DEFAULT_ROTATE_INTERVAL)}; 0 disables rotation)")
@@ -1661,7 +1666,8 @@ async def main():
 
     logfile = args.logfile if args.logfile else init_logfile(network_info=network_info, target_pool=target_pool, keep_awake_mode=args.keep_awake)
     print("=" * 90)
-    print(f" Zscaler & Multi-Path macOS Network Outage Monitor (v{__version__})")
+    print(f" Tri-Path Split-Tunnel Network & Root-Cause Outage Analyzer (v{__version__})")
+    print(" Pinpointing: [1] Local Network (LAN) · [2] Generic Internet (ISP) · [3] Corporate Tunnel (Zscaler)")
     print("=" * 90)
     print(f"Monitor Version:           {__version__} (log-schema: {__log_schema__})")
     print(f"Logging to:                {os.path.relpath(logfile)}")

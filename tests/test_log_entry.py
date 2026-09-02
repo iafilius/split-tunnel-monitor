@@ -271,7 +271,7 @@ class TestVersionMetadata:
             assert os.path.exists(event_log)
             with open(event_log) as f:
                 event_text = f.read()
-            assert "Zscaler & Multi-Path macOS Network Outage Monitor" in event_text
+            assert "Tri-Path Split-Tunnel Network & Root-Cause Outage Analyzer" in event_text
             assert "Channel 100 (5GHz)" in event_text
             assert "RSSI: -48 dBm" in event_text
             assert "[STARTUP] Monitoring initialized" in event_text

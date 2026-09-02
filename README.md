@@ -1,12 +1,12 @@
-# Split-Tunnel VPN Multipath Monitor
+# Tri-Path Split-Tunnel Network & Root-Cause Outage Analyzer for macOS
 
-> **macOS-only** · Tested with Zscaler Client Connector
+> **macOS-only** · Real-time failure domain isolation: **Local Network (LAN)** ↔ **Generic Internet (ISP)** ↔ **Corporate Tunnel (Zscaler)**
 
 **Repository:** https://github.com/iafilius/split-tunnel-monitor
 
-A zero-configuration, lightweight CLI tool for macOS that concurrently probes your **direct internet path** and your **VPN-tunneled path**, classifies outage failure domains (**Local LAN**, **ISP**, or **VPN/Zscaler**), and tracks rolling VPN overhead delta statistics with automated alerting and ISO-timestamped logfiles.
+A zero-configuration, lightweight CLI tool for macOS that concurrently probes your **Local Network (LAN Gateway)**, your **Direct Internet path (ISP WAN underlay)**, and your **Corporate Tunnel (Zscaler VPN)** to instantly isolate failure domains and pinpoint outage root causes in real time.
 
-The underlying split-tunnel multipath monitoring pattern applies to any corporate VPN that installs a virtual tunnel adapter on macOS. **Tested and documented with Zscaler Client Connector (ZCC)**; the approach is compatible with other macOS split-tunnel VPNs such as Cisco AnyConnect and Palo Alto GlobalProtect.
+The underlying tri-path split-tunnel monitoring pattern applies to any corporate VPN that installs a virtual tunnel adapter on macOS. **Tested and documented with Zscaler Client Connector (ZCC)**; the approach is compatible with other macOS split-tunnel VPNs such as Cisco AnyConnect and Palo Alto GlobalProtect.
 
 > **Scope — network transport layer (ICMP/UDP) only:** This tool evaluates the health, reachability, and physical latency of the underlying network transport paths (Layers 1–4: Wi-Fi PHY radio, local gateway, ISP WAN underlay, and VPN `utun` virtual adapter). It does **not** measure or diagnose Layer 7 application-layer inspection (SSL/TLS MITM decryption, synthetic Root CA trust errors, proxy stream buffering / DLP TTFB latency, URL/tenant policy blocks, or certificate pinning aborts). For a detailed technical breakdown of this boundary and a triage guide, see [Section 1.1 in the Forensics Guide](docs/macos_wifi_latency_and_enterprise_forensics.md#11-architectural-scope-l3l4-transport-substrate-vs-l7-application-inspection). For application-layer quality monitoring (HTTP/TLS handshakes, throughput, proxy detection), see [InternetQualityMonitor](https://github.com/iafilius/InternetQualityMonitor).
 
@@ -87,7 +87,8 @@ python3 ping_checker.py
 
 ```
 ==========================================================================================
- Zscaler & Multi-Path macOS Network Outage Monitor
+ Tri-Path Split-Tunnel Network & Root-Cause Outage Analyzer (v1.4.0)
+ Pinpointing: [1] Local Network (LAN) · [2] Generic Internet (ISP) · [3] Corporate Tunnel (Zscaler)
 ==========================================================================================
 Logging to: /Users/you/ping_checker_20260730_113947.csv
 ISP Direct Probe Target:   1.1.1.1
@@ -261,7 +262,8 @@ Daily logfile rotation is **on by default** — each calendar day gets its own C
 **Typical background session output:**
 ```text
 ==========================================================================================
- Zscaler & Multi-Path macOS Network Outage Monitor (v1.3.0)
+ Tri-Path Split-Tunnel Network & Root-Cause Outage Analyzer (v1.4.0)
+ Pinpointing: [1] Local Network (LAN) · [2] Generic Internet (ISP) · [3] Corporate Tunnel (Zscaler)
 ==========================================================================================
 Logging to:                /Users/you/ping_checker_20260901_080001.csv
 Target Pool:               1.1.1.1, 1.0.0.1, 8.8.8.8, 8.8.4.4, 9.9.9.9, ... (8 IPv4 Anycast targets)
