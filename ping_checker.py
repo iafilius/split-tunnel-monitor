@@ -740,7 +740,8 @@ def classify_outage(
     isp_res: ProbeResult,
     zsc_res: ProbeResult,
     zsc_target_is_virtual_gateway: bool = False,
-    lan_gateway_ever_responded: bool = True
+    lan_gateway_ever_responded: bool = True,
+    zscaler_active: bool = True
 ) -> tuple:
     """
     Evaluates 3-way probe matrix to determine root cause failure domain.
@@ -764,10 +765,12 @@ def classify_outage(
     elif lan_ok and not isp_ok and not zsc_ok:
         return ("OUTAGE", "ISP Issue (Direct Public WAN Unreachable)")
 
-    # Case T,T,F — LAN and ISP direct both healthy, only the Zscaler tunnel is down.
+    # Case T,T,F — LAN and ISP direct both healthy, only the 3rd probe path is down.
     # If the probe target is the virtual gateway (100.64.x.x) rather than a routed
     # public IP, the gateway suppresses ICMP by policy — classify as DEGRADED, not OUTAGE.
     elif lan_ok and isp_ok and not zsc_ok:
+        if not zscaler_active:
+            return ("DEGRADED", "Partial Packet Loss / Standard Route Probe Dropped (Internet Reachable)")
         if zsc_target_is_virtual_gateway:
             return ("DEGRADED", "Virtual Tunnel Next-Hop ICMP Blocked (Data-Plane Probe Required)")
         return ("OUTAGE", "Zscaler Issue (VPN tunnel ICMP unresponsive)")
@@ -782,18 +785,22 @@ def classify_outage(
             return ("DEGRADED", "Local Gateway Stopped Responding (Previously Reachable)")
         return ("INFO", "Local Gateway Silent (No Response Observed This Session)")
 
-    # Case F,T,F — LAN gateway silent AND Zscaler tunnel down, but ISP direct path works.
-    # ISP connectivity is confirmed; Zscaler failure is real.  The silent LAN gateway
-    # is a known ICMP-suppression artefact that does not mask the VPN issue.
+    # Case F,T,F — LAN gateway silent AND 3rd probe down, but ISP direct path works.
+    # ISP connectivity is confirmed; Zscaler failure is real when VPN is active.
+    # The silent LAN gateway is a known ICMP-suppression artefact that does not mask the VPN issue.
     elif not lan_ok and isp_ok and not zsc_ok:
+        if not zscaler_active:
+            return ("DEGRADED", "Partial Packet Loss (Internet Reachable; LAN & Standard Route Dropped)")
         return ("OUTAGE", "Zscaler Issue (VPN tunnel ICMP unresponsive; LAN Gateway ICMP also unresponsive)")
 
-    # Case T,F,T — LAN and Zscaler tunnel healthy, ISP direct path unresponsive.
-    # Split-tunnel traffic still flows via Zscaler; direct-bound traffic is affected.
+    # Case T,F,T — LAN and 3rd probe healthy, ISP direct path unresponsive.
+    # Split-tunnel traffic still flows via Zscaler if active; otherwise transient packet loss on direct bound probe.
     elif lan_ok and not isp_ok and zsc_ok:
+        if not zscaler_active:
+            return ("DEGRADED", "Partial Packet Loss / Direct Probe Dropped (Internet Reachable)")
         return ("DEGRADED", "ISP Direct Path Degraded (Zscaler Tunnel Active)")
 
-    # Case F,F,T — LAN and ISP both unreachable, yet Zscaler probe succeeded.
+    # Case F,F,T — LAN and ISP both unreachable, yet 3rd probe succeeded.
     # Physically implausible in a split-tunnel setup; most likely a probe race condition
     # (Zscaler response arrived before the link fully dropped).
     else:
@@ -806,7 +813,8 @@ def determine_status_and_fault(
     isp_res: ProbeResult,
     zsc_res: ProbeResult,
     zsc_target_is_virtual_gateway: bool = False,
-    lan_gateway_ever_responded: bool = True
+    lan_gateway_ever_responded: bool = True,
+    zscaler_active: bool = True
 ) -> tuple:
     """
     Decide (status, fault) for one iteration. Short-circuits to a distinct
@@ -823,7 +831,8 @@ def determine_status_and_fault(
     return classify_outage(
         lan_res, isp_res, zsc_res,
         zsc_target_is_virtual_gateway=zsc_target_is_virtual_gateway,
-        lan_gateway_ever_responded=lan_gateway_ever_responded
+        lan_gateway_ever_responded=lan_gateway_ever_responded,
+        zscaler_active=zscaler_active
     )
 
 
@@ -2138,7 +2147,8 @@ async def main():
                 isp_res,
                 zsc_res,
                 zsc_target_is_virtual_gateway=zsc_target_is_virtual_gateway,
-                lan_gateway_ever_responded=lan_gateway_ever_responded
+                lan_gateway_ever_responded=lan_gateway_ever_responded,
+                zscaler_active=network_info.get("zscaler", {}).get("is_active", False)
             )
             if lan_res.success:
                 lan_gateway_ever_responded = True
