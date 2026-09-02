@@ -25,12 +25,13 @@ The underlying tri-path split-tunnel monitoring pattern applies to any corporate
 - **VPN Overhead Delta Statistics**: Tracks `overhead = vpn_rtt − direct_rtt` per iteration. Computes p50/p95 percentiles, loss-rate delta, and a session baseline. Alerts when rolling overhead rises above your normal baseline.
 - **Route-Based Path Verification**: Confirms per-iteration that the direct probe is truly using the physical interface (`DIRECT=OK`) and the VPN probe is routed via `utun` with the VPN process active (`ZSC=OK`).
 - **ICMP Traceroute Background Verification**: Runs `traceroute -I` (no elevated permissions) in the background every 30 iterations to confirm paths at the routing-hop level (`TRACE(D=OK,Z=OK)`).
+- **Dual-Path Public Egress & ASN Forensics**: Resolves both direct ISP egress (bound to physical interface) and tunneled corporate egress at launch and on network/tunnel transitions. Discovers public IPv4, Autonomous System Number (ASN), and organization (e.g. `80.60.70.196 (AS1136 KPN B.V., NL)` vs. `165.225.204.15 (AS14413 Zscaler Inc., NL)`). If offline at startup, displays `Pending / Offline` and quietly resolves as soon as the first ping succeeds.
 - **Startup Tool Check**: Verifies all required CLI tools are present at launch; auto-disables traceroute verification if `traceroute` is absent.
 - **Resilient Mid-Run Discovery**: Auto-detects network interface switches (e.g. Ethernet ↔ Wi-Fi) without restarting.
 - **Incident Tracking**: Automatically opens and closes incidents on status transitions. Prints an `[INCIDENT #N RESOLVED]` summary line (domain, duration, timestamps) inline when connectivity recovers.
 - **Session Exit Summary**: On Ctrl+C, prints a human-readable report — duration, status breakdown, full incident timeline, overhead statistics, and logfile path — ready to paste into a helpdesk ticket.
 - **macOS Desktop Notifications**: Fires a notification (via `terminal-notifier` or `osascript`) on every notable state transition — outage start/end, degraded start/end, overhead-warn entry/exit. On by default; suppress with `--no-notify`.
-- **Timestamped Session Logs**: Writes ISO 8601 formatted records to unique session CSV files (`ping_checker_YYYYMMDD_HHMMSS.csv`), plus a `.meta.json` sidecar.
+- **Timestamped Session Logs**: Writes ISO 8601 formatted records to unique session CSV files (`ping_checker_YYYYMMDD_HHMMSS.csv`), companion `.log` event files, plus a `.meta.json` sidecar.
 
 ---
 
@@ -90,24 +91,28 @@ python3 ping_checker.py
  Tri-Path Split-Tunnel Network & Root-Cause Outage Analyzer (v1.4.0)
  Pinpointing: [1] Local Network (LAN) · [2] Generic Internet (ISP) · [3] Corporate Tunnel (Zscaler)
 ==========================================================================================
-Logging to: /Users/you/ping_checker_20260730_113947.csv
-ISP Direct Probe Target:   1.1.1.1
-Zscaler Tunnel Target:     9.9.9.9
-Tool Check:                OK (ping, traceroute, scutil, ipconfig, route, pgrep, ifconfig available)
-Notifications:             terminal-notifier available (/opt/homebrew/bin/terminal-notifier)
-Performing dynamic path discovery...
-Detected Interface:        en0
-Detected Local IPv4:       192.168.1.52
+Monitor Version:           1.4.0 (log-schema: 4)
+Logging to:                ping_checker_20260902_192849.csv
+Direct ISP Egress:         80.60.70.196 (AS1136 KPN B.V., NL)
+Corporate Tunnel Egress:   165.225.204.15 (AS14413 Zscaler Inc., NL)
+Target Pool:               1.1.1.1, 1.0.0.1, 8.8.8.8, 8.8.4.4, 9.9.9.9, ... (8 IPv4 Anycast targets)
+Target Rotation:           ENABLED (every 900s / 15.0m, initial: 149.112.112.112 [Slot 6/8])
+ISP Direct Probe Target:   149.112.112.112
+Zscaler Tunnel Target:     149.112.112.112
+Detected Interface:        en0 (Wi-Fi)
+Wi-Fi Radio:               Channel 100 (5GHz), RSSI: -41 dBm, Noise: -94 dBm (SNR: 53 dB)
+Wi-Fi Link Speed:          286.0 Mbps (SSID: MyNetwork)
+Keep-Awake Mode:           ENABLED (udp-tick @ 150ms; suppresses 802.11 PSM doze)
+Detected Local IPv4:       192.168.1.52 (dhcp)
 Detected LAN Gateway:      192.168.1.1
 Detected Zscaler Tunnel:   Active (utun4, vgw=100.64.0.1)
 Zscaler Virtual Next-Hop:  100.64.0.1
-ISP Direct Target:         1.1.1.1
-Zscaler Target:            9.9.9.9
 Direct Path Verification:  VERIFIED (ifscope route via en0)
 Zscaler Verification:      VERIFIED (route via utun4 with Zscaler process active)
 Trace Verification:        ENABLED (background, every 30 iterations)
 ------------------------------------------------------------------------------------------
 Press Ctrl+C to stop monitoring.
+
 
 [11:39:48] [HEALTHY] LAN (192.168.1.1): 6.1ms | ISP Direct (1.1.1.1): 5.1ms | Zscaler (9.9.9.9): 9.5ms | DIRECT=OK(en0) | ZSC=OK(utun4) | TRACE(PENDING)
 [11:39:51] [HEALTHY] LAN (192.168.1.1): 6.2ms | ISP Direct (1.1.1.1): 6.0ms | Zscaler (9.9.9.9): 10.7ms | DIRECT=OK(en0) | ZSC=OK(utun4) | TRACE(D=OK,Z=OK)
@@ -266,6 +271,8 @@ Daily logfile rotation is **on by default** — each calendar day gets its own C
  Pinpointing: [1] Local Network (LAN) · [2] Generic Internet (ISP) · [3] Corporate Tunnel (Zscaler)
 ==========================================================================================
 Logging to:                /Users/you/ping_checker_20260901_080001.csv
+Direct ISP Egress:         80.60.70.196 (AS1136 KPN B.V., NL)
+Corporate Tunnel Egress:   165.225.204.15 (AS14413 Zscaler Inc., NL)
 Target Pool:               1.1.1.1, 1.0.0.1, 8.8.8.8, 8.8.4.4, 9.9.9.9, ... (8 IPv4 Anycast targets)
 Target Rotation:           ENABLED (every 900s / 15.0m, initial: 1.1.1.1 [Slot 1/8])
 Silent Mode:               ENABLED (alerts only; heartbeat every 30 min)

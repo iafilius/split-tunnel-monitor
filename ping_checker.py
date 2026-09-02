@@ -328,6 +328,79 @@ class NetworkDiscovery:
             "zscaler": zscaler_info
         }
 
+    @classmethod
+    def get_public_egress(cls, local_ip: str | None = None) -> dict | None:
+        """Query external public egress IPv4, ASN, and organization.
+
+        If local_ip is provided, binds to that local IP (--interface <local_ip>)
+        to force the query out the physical interface, bypassing any VPN tunnel.
+        """
+        endpoints = ["https://ifconfig.co/json", "https://ipinfo.io/json"]
+        for url in endpoints:
+            cmd = ["curl", "-4", "-s", "-k", "--max-time", "3"]
+            if local_ip:
+                cmd.extend(["--interface", local_ip])
+            cmd.append(url)
+            try:
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=4)
+                if res.returncode == 0 and res.stdout.strip():
+                    data = json.loads(res.stdout)
+                    ip = data.get("ip", "")
+                    if not ip:
+                        continue
+                    asn = data.get("asn", "")
+                    org = data.get("asn_org", "")
+                    country = data.get("country_iso", "") or data.get("country", "")
+                    if not asn and "org" in data:
+                        m = re.match(r"^(AS\d+)\s*(.*)", data["org"])
+                        if m:
+                            asn, org = m.group(1), m.group(2).strip()
+                        else:
+                            org = data["org"]
+                    return {"ip": ip, "asn": asn, "org": org, "country": country}
+            except Exception:
+                continue
+        return None
+
+    @classmethod
+    def discover_egress(cls, local_ip: str | None = None, zscaler_active: bool = False) -> dict:
+        """Discover both Direct ISP and Corporate Tunnel public egress points."""
+        direct = cls.get_public_egress(local_ip=local_ip) if local_ip else None
+        tunneled = cls.get_public_egress(local_ip=None)
+        return {
+            "direct": direct,
+            "tunneled": tunneled,
+            "has_tunnel": zscaler_active,
+        }
+
+
+def format_egress_display(egress_data: dict | None, is_tunnel: bool = False, has_tunnel: bool = False, direct_ip: str = "") -> str:
+    """Format public egress dictionary into a clean human-readable string."""
+    if not egress_data:
+        return "Pending / Offline"
+    ip = egress_data.get("ip", "Unknown")
+    asn = egress_data.get("asn", "")
+    org = egress_data.get("org", "")
+    country = egress_data.get("country", "")
+    details = []
+    if asn and org:
+        details.append(f"{asn} {org}")
+    elif asn:
+        details.append(asn)
+    elif org:
+        details.append(org)
+    if country:
+        details.append(country)
+    joined = ", ".join(details)
+    desc = f" ({joined})" if details else ""
+    base = f"{ip}{desc}"
+    if is_tunnel:
+        if not has_tunnel:
+            return f"{base} [Direct Route; No VPN Tunnel]"
+        elif direct_ip and ip == direct_ip:
+            return f"{base} [VPN Bypassed / Direct Egress]"
+    return base
+
 
 def get_route_info(target_ip: str, ifscope: str = "") -> dict:
     """Return route interface/gateway for target using macOS route command."""
@@ -1130,7 +1203,7 @@ class KeepAwakeController:
         self._task = None
 
 
-def init_logfile(network_info: dict | None = None, target_pool: list[str] | None = None, keep_awake_mode: str = "udp-tick") -> str:
+def init_logfile(network_info: dict | None = None, target_pool: list[str] | None = None, keep_awake_mode: str = "udp-tick", egress: dict | None = None) -> str:
     """
     Creates a pure RFC-4180 CSV logfile starting directly on Line 1 with the column headers,
     writes complete structured session metadata to <filename>.meta.json, and initializes
@@ -1144,6 +1217,9 @@ def init_logfile(network_info: dict | None = None, target_pool: list[str] | None
     iface = (network_info or {}).get("interface", "en0")
     wifi_meta = (network_info or {}).get("wifi") or _get_wifi_phy_metadata(iface)
     vpn_meta = _get_vpn_process_metadata(network_info)
+
+    if egress is None and network_info and "egress" in network_info:
+        egress = network_info.get("egress")
 
     pool_list = list(target_pool) if target_pool else list(DEFAULT_IPV4_TARGET_POOL)
     targets_str = ", ".join(pool_list)
@@ -1193,6 +1269,7 @@ def init_logfile(network_info: dict | None = None, target_pool: list[str] | None
             "pool": pool_list,
             "targets_string": targets_str,
         },
+        "egress": egress,
         "path_verification_note": "routing-based assurance only (not packet-capture proof).",
     }
     with open(_meta_sidecar_path(filename), "w", encoding="utf-8") as f:
@@ -1214,14 +1291,42 @@ def init_logfile(network_info: dict | None = None, target_pool: list[str] | None
             f.write(f"Keep-Awake:      {keep_awake_mode}{keep_awake_desc}\n")
             f.write(f"VPN Agent:       Zscaler (ProcessActive={vpn_meta['zscaler_process_active']}, TunnelIface={vpn_meta['tunnel_interface']}, VirtualGW={vpn_meta['tunnel_virtual_gateway']})\n")
             f.write(f"Target Pool:     {targets_str}\n")
+            direct_desc = format_egress_display(egress.get("direct") if egress else None)
+            tunneled_desc = format_egress_display(
+                egress.get("tunneled") if egress else None,
+                is_tunnel=True,
+                has_tunnel=vpn_meta.get("zscaler_process_active", False),
+                direct_ip=(egress.get("direct") or {}).get("ip", "") if egress else ""
+            )
+            f.write(f"Direct Egress:   {direct_desc}\n")
+            f.write(f"Tunnel Egress:   {tunneled_desc}\n")
             f.write(f"Data CSV:        {os.path.relpath(filename)}\n")
             f.write(f"Sidecar JSON:    {os.path.relpath(_meta_sidecar_path(filename))}\n")
             f.write("=" * 80 + "\n\n")
             f.write(f"[{_ts()}] [STARTUP] Monitoring initialized on {iface} (Local IP: {(network_info or {}).get('local_ip', 'N/A')}, Gateway: {(network_info or {}).get('gateway_ip', 'N/A')})\n")
+            if egress and (egress.get("direct") or egress.get("tunneled")):
+                f.write(f"[{_ts()}] [EGRESS] Direct ISP: {direct_desc} | Tunnel: {tunneled_desc}\n")
     except Exception:
         pass
 
     return filename
+
+
+def _update_meta_sidecar_egress(filename: str, egress: dict) -> None:
+    """Updates the egress section in the JSON metadata sidecar."""
+    try:
+        sidecar = _meta_sidecar_path(filename)
+        meta = {}
+        if os.path.exists(sidecar):
+            with open(sidecar, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+        meta["egress"] = egress
+        with open(sidecar, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+            f.write("\n")
+    except Exception:
+        pass
+
 
 
 def _write_log_footer(filename: str, status_counts: dict | None = None, reason: str = "Session Stopped", session_summary_text: str = "") -> None:
@@ -1664,13 +1769,35 @@ async def main():
     network_info["path_verification"] = assess_path_verification(network_info, current_isp_target, current_zsc_target)
     startup_pathv = network_info["path_verification"]
 
-    logfile = args.logfile if args.logfile else init_logfile(network_info=network_info, target_pool=target_pool, keep_awake_mode=args.keep_awake)
+    # Public egress discovery
+    egress_info = await asyncio.to_thread(
+        NetworkDiscovery.discover_egress,
+        network_info.get("local_ip"),
+        network_info["zscaler"].get("is_active", False)
+    )
+    network_info["egress"] = egress_info
+    current_egress = egress_info
+    egress_pending = (egress_info.get("direct") is None)
+    egress_resolving = False
+
+    logfile = args.logfile if args.logfile else init_logfile(network_info=network_info, target_pool=target_pool, keep_awake_mode=args.keep_awake, egress=egress_info)
     print("=" * 90)
     print(f" Tri-Path Split-Tunnel Network & Root-Cause Outage Analyzer (v{__version__})")
     print(" Pinpointing: [1] Local Network (LAN) · [2] Generic Internet (ISP) · [3] Corporate Tunnel (Zscaler)")
     print("=" * 90)
     print(f"Monitor Version:           {__version__} (log-schema: {__log_schema__})")
     print(f"Logging to:                {os.path.relpath(logfile)}")
+
+    direct_disp = format_egress_display(egress_info.get("direct"))
+    tunnel_disp = format_egress_display(
+        egress_info.get("tunneled"),
+        is_tunnel=True,
+        has_tunnel=network_info["zscaler"].get("is_active", False),
+        direct_ip=(egress_info.get("direct") or {}).get("ip", "")
+    )
+    print(f"Direct ISP Egress:         {direct_disp}")
+    print(f"Corporate Tunnel Egress:   {tunnel_disp}")
+
     if pool_rotation_enabled:
         print(f"Target Pool:               {', '.join(target_pool)} ({len(target_pool)} IPv4 Anycast targets)")
         print(f"Target Rotation:           ENABLED (every {int(args.rotate_interval)}s / {args.rotate_interval/60:.1f}m, initial: {init_target} [Slot {init_slot + 1}/{len(target_pool)}])")
@@ -1821,7 +1948,7 @@ async def main():
                     _write_log_footer(logfile, status_counts=status_counts, reason="END OF DAY — Rotated", session_summary_text=rot_summary)
                     old_logfile = logfile
                     # Open new logfile for the new day
-                    logfile = init_logfile(network_info=network_info, target_pool=target_pool, keep_awake_mode=args.keep_awake)
+                    logfile = init_logfile(network_info=network_info, target_pool=target_pool, keep_awake_mode=args.keep_awake, egress=current_egress)
                     current_log_date = today
                     # Reset overhead stats for fresh baseline
                     overhead = OverheadStats(window_size=args.overhead_window)
@@ -1838,12 +1965,14 @@ async def main():
             # or immediately if the current physical interface has vanished (e.g. docking cable unplugged)
             if should_rediscover(iteration, network_info):
                 fresh_info = NetworkDiscovery.discover_all()
-                if fresh_info['interface'] != network_info['interface'] or fresh_info['local_ip'] != network_info['local_ip']:
+                net_changed = (fresh_info['interface'] != network_info['interface'] or fresh_info['local_ip'] != network_info['local_ip'])
+                if net_changed:
                     network_info = fresh_info
 
                 # ── Tunnel interface change detection ─────────────────────────
                 new_zsc_iface = fresh_info['zscaler'].get('interface', '')
-                if new_zsc_iface and current_zsc_iface and new_zsc_iface != current_zsc_iface:
+                tunnel_changed = bool(new_zsc_iface and current_zsc_iface and new_zsc_iface != current_zsc_iface)
+                if tunnel_changed:
                     old_iface = current_zsc_iface
                     new_vgw = fresh_info['zscaler'].get('gateway_ip', 'N/A')
                     tun_msg = f"[{_ts()}] [TUNNEL CHANGE] {old_iface} → {new_zsc_iface} (vgw={new_vgw})"
@@ -1862,7 +1991,8 @@ async def main():
 
                 # ── LAN gateway identity change detection ─────────────────────
                 new_gw_ip = fresh_info['gateway_ip']
-                if lan_gateway_identity_changed(current_gw_ip, new_gw_ip):
+                gw_changed = lan_gateway_identity_changed(current_gw_ip, new_gw_ip)
+                if gw_changed:
                     old_gw_ip = current_gw_ip
                     lan_msg = f"[{_ts()}] [LAN CHANGE] {old_gw_ip} → {new_gw_ip} | baseline reset"
                     _log_event(_event_log_path(logfile), lan_msg)
@@ -1877,6 +2007,26 @@ async def main():
                         current_gw_ip = new_gw_ip
                         keep_awake_ctrl.update_gateway(new_gw_ip)
                 # ─────────────────────────────────────────────────────────────
+
+                # When a network interface, local IP, tunnel, or gateway switch occurs, re-check public egress
+                if net_changed or tunnel_changed or gw_changed:
+                    async def _recheck_egress_on_switch(lip: str | None, zactive: bool, logf: str):
+                        nonlocal current_egress
+                        try:
+                            fresh_eg = await asyncio.to_thread(NetworkDiscovery.discover_egress, lip, zactive)
+                            old_ip = (current_egress.get("direct") or {}).get("ip") if current_egress else ""
+                            new_ip = (fresh_eg.get("direct") or {}).get("ip") if fresh_eg else ""
+                            if new_ip and new_ip != old_ip:
+                                current_egress = fresh_eg
+                                network_info["egress"] = fresh_eg
+                                _update_meta_sidecar_egress(logf, fresh_eg)
+                                d_str = format_egress_display(fresh_eg.get("direct"))
+                                chg_msg = f"[{_ts()}] [EGRESS CHANGE] Direct ISP switched to: {d_str}"
+                                _log_event(_event_log_path(logf), chg_msg)
+                                print(chg_msg, flush=True)
+                        except Exception:
+                            pass
+                    asyncio.create_task(_recheck_egress_on_switch(fresh_info.get("local_ip"), fresh_info["zscaler"].get("is_active", False), logfile))
 
             gw_ip = network_info['gateway_ip']
             local_ip = network_info['local_ip']
@@ -1918,6 +2068,36 @@ async def main():
             ]
 
             lan_res, isp_res, zsc_res = await asyncio.gather(*tasks)
+
+            # Deferred public egress resolution if pending at startup
+            if egress_pending and not egress_resolving and (isp_res.ok or zsc_res.ok):
+                egress_resolving = True
+                async def _resolve_pending_egress(lip: str | None, zactive: bool, logf: str):
+                    nonlocal egress_pending, egress_resolving, current_egress
+                    try:
+                        resolved = await asyncio.to_thread(NetworkDiscovery.discover_egress, lip, zactive)
+                        if resolved.get("direct") or resolved.get("tunneled"):
+                            egress_pending = False
+                            current_egress = resolved
+                            network_info["egress"] = resolved
+                            _update_meta_sidecar_egress(logf, resolved)
+                            d_str = format_egress_display(resolved.get("direct"))
+                            t_str = format_egress_display(
+                                resolved.get("tunneled"),
+                                is_tunnel=True,
+                                has_tunnel=zactive,
+                                direct_ip=(resolved.get("direct") or {}).get("ip", "")
+                            )
+                            ev_msg = f"[{_ts()}] [EGRESS] Direct ISP: {d_str} | Tunnel: {t_str}"
+                            _log_event(_event_log_path(logf), ev_msg)
+                            if not args.silent:
+                                print(ev_msg, flush=True)
+                    except Exception:
+                        pass
+                    finally:
+                        egress_resolving = False
+
+                asyncio.create_task(_resolve_pending_egress(local_ip, network_info["zscaler"].get("is_active", False), logfile))
 
             # Evaluate Outage Classification Matrix
             zsc_virtual_gateway = network_info.get("zscaler", {}).get("gateway_ip", "")
