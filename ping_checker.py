@@ -1046,6 +1046,71 @@ def _get_wifi_phy_metadata(interface: str = "en0") -> dict:
     return telemetry
 
 
+def poll_wifi_phy_fast(interface: str = "en0") -> dict | None:
+    """Fast-path CoreWLAN ctypes query (<3ms, zero subprocesses) for radio state.
+
+    Returns dict with (channel, band, rssi, noise, snr, tx_rate, active_tx_rate, is_wifi)
+    or None if unavailable or unsupported.
+    """
+    if not interface or platform.system() != "Darwin":
+        return None
+
+    try:
+        objc_lib = ctypes.util.find_library("objc")
+        if not objc_lib:
+            return None
+        objc = ctypes.cdll.LoadLibrary(objc_lib)
+        corewlan = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreWLAN.framework/CoreWLAN")
+
+        objc.objc_getClass.restype = ctypes.c_void_p
+        objc.objc_getClass.argtypes = [ctypes.c_char_p]
+        objc.sel_registerName.restype = ctypes.c_void_p
+        objc.sel_registerName.argtypes = [ctypes.c_char_p]
+
+        msg_p_p = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)(("objc_msgSend", objc))
+        msg_l_p = ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p)(("objc_msgSend", objc))
+        msg_d_p = ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_void_p, ctypes.c_void_p)(("objc_msgSend", objc))
+
+        CWWiFiClient = objc.objc_getClass(b"CWWiFiClient")
+        if not CWWiFiClient:
+            return None
+        client = msg_p_p(CWWiFiClient, objc.sel_registerName(b"sharedWiFiClient"))
+        if not client:
+            return None
+        iface = msg_p_p(client, objc.sel_registerName(b"interface"))
+        if not iface:
+            return None
+
+        rssi = msg_l_p(iface, objc.sel_registerName(b"rssiValue"))
+        noise = msg_l_p(iface, objc.sel_registerName(b"noiseMeasurement"))
+        tx_rate = msg_d_p(iface, objc.sel_registerName(b"transmitRate"))
+
+        phy = {
+            "is_wifi": True,
+            "medium": "Wi-Fi",
+            "rssi": int(rssi) if rssi != 0 else None,
+            "noise": int(noise) if noise != 0 else None,
+            "snr": (int(rssi) - int(noise)) if (rssi != 0 and noise != 0) else None,
+            "tx_rate": round(tx_rate, 1) if tx_rate > 0 else None,
+            "active_tx_rate": round(tx_rate, 1) if tx_rate > 0 else None,
+            "channel": 0,
+            "band": "",
+        }
+
+        ch_obj = msg_p_p(iface, objc.sel_registerName(b"wlanChannel"))
+        if ch_obj:
+            ch_num = msg_l_p(ch_obj, objc.sel_registerName(b"channelNumber"))
+            band_num = msg_l_p(ch_obj, objc.sel_registerName(b"channelBand"))
+            if ch_num > 0:
+                phy["channel"] = int(ch_num)
+            band_map = {1: "2.4GHz", 2: "5GHz", 3: "6GHz"}
+            phy["band"] = band_map.get(band_num, "")
+
+        return phy
+    except Exception:
+        return None
+
+
 def format_wifi_link_speed(wifi_data: dict) -> str:
     """Format Wi-Fi link speed with active and cold/idle rates if distinct."""
     active = wifi_data.get("active_tx_rate") or wifi_data.get("tx_rate")
@@ -1952,6 +2017,7 @@ async def main():
     current_zsc_iface = network_info['zscaler'].get('interface', '')  # for tunnel change detection
     current_gw_ip = network_info['gateway_ip']   # for LAN gateway identity change detection
     current_wifi = dict(network_info.get("wifi", {}))  # for Wi-Fi roam / channel switch detection
+    last_wifi_phy_poll_time = 0.0  # throttle for fast-path CoreWLAN polling (max 1Hz)
     previous_zsc_status = startup_pathv.get('zsc_status')  # for immediate trace re-check on status change
     trace_reconcile_attempts = 0         # consecutive disagreeing re-checks since last transition
     trace_reconcile_max_attempts = 20    # cap on reconciliation retries per transition (~60s; real tunnel re-establishment observed taking up to ~12s)
@@ -1994,6 +2060,24 @@ async def main():
     try:
         while True:
             iteration += 1
+
+            # Fast-path real-time Wi-Fi PHY polling (every iteration, throttled to max 1Hz)
+            now_mono = time.monotonic()
+            if network_info.get("wifi", {}).get("is_wifi") and (now_mono - last_wifi_phy_poll_time >= 1.0):
+                last_wifi_phy_poll_time = now_mono
+                fast_phy = poll_wifi_phy_fast(network_info.get("interface", "en0"))
+                if fast_phy and fast_phy.get("channel", 0) > 0:
+                    current_wifi_meta = network_info.get("wifi", {})
+                    roam_msg = detect_wifi_roam(current_wifi_meta, fast_phy)
+                    if roam_msg:
+                        full_roam_msg = f"[{_ts()}] {roam_msg}"
+                        _log_event(_event_log_path(logfile), full_roam_msg)
+                        print(full_roam_msg, flush=True)
+                    for k in ("channel", "band", "rssi", "noise", "snr", "tx_rate", "active_tx_rate"):
+                        if fast_phy.get(k) is not None:
+                            current_wifi_meta[k] = fast_phy[k]
+                    network_info["wifi"] = current_wifi_meta
+                    current_wifi = dict(current_wifi_meta)
 
             # Target pool rotation evaluation
             if pool_rotation_enabled:

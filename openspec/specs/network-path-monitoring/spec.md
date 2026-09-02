@@ -247,11 +247,16 @@ The system SHALL capture both the pre-traffic cold/idle Wi-Fi physical link tran
 - **THEN** the console banner reports the rate simply as `<rate> Mbps` without the dual-rate qualification.
 
 ### Requirement: Continuous Wi-Fi Physical Layer Refresh
-The system SHALL continuously update the active Wi-Fi physical radio metadata (including Channel, Band, RSSI, and BSSID) during periodic network re-discovery, ensuring that subsequent CSV records reflect current physical medium state without requiring interface name or IP address changes.
+The system SHALL continuously refresh active Wi-Fi physical radio metadata (including Channel, Band, RSSI, Noise, SNR, and TxRate) on every monitoring iteration throttled to a maximum frequency of once per second (1Hz), ensuring that roaming transitions and signal shifts are captured in real-time and subsequent CSV records reflect current physical medium state.
 
 #### Scenario: Wi-Fi channel switches while interface and IP remain unchanged
 - **WHEN** the host roams or the access point switches radio channels (e.g. from Channel 36 to Channel 100) while the interface remains `en0` and the local IP is unchanged
-- **THEN** dynamic re-discovery updates the active Wi-Fi metadata in memory and subsequent CSV rows record the new channel and current RSSI.
+- **THEN** real-time polling updates the active Wi-Fi metadata in memory within 1 second and subsequent CSV rows record the new channel and current RSSI.
+
+#### Scenario: Real-time Wi-Fi polling rate-limiting
+- **WHEN** the monitoring loop runs at high frequency or under fast intervals
+- **THEN** physical Wi-Fi radio sampling is executed at most once per second to prevent unnecessary framework calls.
+
 
 
 
