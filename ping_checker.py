@@ -944,6 +944,8 @@ def _get_wifi_phy_metadata(interface: str = "en0") -> dict:
         "noise": None,
         "snr": None,
         "tx_rate": None,
+        "idle_tx_rate": None,
+        "active_tx_rate": None,
     }
     if not interface:
         telemetry["medium"] = "Unknown"
@@ -983,7 +985,9 @@ def _get_wifi_phy_metadata(interface: str = "en0") -> dict:
                         if telemetry["rssi"] is not None and telemetry["noise"] is not None:
                             telemetry["snr"] = telemetry["rssi"] - telemetry["noise"]
                         if tx_rate > 0:
-                            telemetry["tx_rate"] = round(tx_rate, 1)
+                            rounded_tx = round(tx_rate, 1)
+                            telemetry["tx_rate"] = rounded_tx
+                            telemetry["active_tx_rate"] = rounded_tx
 
                         ch_obj = msg_p_p(iface, objc.sel_registerName(b"wlanChannel"))
                         if ch_obj:
@@ -998,25 +1002,19 @@ def _get_wifi_phy_metadata(interface: str = "en0") -> dict:
     except Exception:
         pass
 
-    # 2. Check hardware port type via networksetup if medium is not yet determined
+    # 2. Query networksetup for hardware port medium name (<5ms)
     try:
         hw_res = subprocess.run(["networksetup", "-listallhardwareports"], capture_output=True, text=True, timeout=1)
         if hw_res.returncode == 0:
-            current_port = ""
+            current_port = None
             for line in hw_res.stdout.splitlines():
                 if line.startswith("Hardware Port:"):
                     current_port = line.split(":", 1)[1].strip()
-                elif line.startswith("Device:") and line.split(":", 1)[1].strip() == interface:
-                    if "Wi-Fi" in current_port or "AirPort" in current_port:
+                elif line.startswith("Device:") and f": {interface}" in line:
+                    if current_port == "Wi-Fi":
                         telemetry["is_wifi"] = True
                         telemetry["medium"] = "Wi-Fi"
-                    elif "Thunderbolt" in current_port:
-                        telemetry["medium"] = "Thunderbolt"
-                    elif "Ethernet" in current_port:
-                        telemetry["medium"] = "Ethernet"
-                    elif "Cellular" in current_port or "iPhone" in current_port:
-                        telemetry["medium"] = "Cellular"
-                    elif not telemetry.get("is_wifi"):
+                    else:
                         telemetry["medium"] = current_port or "Ethernet"
                     break
     except Exception:
@@ -1037,6 +1035,18 @@ def _get_wifi_phy_metadata(interface: str = "en0") -> dict:
         pass
 
     return telemetry
+
+
+def format_wifi_link_speed(wifi_data: dict) -> str:
+    """Format Wi-Fi link speed with active and cold/idle rates if distinct."""
+    active = wifi_data.get("active_tx_rate") or wifi_data.get("tx_rate")
+    idle = wifi_data.get("idle_tx_rate")
+    ssid = wifi_data.get("ssid") or "N/A"
+    if active is None or active <= 0:
+        return f"N/A (SSID: {ssid})" if ssid != "N/A" else "N/A"
+    if idle is not None and idle > 0 and round(idle, 1) != round(active, 1):
+        return f"{active:.1f} Mbps (Active) [Cold/Idle: {idle:.1f} Mbps] (SSID: {ssid})"
+    return f"{active:.1f} Mbps (SSID: {ssid})"
 
 
 def _get_vpn_process_metadata(info: dict | None = None) -> dict:
@@ -1232,7 +1242,14 @@ def init_logfile(network_info: dict | None = None, target_pool: list[str] | None
         rssi_str = f"RSSI: {wifi_meta['rssi']} dBm" if wifi_meta.get("rssi") is not None else "RSSI: N/A"
         noise_str = f"Noise: {wifi_meta['noise']} dBm" if wifi_meta.get("noise") is not None else "Noise: N/A"
         snr_str = f"SNR: {wifi_meta['snr']} dB" if wifi_meta.get("snr") is not None else "SNR: N/A"
-        tx_str = f"TxRate: {wifi_meta['tx_rate']} Mbps" if wifi_meta.get("tx_rate") is not None else "TxRate: N/A"
+        active_rate = wifi_meta.get("active_tx_rate") or wifi_meta.get("tx_rate")
+        idle_rate = wifi_meta.get("idle_tx_rate")
+        if active_rate is not None and idle_rate is not None and idle_rate > 0 and round(idle_rate, 1) != round(active_rate, 1):
+            tx_str = f"TxRate: {active_rate:.1f} Mbps [Cold/Idle: {idle_rate:.1f} Mbps]"
+        elif active_rate is not None:
+            tx_str = f"TxRate: {active_rate:.1f} Mbps"
+        else:
+            tx_str = "TxRate: N/A"
         ssid_val = wifi_meta.get("ssid") or "N/A"
         bssid_val = wifi_meta.get("bssid") or "N/A"
         iface_desc = f"{iface} (Wi-Fi, SSID: {ssid_val}, BSSID: {bssid_val}, {ch_str}, {rssi_str}, {noise_str}, {snr_str}, {tx_str})"
@@ -1769,7 +1786,13 @@ async def main():
     network_info["path_verification"] = assess_path_verification(network_info, current_isp_target, current_zsc_target)
     startup_pathv = network_info["path_verification"]
 
-    # Public egress discovery
+    # Preserve initial cold/idle Wi-Fi transmit rate
+    initial_wifi = network_info.get("wifi", {})
+    idle_tx_rate = initial_wifi.get("tx_rate")
+    if idle_tx_rate is not None:
+        initial_wifi["idle_tx_rate"] = idle_tx_rate
+
+    # Public egress discovery (generates natural HTTP warm-up traffic out en0)
     egress_info = await asyncio.to_thread(
         NetworkDiscovery.discover_egress,
         network_info.get("local_ip"),
@@ -1779,6 +1802,16 @@ async def main():
     current_egress = egress_info
     egress_pending = (egress_info.get("direct") is None)
     egress_resolving = False
+
+    # Start keep-awake early so radio stays warm
+    keep_awake_ctrl = KeepAwakeController(mode=args.keep_awake, gateway_ip=network_info.get("gateway_ip", ""))
+    await keep_awake_ctrl.start()
+
+    # Re-sample Wi-Fi PHY post-warmup to capture active operational transmit rate
+    if initial_wifi.get("is_wifi"):
+        active_wifi = _get_wifi_phy_metadata(network_info.get("interface", "en0"))
+        active_wifi["idle_tx_rate"] = idle_tx_rate
+        network_info["wifi"] = active_wifi
 
     logfile = args.logfile if args.logfile else init_logfile(network_info=network_info, target_pool=target_pool, keep_awake_mode=args.keep_awake, egress=egress_info)
     print("=" * 90)
@@ -1823,11 +1856,10 @@ async def main():
         rssi_disp = f"{wifi_data['rssi']} dBm" if wifi_data.get("rssi") is not None else "N/A"
         noise_disp = f"{wifi_data['noise']} dBm" if wifi_data.get("noise") is not None else "N/A"
         snr_disp = f"SNR: {wifi_data['snr']} dB" if wifi_data.get("snr") is not None else "SNR: N/A"
-        tx_disp = f"{wifi_data['tx_rate']} Mbps" if wifi_data.get("tx_rate") is not None else "N/A"
-        ssid_disp = wifi_data.get("ssid") or "N/A"
+        speed_disp = format_wifi_link_speed(wifi_data)
         print(f"Detected Interface:        {network_info['interface']} (Wi-Fi)")
         print(f"Wi-Fi Radio:               {ch_disp}, RSSI: {rssi_disp}, Noise: {noise_disp} ({snr_disp})")
-        print(f"Wi-Fi Link Speed:          {tx_disp} (SSID: {ssid_disp})")
+        print(f"Wi-Fi Link Speed:          {speed_disp}")
     else:
         print(f"Detected Interface:        {network_info['interface']} ({medium_name})")
 
@@ -1846,9 +1878,6 @@ async def main():
     zsc_v_tag = "VERIFIED" if startup_pathv.get("zsc_status") == "OK" else startup_pathv.get("zsc_status", "UNCERTAIN")
     print(f"Direct Path Verification:  {'VERIFIED' if startup_pathv['direct_verified'] else 'UNCERTAIN'} ({startup_pathv['direct_reason']})")
     print(f"Zscaler Verification:      {zsc_v_tag} ({startup_pathv['zsc_reason']})")
-
-    keep_awake_ctrl = KeepAwakeController(mode=args.keep_awake, gateway_ip=network_info.get("gateway_ip", ""))
-    await keep_awake_ctrl.start()
 
     trace_verify_every = 30
     trace_verify_task = None

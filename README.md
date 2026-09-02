@@ -26,6 +26,7 @@ The underlying tri-path split-tunnel monitoring pattern applies to any corporate
 - **Route-Based Path Verification**: Confirms per-iteration that the direct probe is truly using the physical interface (`DIRECT=OK`) and the VPN probe is routed via `utun` with the VPN process active (`ZSC=OK`).
 - **ICMP Traceroute Background Verification**: Runs `traceroute -I` (no elevated permissions) in the background every 30 iterations to confirm paths at the routing-hop level (`TRACE(D=OK,Z=OK)`).
 - **Dual-Path Public Egress & ASN Forensics**: Resolves both direct ISP egress (bound to physical interface) and tunneled corporate egress at launch and on network/tunnel transitions. Discovers public IPv4, Autonomous System Number (ASN), and organization (e.g. `80.60.70.196 (AS1136 KPN B.V., NL)` vs. `165.225.204.15 (AS14413 Zscaler Inc., NL)`). If offline at startup, displays `Pending / Offline` and quietly resolves as soon as the first ping succeeds.
+- **Dual Wi-Fi Link Speed Forensics**: Captures initial pre-traffic cold/idle Wi-Fi transmit rate (e.g. `286.0 Mbps` under battery/Low Power Mode) and re-samples after network warm-up to report the active operational rate (e.g. `1200.0 Mbps`), distinguishing low-power radio idling from genuine RF link degradation.
 - **Startup Tool Check**: Verifies all required CLI tools are present at launch; auto-disables traceroute verification if `traceroute` is absent.
 - **Resilient Mid-Run Discovery**: Auto-detects network interface switches (e.g. Ethernet ↔ Wi-Fi) without restarting.
 - **Incident Tracking**: Automatically opens and closes incidents on status transitions. Prints an `[INCIDENT #N RESOLVED]` summary line (domain, duration, timestamps) inline when connectivity recovers.
@@ -101,7 +102,7 @@ ISP Direct Probe Target:   149.112.112.112
 Zscaler Tunnel Target:     149.112.112.112
 Detected Interface:        en0 (Wi-Fi)
 Wi-Fi Radio:               Channel 100 (5GHz), RSSI: -41 dBm, Noise: -94 dBm (SNR: 53 dB)
-Wi-Fi Link Speed:          286.0 Mbps (SSID: MyNetwork)
+Wi-Fi Link Speed:          1200.0 Mbps (Active) [Cold/Idle: 286.0 Mbps] (SSID: MyNetwork)
 Keep-Awake Mode:           ENABLED (udp-tick @ 150ms; suppresses 802.11 PSM doze)
 Detected Local IPv4:       192.168.1.52 (dhcp)
 Detected LAN Gateway:      192.168.1.1
