@@ -39,6 +39,11 @@ The repository SHALL include a dedicated technical guide documenting macOS Wi-Fi
 - **WHEN** a new hardware, OS version, or configuration comparison is added later
 - **THEN** it can be recorded using the same reusable structure already established in the guide — a numbered Trace entry in Section 4 (hardware, power source, Low Power Mode state, Python version, targets, interval) and a corresponding row in the Section 5 "Recorded capture conditions" table — without needing to redesign the document's format
 
+#### Scenario: Guide documents architectural scope boundary between transport and application inspection
+
+- **WHEN** an engineer reads the technical scope and architecture section of the guide
+- **THEN** the guide explicitly delineates the Layer 3/4 transport-layer path scope (physical Wi-Fi PHY, routing, packet loss, transit latency) from Layer 7 application security inspection (SSL/TLS MITM decryption, synthetic CA injection, stream buffering/DLP TTFB delay, URL/tenant policy blocking, and certificate pinning failures), providing a clear triage table to differentiate transport failures from proxy inspection failures
+
 ### Requirement: Raw Trace Evidence Is Committed to the Repository
 
 Any trace added to this guide after this requirement exists SHALL have its raw `--logfile` output committed to `docs/traces/` in this repository (not left in a machine-local temp path), so its statistics are independently re-computable and visible to anyone pulling the repo — including a different contributor's machine, not just the one that captured it.

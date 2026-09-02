@@ -42,6 +42,72 @@ When diagnosing network performance and VPN split-tunneling on macOS, engineers 
 
 ---
 
+## 1.1 Architectural Scope: L3/L4 Transport Substrate vs. L7 Application Inspection
+
+When diagnosing network performance on enterprise laptops, engineers frequently conflate **network transport health** with **application-layer payload delivery**. To ensure forensic accuracy, `split-tunnel-monitor` draws a strict architectural boundary between **Layer 3/4 Transport-Layer Routing** and **Layer 7 Application Security Inspection**:
+
+```
+                             THE SEPARATION OF CONCERNS
+                             ═══════════════════════════
+
+   [LAYER 7: APPLICATION / CONTENT]   ❌ OUT OF SCOPE FOR SPLIT-TUNNEL-MONITOR
+   ┌──────────────────────────────┐
+   │ • TLS/SSL MITM Decryption    │ ──▶ Synthetic CA injection, cipher re-negotiation
+   │ • Stream Buffering & DLP     │ ──▶ Anti-malware, file payload scanning (adds TTFB)
+   │ • Policy Enforcement & Block │ ──▶ HTTP 403, tenant restrictions, CASB isolation
+   │ • Certificate Pinning Breaks │ ──▶ git, npm, pip, docker TLS trust failures
+   └──────────────────────────────┘
+                 ▲
+   ══════════════╪═════════════════════════════════════════════════════════════════════════
+                 ▼
+   [LAYER 3/4: NETWORK TRANSPORT]     ✅ IN SCOPE FOR SPLIT-TUNNEL-MONITOR
+   ┌──────────────────────────────┐
+   │ • 802.11 PHY Radio & PSM     │ ──▶ DTIM beacon queueing, sleep doze, AWDL scans
+   │ • Kernel Routing & ifscope   │ ──▶ Physical interface binding vs utun virtual adapter
+   │ • Network Path Loss & Jitter │ ──▶ ISP underlay vs Zscaler transit path (p50/p95)
+   │ • Failure Domain Matrix      │ ──▶ Triangulates LAN vs ISP WAN vs Tunnel reachability
+   └──────────────────────────────┘
+```
+
+### A. What This Tool Measures: The Network Pipe (Layers 1–4)
+`split-tunnel-monitor` evaluates the reachability, round-trip latency, and failure domains of the **underlying network transport paths**:
+1. **Physical Wireless Medium**: 802.11 PHY power-state transitions, DTIM beacon buffering, and AWDL off-channel social scanning.
+2. **Local OS Kernel & Routing**: Physical interface route scoping (`ifscope` binding via `ping -S`), BSD socket queueing, and DriverKit packet processing.
+3. **Layer 3/4 Transit Paths**: Concurrent ICMP echo transit times across three isolated domains (Local LAN Gateway, Direct ISP Underlay, and VPN Tunneled Destination via `utun`).
+
+**The Question Answered**: *"Is the underlying physical and virtual network pipe open, stable, and performing within physical latency limits?"*
+
+### B. What This Tool Does NOT Measure: The Content Engine (Layer 7)
+Even when `split-tunnel-monitor` shows a **100% `HEALTHY`** state with low latency (<10ms), user-facing web applications or developer CLI tools (`git`, `curl`, `pip`, `npm`) may still fail. These issues originate entirely within the **Layer 7 Secure Web Gateway (SWG) proxy and content inspection engine**:
+
+1. **SSL/TLS Interception (MITM) & Synthetic CA Decryption**:
+   * Enterprise proxies terminate client TLS handshakes using dynamically generated certificates signed by an enterprise Root CA.
+   * While macOS browsers trust this CA via MDM profile installation in the System Keychain, developer CLI tools (`git`, `pip`, `npm`, `docker`) frequently maintain isolated certificate bundles (e.g. `certifi`), resulting in `SSL: CERTIFICATE_VERIFY_FAILED` or `self-signed certificate in certificate chain` errors.
+   * **Transport Reality**: The network tunnel is 100% operational; the application rejected the proxy's synthetic cryptographic identity.
+2. **Stream Buffering & Payload Scanning Time-To-First-Byte (TTFB) Delay**:
+   * Next-generation firewalls and cloud proxies (Zscaler ZIA, Palo Alto Prisma) cannot inspect streaming payloads for malware or Data Loss Prevention (DLP) packet-by-packet.
+   * The proxy must buffer full MIME parts or chunked HTTP bodies into memory before scanning and releasing the first byte to the client, adding **200ms to 2,000ms+ of application-layer TTFB delay**.
+   * **Transport Reality**: 64-byte ICMP packets bypass application stream assemblers entirely, remaining flat at 8ms while HTTP web transfers feel stalled.
+3. **Application Policy Enforcement & Tenant Restrictions**:
+   * Enterprise SWGs enforce HTTP-level rules: URL categorization blocks (e.g. gambling, file sharing, newly-registered domains), cloud tenant restrictions (allowing `@corporate.com` accounts while blocking personal `@gmail.com` logins), and file-upload size limits.
+   * The proxy returns a synthetic HTTP 403 Forbidden or custom block splash page.
+   * **Transport Reality**: The network path is fully connected; the application request was intentionally terminated by security policy.
+4. **Certificate Pinning Hard Aborts**:
+   * Applications with hardcoded cryptographic public key pins (e.g. banking applications, cloud backup daemons, secure internal microservices) reject any synthetic certificate as an active MITM attack and sever the connection immediately.
+
+### C. Triage Guide: Network Failure vs. Application/Proxy Failure
+
+| Symptom | Tool Indication | Primary Investigation Domain |
+| :--- | :--- | :--- |
+| **Complete Internet Drop** | `[OUTAGE]` Local Network or ISP Issue | Physical Wi-Fi, Ethernet cable, DHCP lease, or ISP WAN modem. |
+| **Corporate Intranet / Internal Apps Down** | `[OUTAGE]` Zscaler Issue | VPN client process (`ZscalerTunnel`), virtual adapter (`utun`), or ZIA cloud edge. |
+| **High Ping / Zoom Audio Stalls** | High RTT across all 3 paths | Wi-Fi 802.11 PSM sleep doze, AWDL social scan, or EDR socket hooks. |
+| **`git clone` / `pip install` SSL Error** | `[HEALTHY]` (Low RTT, 0% Loss) | Missing corporate Root CA in Python/Node certificate store (`SSL_CERT_FILE`). |
+| **Specific Website Returns HTTP 403 / Block** | `[HEALTHY]` (Low RTT, 0% Loss) | Layer 7 SWG policy rule, URL filtering category, or tenant restriction. |
+| **Browser Spins on Initial Page Load (High TTFB)** | `[HEALTHY]` (Low RTT, 0% Loss) | Proxy stream buffering, DLP payload scanning, or PAC file evaluation. |
+
+---
+
 ## 2. Platform Comparison: Clean vs. Enterprise-Managed Mac (Primary Baseline: Low Power Mode OFF)
 
 To establish an authoritative apples-to-apples comparison, the primary benchmark baseline focuses on **Low Power Mode OFF (AC Power / Active D0 State)**. Because continuous background polling from enterprise daemons (Defender, Falcon, ZCC) prevents corporate Wi-Fi radios from dropping into 802.11 PSM sleep anyway, testing with Low Power Mode OFF eliminates idle power-saving sleep artifacts and isolates pure software and network overhead.
