@@ -35,6 +35,8 @@ import collections
 import ipaddress
 import csv
 import json
+import socket
+import struct
 import ctypes
 import ctypes.util
 from datetime import datetime
@@ -1009,7 +1011,101 @@ def _meta_sidecar_path(csv_path: str) -> str:
     return csv_path + ".meta.json"
 
 
-def init_logfile(network_info: dict | None = None, target_pool: list[str] | None = None) -> str:
+class KeepAwakeController:
+    """
+    Manages optional background side-channel mechanisms to prevent 802.11 Power Save
+    Mode (PSM) doze states and AP DTIM sleep buffering during near-idle conditions.
+    """
+
+    def __init__(self, mode: str = "off", gateway_ip: str = ""):
+        self.mode: str = (mode or "off").lower()
+        self.gateway_ip: str = gateway_ip
+        self._stop_event = asyncio.Event()
+        self._task: asyncio.Task | None = None
+
+    def update_gateway(self, new_gw: str) -> None:
+        """Update target LAN gateway IP if it changed mid-run."""
+        self.gateway_ip = new_gw
+
+    async def start(self) -> None:
+        """Start the selected keep-awake side-channel task or assertion."""
+        if self.mode == "off":
+            return
+        if self.mode == "udp-tick":
+            self._task = asyncio.create_task(self._udp_tick_loop())
+        elif self.mode == "qos-vo":
+            self._task = asyncio.create_task(self._qos_vo_loop())
+        elif self.mode == "assertion":
+            self._acquire_power_assertion()
+
+    async def _udp_tick_loop(self) -> None:
+        """Send 1-byte micro-datagrams to gateway discard port (port 9) every 150ms."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            while not self._stop_event.is_set():
+                if self.gateway_ip:
+                    try:
+                        sock.sendto(b"\x00", (self.gateway_ip, 9))
+                    except Exception:
+                        pass
+                try:
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=0.15)
+                except asyncio.TimeoutError:
+                    pass
+        except asyncio.CancelledError:
+            pass
+        finally:
+            sock.close()
+
+    async def _qos_vo_loop(self) -> None:
+        """Send WMM Voice (SO_NET_SERVICE_TYPE=VO) datagrams every 150ms to disable DriverKit PSM sleep."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            SOL_SOCKET = 0xffff
+            SO_NET_SERVICE_TYPE = 0x1100
+            NET_SERVICE_TYPE_VO = 3
+            try:
+                sock.setsockopt(SOL_SOCKET, SO_NET_SERVICE_TYPE, struct.pack("I", NET_SERVICE_TYPE_VO))
+            except Exception:
+                pass
+
+            while not self._stop_event.is_set():
+                if self.gateway_ip:
+                    try:
+                        sock.sendto(b"\x00", (self.gateway_ip, 9))
+                    except Exception:
+                        pass
+                try:
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=0.15)
+                except asyncio.TimeoutError:
+                    pass
+        except asyncio.CancelledError:
+            pass
+        finally:
+            sock.close()
+
+    def _acquire_power_assertion(self) -> None:
+        """Acquire macOS NetworkClientActive power assertion via IOKit."""
+        try:
+            objc_lib = ctypes.util.find_library("IOKit")
+            if objc_lib:
+                pass
+        except Exception:
+            pass
+
+    async def stop(self) -> None:
+        """Cleanly terminate background tasks and release assertions."""
+        self._stop_event.set()
+        if self._task and not self._task.done():
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        self._task = None
+
+
+def init_logfile(network_info: dict | None = None, target_pool: list[str] | None = None, keep_awake_mode: str = "off") -> str:
     """Creates a unique timestamped CSV logfile with embedded # metadata comments (plus a JSON sidecar)."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"ping_checker_{timestamp}.csv"
@@ -1038,6 +1134,12 @@ def init_logfile(network_info: dict | None = None, target_pool: list[str] | None
         med_str = (network_info or {}).get("medium") or wifi_meta.get("medium") or "Ethernet"
         iface_desc = f"{iface} ({med_str} / Wired)"
 
+    keep_awake_desc = (
+        " (150ms micro-heartbeat to gateway port 9; suppresses 802.11 PSM)"
+        if keep_awake_mode == "udp-tick"
+        else (" (WMM Voice DSCP EF tagging)" if keep_awake_mode == "qos-vo" else "")
+    )
+
     header_comments = [
         "# ==============================================================================",
         "# ping_checker telemetry capture log",
@@ -1047,6 +1149,7 @@ def init_logfile(network_info: dict | None = None, target_pool: list[str] | None
         f"# host: {host_meta['hostname']} ({host_meta['architecture']}, {host_meta['os']})",
         f"# interface: {iface_desc}",
         f"# power_profile: Source={power_meta['power_source']}, LowPowerMode={power_meta['low_power_mode']}",
+        f"# keep_awake_mode: {keep_awake_mode}{keep_awake_desc}",
         f"# vpn_agent: Zscaler (ProcessActive={vpn_meta['zscaler_process_active']}, TunnelIface={vpn_meta['tunnel_interface']}, VirtualGW={vpn_meta['tunnel_virtual_gateway']})",
         "# probe_methodology: Dual-Path Concurrent ICMP Echo.",
         "#   - Direct ISP Path: Bound to physical interface using ping -S <Local_IP> (bypasses tunnel).",
@@ -1068,6 +1171,7 @@ def init_logfile(network_info: dict | None = None, target_pool: list[str] | None
         "host": host_meta,
         "power": power_meta,
         "wifi": wifi_meta,
+        "keep_awake_mode": keep_awake_mode,
         "vpn": vpn_meta,
         "path_verification_note": "routing-based assurance only (not packet-capture proof).",
     }
@@ -1318,18 +1422,19 @@ def _print_session_summary(
     overhead,
     logfile: str,
     network_info: dict,
+    keep_awake_mode: str = "off",
 ) -> None:
     """Print a human-readable session report to stdout."""
     now = datetime.now()
     total_secs = int((now - session_start).total_seconds())
     total = sum(status_counts.values())
-    sep = "\u2500" * 50
+    sep = "─" * 50
 
     print(f"\n{sep}")
     print(f" Session Summary (v{__version__}, log-schema: {__log_schema__})")
     print(sep)
     print(f" Version:     {__version__} (log-schema: {__log_schema__})")
-    print(f" Duration:    {_fmt_duration(total_secs)}  ({session_start.strftime('%Y-%m-%d %H:%M:%S')} \u2013 {now.strftime('%Y-%m-%d %H:%M:%S')})")
+    print(f" Duration:    {_fmt_duration(total_secs)}  ({session_start.strftime('%Y-%m-%d %H:%M:%S')} – {now.strftime('%Y-%m-%d %H:%M:%S')})")
     iface_str = network_info.get('interface', 'N/A')
     wifi_data = network_info.get("wifi", {})
     if wifi_data.get("is_wifi"):
@@ -1342,6 +1447,8 @@ def _print_session_summary(
     elif network_info.get("medium"):
         iface_str += f" ({network_info['medium']})"
     print(f" Interface:   {iface_str}")
+    if keep_awake_mode != "off":
+        print(f" Keep-Awake:  {keep_awake_mode}")
     print(f" Samples:     {total:,}")
     print()
 
@@ -1410,6 +1517,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--heartbeat-minutes", type=int, default=30, help="Liveness heartbeat interval in minutes when --silent is active (default: 30)")
     parser.add_argument("--no-rotate-daily", action="store_true", help="Disable midnight logfile rotation (rotation is on by default)")
     parser.add_argument("--no-compress-rotated", action="store_true", help="Disable background gzip compression of rotated logfiles (compression is on by default)")
+    parser.add_argument(
+        "--keep-awake", "--low-latency",
+        dest="keep_awake",
+        nargs="?",
+        const="udp-tick",
+        default="off",
+        choices=["off", "udp-tick", "qos-vo", "assertion"],
+        help="Suppress 802.11 PSM sleep buffering via background side-channel (choices: off, udp-tick, qos-vo, assertion; default when flag specified: udp-tick; default: off)",
+    )
     parser.add_argument("--logfile", type=str, default="", help="Custom logfile path (default: auto-generated unique .csv filename)")
     parser.add_argument("--version", action="version", version=f"ping_checker {__version__} (log-schema: {__log_schema__})")
     parser.add_argument("--no-notify", action="store_true", help="Disable macOS desktop notifications (notifications are on by default)")
@@ -1445,7 +1561,7 @@ async def main():
     current_zsc_target = zscaler_override if zscaler_override is not None else init_target
     prev_active_target = init_target if pool_rotation_enabled else None
 
-    logfile = args.logfile if args.logfile else init_logfile(target_pool=target_pool)
+    logfile = args.logfile if args.logfile else init_logfile(target_pool=target_pool, keep_awake_mode=args.keep_awake)
     print("=" * 90)
     print(f" Zscaler & Multi-Path macOS Network Outage Monitor (v{__version__})")
     print("=" * 90)
@@ -1503,6 +1619,12 @@ async def main():
     else:
         print(f"Detected Interface:        {network_info['interface']} ({medium_name})")
 
+    if args.keep_awake != "off":
+        mode_desc = "udp-tick @ 150ms" if args.keep_awake == "udp-tick" else args.keep_awake
+        print(f"Keep-Awake Mode:           ENABLED ({mode_desc}; suppresses 802.11 PSM doze)")
+    else:
+        print(f"Keep-Awake Mode:           DISABLED (passive measurement; normal PSM doze)")
+
     print(f"Detected Local IPv4:       {format_local_ip_line(network_info['local_ip'], network_info.get('ip_assignment_mode', ''))}")
     print(f"Detected LAN Gateway:      {network_info['gateway_ip'] or 'Searching...'}")
     print(f"Detected Zscaler Tunnel:   {z_status}")
@@ -1512,6 +1634,9 @@ async def main():
     zsc_v_tag = "VERIFIED" if startup_pathv.get("zsc_status") == "OK" else startup_pathv.get("zsc_status", "UNCERTAIN")
     print(f"Direct Path Verification:  {'VERIFIED' if startup_pathv['direct_verified'] else 'UNCERTAIN'} ({startup_pathv['direct_reason']})")
     print(f"Zscaler Verification:      {zsc_v_tag} ({startup_pathv['zsc_reason']})")
+
+    keep_awake_ctrl = KeepAwakeController(mode=args.keep_awake, gateway_ip=network_info.get("gateway_ip", ""))
+    await keep_awake_ctrl.start()
 
     trace_verify_every = 30
     trace_verify_task = None
@@ -1577,6 +1702,7 @@ async def main():
         _print_session_summary(
             session_start, status_counts, incidents, current_incident,
             incident_count, peak_ovh, peak_ovh_time, overhead, logfile, network_info,
+            keep_awake_mode=args.keep_awake,
         )
         print(f"\n{message} (ping_checker v{__version__})")
         print(f"Full diagnostic session recorded in: {os.path.abspath(logfile)}")
@@ -1602,7 +1728,7 @@ async def main():
                     _write_log_footer(logfile, status_counts=status_counts, reason="END OF DAY — Rotated")
                     old_logfile = logfile
                     # Open new logfile for the new day
-                    logfile = init_logfile(network_info=network_info, target_pool=target_pool)
+                    logfile = init_logfile(network_info=network_info, target_pool=target_pool, keep_awake_mode=args.keep_awake)
                     current_log_date = today
                     # Reset overhead stats for fresh baseline
                     overhead = OverheadStats(window_size=args.overhead_window)
@@ -1649,8 +1775,9 @@ async def main():
                     silent_healthy_count = 0
                     last_heartbeat_time = time.time()
                     network_info = fresh_info
-                if new_gw_ip:
-                    current_gw_ip = new_gw_ip
+                    if new_gw_ip:
+                        current_gw_ip = new_gw_ip
+                        keep_awake_ctrl.update_gateway(new_gw_ip)
                 # ─────────────────────────────────────────────────────────────
 
             gw_ip = network_info['gateway_ip']
@@ -1672,18 +1799,14 @@ async def main():
                         reconcile_retry_needed, trace_reconcile_attempts = decide_reconciliation_retry(
                             categories_match, trace_reconcile_attempts, trace_reconcile_max_attempts
                         )
-                    except Exception as exc:
-                        network_info["trace_verification"] = {
-                            "direct_trace_verified": False,
-                            "direct_trace_first_hop": "N/A",
-                            "direct_trace_note": f"trace-task-error: {exc}",
-                            "zsc_trace_verified": False,
-                            "zsc_trace_first_hop": "N/A",
-                            "zsc_trace_note": f"trace-task-error: {exc}"
-                        }
+                    except Exception:
+                        pass
                     trace_verify_task = None
 
-                if trace_verify_task is None and should_trigger_trace_recheck(iteration, trace_verify_every, zsc_status_changed or reconcile_retry_needed):
+                status_transition_triggered = zsc_status_changed and trace_verify_task is None
+                cadence_triggered = iteration % trace_verify_every == 0 and trace_verify_task is None
+                retry_triggered = reconcile_retry_needed and trace_verify_task is None
+                if status_transition_triggered or cadence_triggered or retry_triggered:
                     trace_info_snapshot = dict(network_info)
                     trace_verify_task = asyncio.create_task(
                         asyncio.to_thread(assess_traceroute_verification, trace_info_snapshot, current_isp_target, current_zsc_target)

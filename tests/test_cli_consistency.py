@@ -109,7 +109,7 @@ class TestCliConsistency:
     def test_string_defaults_match_readme(self):
         """String argparse defaults must match the README table."""
         readme = _readme_table_flags()
-        for flag in ("--target-pool",):
+        for flag in ("--target-pool", "--keep-awake", "--low-latency"):
             action = _parser_flags().get(flag)
             if action is None or flag not in readme:
                 continue
