@@ -215,10 +215,15 @@ class TestSessionSummary:
 
     def test_write_log_footer(self, tmp_path):
         import json
-        from ping_checker import _write_log_footer, _meta_sidecar_path, __version__, __log_schema__
+        from ping_checker import _write_log_footer, _meta_sidecar_path, _event_log_path, __version__, __log_schema__
         test_file = tmp_path / "test.csv"
         test_file.write_text("Timestamp_ISO,...\n")
-        _write_log_footer(str(test_file), status_counts={"HEALTHY": 10, "DEGRADED": 2, "OUTAGE": 0, "INFO": 1}, reason="Session Stopped")
+        _write_log_footer(
+            str(test_file),
+            status_counts={"HEALTHY": 10, "DEGRADED": 2, "OUTAGE": 0, "INFO": 1},
+            reason="Session Stopped",
+            session_summary_text="--- SESSION SUMMARY TEST BLOCK ---",
+        )
 
         # The CSV file itself must remain untouched — no footer line appended.
         assert test_file.read_text() == "Timestamp_ISO,...\n"
@@ -231,5 +236,14 @@ class TestSessionSummary:
         assert meta["total_samples"] == 13
         assert meta["status_counts"] == {"HEALTHY": 10, "DEGRADED": 2, "OUTAGE": 0, "INFO": 1}
         assert "ended_at" in meta
+
+        # Event log must receive the session summary
+        event_log = _event_log_path(str(test_file))
+        assert (tmp_path / "test.log").exists()
+        with open(event_log) as f:
+            event_text = f.read()
+        assert "[SHUTDOWN] Monitoring ended: Session Stopped" in event_text
+        assert "--- SESSION SUMMARY TEST BLOCK ---" in event_text
+
 
 

@@ -334,25 +334,30 @@ Timestamp        LAN RTT   ISP Direct   Tunnel RTT   State / Explanation
 
 ---
 
-### 3.6 Side-Channel Keep-Awake Mechanisms (`--keep-awake` / `--low-latency`)
+### 3.6 Side-Channel Keep-Awake Mechanisms (`--keep-awake` / `--no-keep-awake`)
 
-To measure the absolute physical link latency floor at relaxed 2.0s intervals without triggering 802.11 PSM buffering or flooding the network with rapid ICMP probes, `split-tunnel-monitor` provides optional background side-channel keep-awake options:
+To measure the absolute physical link latency floor at relaxed 2.0s intervals without triggering 802.11 PSM buffering or flooding the network with rapid ICMP probes, `split-tunnel-monitor` provides background side-channel keep-awake options (enabled by default as `udp-tick`):
 
 ```bash
-# Default keep-awake mode (150ms micro-UDP heartbeat)
-python3 ping_checker.py --keep-awake
+# Default execution (udp-tick 150ms micro-UDP heartbeat active by default)
+python3 ping_checker.py
 
 # Explicit choice of keep-awake mechanism
 python3 ping_checker.py --keep-awake udp-tick
 python3 ping_checker.py --keep-awake qos-vo
+
+# Disable keep-awake for unboosted passive baseline forensics (PSM doze)
+python3 ping_checker.py --no-keep-awake
+# or
+python3 ping_checker.py --keep-awake off
 ```
 
 | Keep-Awake Mode | Underlying Protocol | Operating System & Radio Impact | Bandwidth Overhead |
 | :--- | :--- | :--- | :--- |
-| **`off`** *(Default)* | Passive Probing | Observes natural operating system PSM sleep and AP DTIM buffering (~50ms baseline with 21s dips). | 0 bps |
-| **`udp-tick`** *(Default with flag)* | 1-byte micro-datagram to LAN gateway discard port (port 9) every 150ms | Keeps inter-packet arrival time $< 200\text{ms}$ ($> 6\text{ pps}$), preventing the Wi-Fi MAC idle timer from triggering radio doze. Stabilizes resting LAN latency at **3.2ms – 6.0ms**. | ~500 bps (negligible) |
+| **`udp-tick`** *(Default)* | 1-byte micro-datagram to LAN gateway discard port (port 9) every 150ms | Keeps inter-packet arrival time $< 200\text{ms}$ ($> 6\text{ pps}$), preventing the Wi-Fi MAC idle timer from triggering radio doze. Stabilizes resting LAN latency at **3.2ms – 6.0ms**. | ~500 bps (negligible) |
 | **`qos-vo`** | WMM Voice socket option (`SO_NET_SERVICE_TYPE=NET_SERVICE_TYPE_VO`) | Instructs Darwin kernel and `IO80211Family` DriverKit that the socket carries real-time voice traffic (WMM UP=6 / DSCP EF), causing the driver to automatically disable PSM sleep timers. | ~300 bps |
 | **`assertion`** | macOS IOKit `kIOPMAssertionTypeNetworkClientActive` | Holds a system-level network power assertion to keep OS subsystems active. | 0 bps |
+| **`off`** *(via `--no-keep-awake`)* | Passive Probing | Observes natural operating system PSM sleep and AP DTIM buffering (~50ms baseline with 21s dips). | 0 bps |
 
 #### Empirical Verification: Undisturbed Passive PSM vs. Keep-Awake Side-Channel
 
@@ -407,7 +412,7 @@ The four keep-awake mechanisms were benchmarked back-to-back under identical env
 
 | Keep-Awake Mode | Underlying Mechanism | LAN Median ($p50$) | LAN Mean | Probes $<10\text{ms}$ | Probes $>30\text{ms}$ (PSM Sleep) | Max Spike | Physical Air-Link Verdict |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`off`** *(Default)* | Passive Probing | **9.2 ms** | 19.43 ms | 60.0% | **23.3%** | 69.1 ms | Natural Broadcom PSM doze; AP buffers replies in DTIM queue. |
+| **`off`** *(Passive Baseline)* | Passive Probing | **9.2 ms** | 19.43 ms | 60.0% | **23.3%** | 69.1 ms | Natural Broadcom PSM doze; AP buffers replies in DTIM queue. |
 | **`assertion`** | IOKit `kIOPMAssertionTypeNetworkClientActive` | **8.9 ms** | 15.84 ms | 73.3% | **16.7%** | 94.3 ms | Prevents OS sleep, but PHY RF transceiver still enters 802.11 doze. |
 | **`udp-tick`** | 1-byte UDP datagram to port 9 @ 150ms | **5.7 ms** | 16.37 ms | 73.3% | **16.7%** | 82.2 ms | Resets DriverKit timer; keeps AP station table in active state. |
 | **`qos-vo`** | WMM Voice `SO_NET_SERVICE_TYPE=VO` @ 150ms | **5.4 ms** | **9.73 ms** | **90.0%** | **8.3%** | 77.5 ms | **Superior Stability**: 90% of samples under 10ms; average latency under 10ms. |

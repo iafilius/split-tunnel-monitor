@@ -785,9 +785,13 @@ def advance_incident_lifecycle(status: str, fault: str, current_incident, incide
 
 
 def _compress_logfile_background(path: str) -> None:
-    """Compress a closed logfile with gzip at low CPU priority in a detached subprocess."""
+    """Compress closed logfile and its companion event log with gzip at low CPU priority in a detached subprocess."""
+    targets = [path]
+    event_path = _event_log_path(path)
+    if os.path.exists(event_path):
+        targets.append(event_path)
     subprocess.Popen(
-        ["nice", "-n", "10", "gzip", path],
+        ["nice", "-n", "10", "gzip", *targets],
         close_fds=True
     )
 
@@ -1005,10 +1009,27 @@ CSV_COLUMNS = [
 
 
 def _meta_sidecar_path(csv_path: str) -> str:
-    """Derive the JSON metadata sidecar path for a given CSV logfile path."""
+    """Derive the JSON metadata sidecar path (.meta.json) for a given CSV logfile path."""
     if csv_path.endswith(".csv"):
         return csv_path[:-4] + ".meta.json"
     return csv_path + ".meta.json"
+
+
+def _event_log_path(csv_path: str) -> str:
+    """Derive the companion human-readable event log path (.log) for a given CSV logfile path."""
+    if csv_path.endswith(".csv"):
+        return csv_path[:-4] + ".log"
+    return csv_path + ".log"
+
+
+def _log_event(event_log_path: str, message: str) -> None:
+    """Appends a timestamped event line to the human-readable .log file."""
+    try:
+        with open(event_log_path, "a", encoding="utf-8") as f:
+            f.write(message.rstrip("\n") + "\n")
+            f.flush()
+    except Exception:
+        pass
 
 
 class KeepAwakeController:
@@ -1105,8 +1126,12 @@ class KeepAwakeController:
         self._task = None
 
 
-def init_logfile(network_info: dict | None = None, target_pool: list[str] | None = None, keep_awake_mode: str = "off") -> str:
-    """Creates a unique timestamped CSV logfile with embedded # metadata comments (plus a JSON sidecar)."""
+def init_logfile(network_info: dict | None = None, target_pool: list[str] | None = None, keep_awake_mode: str = "udp-tick") -> str:
+    """
+    Creates a pure RFC-4180 CSV logfile starting directly on Line 1 with the column headers,
+    writes complete structured session metadata to <filename>.meta.json, and initializes
+    the companion human-readable event logfile <filename>.log.
+    """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"ping_checker_{timestamp}.csv"
 
@@ -1116,7 +1141,8 @@ def init_logfile(network_info: dict | None = None, target_pool: list[str] | None
     wifi_meta = (network_info or {}).get("wifi") or _get_wifi_phy_metadata(iface)
     vpn_meta = _get_vpn_process_metadata(network_info)
 
-    targets_str = ", ".join(target_pool) if target_pool else ", ".join(DEFAULT_IPV4_TARGET_POOL)
+    pool_list = list(target_pool) if target_pool else list(DEFAULT_IPV4_TARGET_POOL)
+    targets_str = ", ".join(pool_list)
     now_iso = datetime.now().astimezone().isoformat()
 
     if wifi_meta.get("is_wifi"):
@@ -1140,30 +1166,11 @@ def init_logfile(network_info: dict | None = None, target_pool: list[str] | None
         else (" (WMM Voice DSCP EF tagging)" if keep_awake_mode == "qos-vo" else "")
     )
 
-    header_comments = [
-        "# ==============================================================================",
-        "# ping_checker telemetry capture log",
-        f"# script_version: {__version__}",
-        f"# schema_version: {__log_schema__}",
-        f"# started_at: {now_iso}",
-        f"# host: {host_meta['hostname']} ({host_meta['architecture']}, {host_meta['os']})",
-        f"# interface: {iface_desc}",
-        f"# power_profile: Source={power_meta['power_source']}, LowPowerMode={power_meta['low_power_mode']}",
-        f"# keep_awake_mode: {keep_awake_mode}{keep_awake_desc}",
-        f"# vpn_agent: Zscaler (ProcessActive={vpn_meta['zscaler_process_active']}, TunnelIface={vpn_meta['tunnel_interface']}, VirtualGW={vpn_meta['tunnel_virtual_gateway']})",
-        "# probe_methodology: Dual-Path Concurrent ICMP Echo.",
-        "#   - Direct ISP Path: Bound to physical interface using ping -S <Local_IP> (bypasses tunnel).",
-        "#   - Tunnel Path: Standard routed ping to target (traverses default route / virtual tunnel).",
-        "#   - Overhead Delta: Direct_ISP_RTT - LAN_GW_RTT. Negative values occur during Wi-Fi 802.11 PSM DTIM wake-ups.",
-        f"# target_pool: {targets_str} (Rotated periodically to prevent remote edge rate-limiting)",
-        "# ==============================================================================",
-    ]
-
+    # 1. Write pure RFC-4180 CSV (Line 1 is strictly the column headers)
     with open(filename, "w", encoding="utf-8", newline="") as f:
-        for comment in header_comments:
-            f.write(comment + "\n")
         csv.writer(f).writerow(CSV_COLUMNS)
 
+    # 2. Write companion .meta.json sidecar
     meta = {
         "script_version": __version__,
         "log_schema": __log_schema__,
@@ -1172,17 +1179,48 @@ def init_logfile(network_info: dict | None = None, target_pool: list[str] | None
         "power": power_meta,
         "wifi": wifi_meta,
         "keep_awake_mode": keep_awake_mode,
+        "keep_awake": {
+            "mode": keep_awake_mode,
+            "interval_ms": 150 if keep_awake_mode in ("udp-tick", "qos-vo") else None,
+            "target_port": 9 if keep_awake_mode == "udp-tick" else None,
+        },
         "vpn": vpn_meta,
+        "targets": {
+            "pool": pool_list,
+            "targets_string": targets_str,
+        },
         "path_verification_note": "routing-based assurance only (not packet-capture proof).",
     }
     with open(_meta_sidecar_path(filename), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
         f.write("\n")
+
+    # 3. Pre-populate companion .log event file
+    event_log = _event_log_path(filename)
+    try:
+        with open(event_log, "w", encoding="utf-8") as f:
+            f.write("=" * 80 + "\n")
+            f.write(f" Zscaler & Multi-Path macOS Network Outage Monitor (v{__version__}) - Event Log\n")
+            f.write("=" * 80 + "\n")
+            f.write(f"Started At:      {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Host / OS:       {host_meta['hostname']} ({host_meta['architecture']}, {host_meta['os']})\n")
+            f.write(f"Interface:       {iface_desc}\n")
+            f.write(f"Power State:     Source={power_meta['power_source']}, LowPowerMode={power_meta['low_power_mode']}\n")
+            f.write(f"Keep-Awake:      {keep_awake_mode}{keep_awake_desc}\n")
+            f.write(f"VPN Agent:       Zscaler (ProcessActive={vpn_meta['zscaler_process_active']}, TunnelIface={vpn_meta['tunnel_interface']}, VirtualGW={vpn_meta['tunnel_virtual_gateway']})\n")
+            f.write(f"Target Pool:     {targets_str}\n")
+            f.write(f"Data CSV:        {os.path.relpath(filename)}\n")
+            f.write(f"Sidecar JSON:    {os.path.relpath(_meta_sidecar_path(filename))}\n")
+            f.write("=" * 80 + "\n\n")
+            f.write(f"[{_ts()}] [STARTUP] Monitoring initialized on {iface} (Local IP: {(network_info or {}).get('local_ip', 'N/A')}, Gateway: {(network_info or {}).get('gateway_ip', 'N/A')})\n")
+    except Exception:
+        pass
+
     return filename
 
 
-def _write_log_footer(filename: str, status_counts: dict | None = None, reason: str = "Session Stopped") -> None:
-    """Updates the CSV's JSON metadata sidecar with end-of-session information."""
+def _write_log_footer(filename: str, status_counts: dict | None = None, reason: str = "Session Stopped", session_summary_text: str = "") -> None:
+    """Updates the JSON metadata sidecar and appends the session summary to the .log event file."""
     try:
         sidecar = _meta_sidecar_path(filename)
         meta = {}
@@ -1204,8 +1242,14 @@ def _write_log_footer(filename: str, status_counts: dict | None = None, reason: 
         with open(sidecar, "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
             f.write("\n")
+
+        # Append summary block to the .log event file
+        event_log = _event_log_path(filename)
+        if session_summary_text:
+            _log_event(event_log, f"\n[{_ts()}] [SHUTDOWN] Monitoring ended: {reason}\n{session_summary_text}\n")
     except Exception:
         pass
+
 
 
 class OverheadStats:
@@ -1411,7 +1455,7 @@ def _fmt_duration(seconds: int) -> str:
     return f"{h}h {m}m {s}s" if h else f"{m}m {s}s"
 
 
-def _print_session_summary(
+def _format_session_summary(
     session_start: datetime,
     status_counts: dict,
     incidents: list,
@@ -1423,18 +1467,19 @@ def _print_session_summary(
     logfile: str,
     network_info: dict,
     keep_awake_mode: str = "off",
-) -> None:
-    """Print a human-readable session report to stdout."""
+) -> str:
+    """Formats the human-readable session report string."""
     now = datetime.now()
     total_secs = int((now - session_start).total_seconds())
     total = sum(status_counts.values())
     sep = "─" * 50
 
-    print(f"\n{sep}")
-    print(f" Session Summary (v{__version__}, log-schema: {__log_schema__})")
-    print(sep)
-    print(f" Version:     {__version__} (log-schema: {__log_schema__})")
-    print(f" Duration:    {_fmt_duration(total_secs)}  ({session_start.strftime('%Y-%m-%d %H:%M:%S')} – {now.strftime('%Y-%m-%d %H:%M:%S')})")
+    lines = []
+    lines.append(sep)
+    lines.append(f" Session Summary (v{__version__}, log-schema: {__log_schema__})")
+    lines.append(sep)
+    lines.append(f" Version:     {__version__} (log-schema: {__log_schema__})")
+    lines.append(f" Duration:    {_fmt_duration(total_secs)}  ({session_start.strftime('%Y-%m-%d %H:%M:%S')} – {now.strftime('%Y-%m-%d %H:%M:%S')})")
     iface_str = network_info.get('interface', 'N/A')
     wifi_data = network_info.get("wifi", {})
     if wifi_data.get("is_wifi"):
@@ -1446,17 +1491,17 @@ def _print_session_summary(
         iface_str += f" (Wi-Fi{ch_tag}{rssi_tag})"
     elif network_info.get("medium"):
         iface_str += f" ({network_info['medium']})"
-    print(f" Interface:   {iface_str}")
+    lines.append(f" Interface:   {iface_str}")
     if keep_awake_mode != "off":
-        print(f" Keep-Awake:  {keep_awake_mode}")
-    print(f" Samples:     {total:,}")
-    print()
+        lines.append(f" Keep-Awake:  {keep_awake_mode}")
+    lines.append(f" Samples:     {total:,}")
+    lines.append("")
 
     for s_name in ("HEALTHY", "DEGRADED", "OUTAGE", "INFO"):
         count = status_counts.get(s_name, 0)
         pct = (count / total * 100) if total else 0.0
-        print(f"   {s_name:<10} {pct:5.1f}%  ({count:,} samples)")
-    print()
+        lines.append(f"   {s_name:<10} {pct:5.1f}%  ({count:,} samples)")
+    lines.append("")
 
     # Build display list including any open incident
     display_incidents = list(incidents)
@@ -1471,19 +1516,19 @@ def _print_session_summary(
             "ongoing": True,
         })
 
-    print(" Incidents:")
+    lines.append(" Incidents:")
     if not display_incidents:
-        print("   No incidents")
+        lines.append("   No incidents")
     else:
         for inc in display_incidents[:10]:
             tag = " [ongoing at exit]" if inc.get("ongoing") else ""
-            print(f"   #{inc['number']}  {inc['start'].strftime('%Y-%m-%d %H:%M:%S')}  "
-                  f"{inc['worst_status']:<8}  {inc['domain']:<46}  {inc['duration_str']}{tag}")
+            lines.append(f"   #{inc['number']}  {inc['start'].strftime('%Y-%m-%d %H:%M:%S')}  "
+                         f"{inc['worst_status']:<8}  {inc['domain']:<46}  {inc['duration_str']}{tag}")
         if len(display_incidents) > 10:
-            print(f"   ... and {len(display_incidents) - 10} more")
-    print()
+            lines.append(f"   ... and {len(display_incidents) - 10} more")
+    lines.append("")
 
-    print(" Overhead (session):")
+    lines.append(" Overhead (session):")
     if overhead.baseline_p50 is not None:
         p50 = overhead.rolling_p50()
         p95 = overhead.rolling_p95()
@@ -1491,14 +1536,40 @@ def _print_session_summary(
         p95_str = f"{p95:+.1f}ms" if p95 is not None else "N/A"
         peak_str = (f"{peak_ovh:+.1f}ms at {peak_ovh_time.strftime('%Y-%m-%d %H:%M:%S')}"
                     if peak_ovh is not None else "N/A")
-        print(f"   baseline p50={overhead.baseline_p50:+.1f}ms  "
-              f"current p50={p50_str}  p95={p95_str}  peak={peak_str}")
+        lines.append(f"   baseline p50={overhead.baseline_p50:+.1f}ms  "
+                     f"current p50={p50_str}  p95={p95_str}  peak={peak_str}")
     else:
-        print("   N/A (baseline not yet established)")
+        lines.append("   N/A (baseline not yet established)")
 
-    print(sep)
-    print(f" Log: {os.path.abspath(logfile)}")
-    print(sep)
+    lines.append(sep)
+    lines.append(f" Data CSV:    {os.path.relpath(logfile)}")
+    lines.append(f" Sidecar:     {os.path.relpath(_meta_sidecar_path(logfile))}")
+    lines.append(f" Event Log:   {os.path.relpath(_event_log_path(logfile))}")
+    lines.append(sep)
+    return "\n".join(lines)
+
+
+def _print_session_summary(
+    session_start: datetime,
+    status_counts: dict,
+    incidents: list,
+    current_incident,
+    incident_count: int,
+    peak_ovh,
+    peak_ovh_time,
+    overhead,
+    logfile: str,
+    network_info: dict,
+    keep_awake_mode: str = "off",
+) -> None:
+    """Print a human-readable session report to stdout."""
+    summary_text = _format_session_summary(
+        session_start, status_counts, incidents, current_incident,
+        incident_count, peak_ovh, peak_ovh_time, overhead, logfile, network_info,
+        keep_awake_mode=keep_awake_mode,
+    )
+    print(f"\n{summary_text}")
+
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -1522,9 +1593,15 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="keep_awake",
         nargs="?",
         const="udp-tick",
-        default="off",
+        default="udp-tick",
         choices=["off", "udp-tick", "qos-vo", "assertion"],
-        help="Suppress 802.11 PSM sleep buffering via background side-channel (choices: off, udp-tick, qos-vo, assertion; default when flag specified: udp-tick; default: off)",
+        help="Suppress 802.11 PSM sleep buffering via background side-channel (choices: off, udp-tick, qos-vo, assertion; default: udp-tick)",
+    )
+    parser.add_argument(
+        "--no-keep-awake",
+        dest="no_keep_awake",
+        action="store_true",
+        help="Disable background keep-awake side-channel (equivalent to --keep-awake off; passive measurement with 802.11 PSM doze)",
     )
     parser.add_argument("--logfile", type=str, default="", help="Custom logfile path (default: auto-generated unique .csv filename)")
     parser.add_argument("--version", action="version", version=f"ping_checker {__version__} (log-schema: {__log_schema__})")
@@ -1536,6 +1613,8 @@ def _build_parser() -> argparse.ArgumentParser:
 async def main():
     parser = _build_parser()
     args = parser.parse_args()
+    if getattr(args, "no_keep_awake", False):
+        args.keep_awake = "off"
     args.trace_verify = not args.no_trace_verify
     args.rotate_daily = not args.no_rotate_daily
     args.compress_rotated = not args.no_compress_rotated
@@ -1561,23 +1640,6 @@ async def main():
     current_zsc_target = zscaler_override if zscaler_override is not None else init_target
     prev_active_target = init_target if pool_rotation_enabled else None
 
-    logfile = args.logfile if args.logfile else init_logfile(target_pool=target_pool, keep_awake_mode=args.keep_awake)
-    print("=" * 90)
-    print(f" Zscaler & Multi-Path macOS Network Outage Monitor (v{__version__})")
-    print("=" * 90)
-    print(f"Monitor Version:           {__version__} (log-schema: {__log_schema__})")
-    print(f"Logging to:                {os.path.abspath(logfile)}")
-    if pool_rotation_enabled:
-        print(f"Target Pool:               {', '.join(target_pool)} ({len(target_pool)} IPv4 Anycast targets)")
-        print(f"Target Rotation:           ENABLED (every {int(args.rotate_interval)}s / {args.rotate_interval/60:.1f}m, initial: {init_target} [Slot {init_slot + 1}/{len(target_pool)}])")
-    else:
-        if direct_override or zscaler_override:
-            print(f"Target Rotation:           DISABLED (static override: ISP={current_isp_target}, ZSC={current_zsc_target})")
-        else:
-            print(f"Target Rotation:           DISABLED (--rotate-interval 0, static target: {current_isp_target})")
-    print(f"ISP Direct Probe Target:   {current_isp_target}")
-    print(f"Zscaler Tunnel Target:     {current_zsc_target}")
-
     # Tool availability check
     tools = check_required_tools()
     missing = [t for t, v in tools.items() if not v["ok"]]
@@ -1593,14 +1655,31 @@ async def main():
         print(f"Tool Check:                OK ({', '.join(tools.keys())} available)")
 
     print("Performing dynamic path discovery...")
-
     network_info = NetworkDiscovery.discover_all()
-    
+    network_info["path_verification"] = assess_path_verification(network_info, current_isp_target, current_zsc_target)
+    startup_pathv = network_info["path_verification"]
+
+    logfile = args.logfile if args.logfile else init_logfile(network_info=network_info, target_pool=target_pool, keep_awake_mode=args.keep_awake)
+    print("=" * 90)
+    print(f" Zscaler & Multi-Path macOS Network Outage Monitor (v{__version__})")
+    print("=" * 90)
+    print(f"Monitor Version:           {__version__} (log-schema: {__log_schema__})")
+    print(f"Logging to:                {os.path.relpath(logfile)}")
+    if pool_rotation_enabled:
+        print(f"Target Pool:               {', '.join(target_pool)} ({len(target_pool)} IPv4 Anycast targets)")
+        print(f"Target Rotation:           ENABLED (every {int(args.rotate_interval)}s / {args.rotate_interval/60:.1f}m, initial: {init_target} [Slot {init_slot + 1}/{len(target_pool)}])")
+    else:
+        if direct_override or zscaler_override:
+            print(f"Target Rotation:           DISABLED (static override: ISP={current_isp_target}, ZSC={current_zsc_target})")
+        else:
+            print(f"Target Rotation:           DISABLED (--rotate-interval 0, static target: {current_isp_target})")
+    print(f"ISP Direct Probe Target:   {current_isp_target}")
+    print(f"Zscaler Tunnel Target:     {current_zsc_target}")
+
     z_iface = network_info['zscaler'].get('interface') or "N/A"
     z_vgw = network_info['zscaler'].get('gateway_ip') or "N/A"
     z_status = f"Active ({z_iface}, vgw={z_vgw})" if network_info['zscaler']['is_active'] else "Inactive / Standard Route"
-    network_info["path_verification"] = assess_path_verification(network_info, current_isp_target, current_zsc_target)
-    startup_pathv = network_info["path_verification"]
+
 
     wifi_data = network_info.get("wifi", {})
     medium_name = network_info.get("medium", "Ethernet")
@@ -1698,14 +1777,15 @@ async def main():
             pass
 
     def _finish(reason: str, message: str):
-        _write_log_footer(logfile, status_counts=status_counts, reason=reason)
-        _print_session_summary(
+        summary_text = _format_session_summary(
             session_start, status_counts, incidents, current_incident,
             incident_count, peak_ovh, peak_ovh_time, overhead, logfile, network_info,
             keep_awake_mode=args.keep_awake,
         )
+        _write_log_footer(logfile, status_counts=status_counts, reason=reason, session_summary_text=summary_text)
+        print(f"\n{summary_text}")
         print(f"\n{message} (ping_checker v{__version__})")
-        print(f"Full diagnostic session recorded in: {os.path.abspath(logfile)}")
+        print(f"Full diagnostic session recorded in: {os.path.relpath(logfile)}")
 
     try:
         while True:
@@ -1715,7 +1795,9 @@ async def main():
             if pool_rotation_enabled:
                 active_target, active_slot = get_active_target(target_pool, args.rotate_interval)
                 if prev_active_target is not None and active_target != prev_active_target:
-                    print(f"[{_ts()}] [TARGET ROTATION] Target changed: {prev_active_target} → {active_target} (Slot {active_slot + 1}/{len(target_pool)})", flush=True)
+                    rot_msg = f"[{_ts()}] [TARGET ROTATION] Target changed: {prev_active_target} → {active_target} (Slot {active_slot + 1}/{len(target_pool)})"
+                    _log_event(_event_log_path(logfile), rot_msg)
+                    print(rot_msg, flush=True)
                 prev_active_target = active_target
                 current_isp_target = active_target
                 current_zsc_target = active_target
@@ -1725,7 +1807,12 @@ async def main():
                 today = datetime.now().date()
                 if today != current_log_date:
                     # Write footer to old logfile
-                    _write_log_footer(logfile, status_counts=status_counts, reason="END OF DAY — Rotated")
+                    rot_summary = _format_session_summary(
+                        session_start, status_counts, incidents, current_incident,
+                        incident_count, peak_ovh, peak_ovh_time, overhead, logfile, network_info,
+                        keep_awake_mode=args.keep_awake,
+                    )
+                    _write_log_footer(logfile, status_counts=status_counts, reason="END OF DAY — Rotated", session_summary_text=rot_summary)
                     old_logfile = logfile
                     # Open new logfile for the new day
                     logfile = init_logfile(network_info=network_info, target_pool=target_pool, keep_awake_mode=args.keep_awake)
@@ -1735,10 +1822,11 @@ async def main():
                     silent_healthy_count = 0
                     last_heartbeat_time = time.time()
                     rotate_msg = f"[{_ts()}] [ROTATE] New logfile: {os.path.basename(logfile)} | baseline reset"
+                    _log_event(_event_log_path(logfile), rotate_msg)
                     print(rotate_msg, flush=True)  # always print, even in silent
                     if args.compress_rotated:
                         _compress_logfile_background(old_logfile)
-                        print(f"[{_ts()}] [COMPRESS] {os.path.basename(old_logfile)} → .gz (background)", flush=True)
+                        print(f"[{_ts()}] [COMPRESS] {os.path.basename(old_logfile)} & .log → .gz (background)", flush=True)
 
             # Periodically re-discover network configuration (every 10 iterations), if interface changed,
             # or immediately if the current physical interface has vanished (e.g. docking cable unplugged)
@@ -1752,7 +1840,9 @@ async def main():
                 if new_zsc_iface and current_zsc_iface and new_zsc_iface != current_zsc_iface:
                     old_iface = current_zsc_iface
                     new_vgw = fresh_info['zscaler'].get('gateway_ip', 'N/A')
-                    print(f"[{_ts()}] [TUNNEL CHANGE] {old_iface} → {new_zsc_iface} (vgw={new_vgw})", flush=True)
+                    tun_msg = f"[{_ts()}] [TUNNEL CHANGE] {old_iface} → {new_zsc_iface} (vgw={new_vgw})"
+                    _log_event(_event_log_path(logfile), tun_msg)
+                    print(tun_msg, flush=True)
                     # Reset overhead baseline — new tunnel has different latency characteristics
                     overhead = OverheadStats(window_size=args.overhead_window)
                     silent_healthy_count = 0
@@ -1768,7 +1858,9 @@ async def main():
                 new_gw_ip = fresh_info['gateway_ip']
                 if lan_gateway_identity_changed(current_gw_ip, new_gw_ip):
                     old_gw_ip = current_gw_ip
-                    print(f"[{_ts()}] [LAN CHANGE] {old_gw_ip} → {new_gw_ip} | baseline reset", flush=True)
+                    lan_msg = f"[{_ts()}] [LAN CHANGE] {old_gw_ip} → {new_gw_ip} | baseline reset"
+                    _log_event(_event_log_path(logfile), lan_msg)
+                    print(lan_msg, flush=True)
                     # Reset baselines — a different gateway has its own, independent history
                     lan_gateway_ever_responded = False
                     overhead = OverheadStats(window_size=args.overhead_window)
@@ -1840,7 +1932,9 @@ async def main():
             overhead.add_sample(isp_res, zsc_res)
             baseline_just_set = overhead.maybe_set_baseline(args.overhead_baseline_samples)
             if baseline_just_set:
-                print(f"\n[{_ts()}] [BASELINE] Overhead baseline established: p50={overhead.baseline_p50:+.1f}ms (after {args.overhead_baseline_samples} samples)")
+                base_msg = f"[{_ts()}] [BASELINE] Overhead baseline established: p50={overhead.baseline_p50:+.1f}ms (after {args.overhead_baseline_samples} samples)"
+                _log_event(_event_log_path(logfile), base_msg)
+                print(f"\n{base_msg}")
 
             # Log to file (always, regardless of silent mode)
             active_slot_idx = active_slot if pool_rotation_enabled else 0
@@ -1864,12 +1958,17 @@ async def main():
                 status, fault, current_incident, incident_count
             )
             if should_notify:
+                inc_open_msg = f"[{_ts()}] [INCIDENT #{current_incident['number']} OPEN] Status: {status} | Worst: {current_incident['worst_status']} | Fault: {fault} | LAN: {lan_res.format_rtt()}, ISP: {isp_res.format_rtt()}, Zscaler: {zsc_res.format_rtt()}"
+                _log_event(_event_log_path(logfile), inc_open_msg)
                 _notify(
                     "⚠ ping_checker",
                     f"{'Outage' if status == 'OUTAGE' else 'Degraded'}: {fault}",
                     not args.no_notify,
                 )
             if incident_just_closed is not None:
+                inc = incident_just_closed
+                inc_close_msg = f"[{inc['end_time'].strftime('%Y-%m-%d %H:%M:%S')}] [INCIDENT #{inc['number']} RESOLVED] Status: {status} | Duration: {inc['duration_str']} | Fault Domain: {inc['domain']}"
+                _log_event(_event_log_path(logfile), inc_close_msg)
                 incidents.append(incident_just_closed)
             # ─────────────────────────────────────────────────────────────────
 
@@ -1976,10 +2075,9 @@ async def main():
                 elapsed = time.time() - last_heartbeat_time
                 if elapsed >= args.heartbeat_minutes * 60:
                     bl_str = f"+{overhead.baseline_p50:.1f}ms" if overhead.baseline_p50 is not None else "N/A"
-                    print(
-                        f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [ALIVE] Healthy \xd7{silent_healthy_count} | OVH baseline: {bl_str} | log: {os.path.basename(logfile)}",
-                        flush=True
-                    )
+                    hb_msg = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [HEARTBEAT] Healthy \xd7{silent_healthy_count} | OVH baseline: {bl_str} | log: {os.path.basename(logfile)}"
+                    _log_event(_event_log_path(logfile), hb_msg)
+                    print(hb_msg, flush=True)
                     last_heartbeat_time = time.time()
                     silent_healthy_count = 0
 
@@ -1992,6 +2090,7 @@ async def main():
 
     except (KeyboardInterrupt, asyncio.CancelledError):
         _finish("Session Ended", "Monitoring stopped by user.")
+
 
 
 if __name__ == "__main__":

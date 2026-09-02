@@ -244,7 +244,7 @@ class TestVersionMetadata:
         assert isinstance(ping_checker.__log_schema__, int)
         assert ping_checker.__log_schema__ == 4
 
-    def test_init_logfile_writes_comment_headers_csv_header_and_meta_sidecar(self, tmp_path):
+    def test_init_logfile_writes_pure_csv_meta_sidecar_and_event_log(self, tmp_path):
         import ping_checker
         import os
         import json
@@ -255,23 +255,26 @@ class TestVersionMetadata:
             assert logfile.endswith(".csv")
             with open(logfile, newline="") as f:
                 lines = f.readlines()
-                # Initial lines should be # comment lines
-                comment_lines = [l for l in lines if l.startswith("#")]
-                assert len(comment_lines) >= 8
-                assert any("script_version: 1.4.0" in l for l in comment_lines)
-                assert any("schema_version: 4" in l for l in comment_lines)
-                assert any("Channel 100 (5GHz)" in l for l in comment_lines)
-                assert any("RSSI: -48 dBm" in l for l in comment_lines)
-                assert any("probe_methodology:" in l for l in comment_lines)
-                
-                # First non-comment line is the column header
-                non_comment_lines = [l for l in lines if not l.startswith("#")]
-                header = next(csv.reader([non_comment_lines[0]]))
+                # Line 1 must be strictly RFC-4180 column headers
+                assert len(lines) >= 1
+                header = next(csv.reader([lines[0]]))
                 assert header == ping_checker.CSV_COLUMNS
+                # No comment lines anywhere in the CSV
+                assert not any(l.startswith("#") for l in lines)
 
             sidecar = ping_checker._meta_sidecar_path(logfile)
+            assert os.path.exists(sidecar)
             with open(sidecar) as f:
                 meta = json.load(f)
+
+            event_log = ping_checker._event_log_path(logfile)
+            assert os.path.exists(event_log)
+            with open(event_log) as f:
+                event_text = f.read()
+            assert "Zscaler & Multi-Path macOS Network Outage Monitor" in event_text
+            assert "Channel 100 (5GHz)" in event_text
+            assert "RSSI: -48 dBm" in event_text
+            assert "[STARTUP] Monitoring initialized" in event_text
         finally:
             os.chdir(orig)
 
@@ -282,3 +285,4 @@ class TestVersionMetadata:
         assert "power" in meta
         assert "wifi" in meta
         assert "vpn" in meta
+

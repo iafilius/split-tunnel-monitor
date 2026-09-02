@@ -9,10 +9,16 @@ import json
 
 
 class TestKeepAwakeCliParser:
-    def test_default_is_off(self):
+    def test_default_is_udp_tick(self):
         parser = _build_parser()
         args = parser.parse_args([])
-        assert args.keep_awake == "off"
+        assert args.keep_awake == "udp-tick"
+        assert args.no_keep_awake is False
+
+    def test_no_keep_awake_flag(self):
+        parser = _build_parser()
+        args = parser.parse_args(["--no-keep-awake"])
+        assert args.no_keep_awake is True
 
     def test_flag_without_arg_defaults_to_udp_tick(self):
         parser = _build_parser()
@@ -35,6 +41,7 @@ class TestKeepAwakeCliParser:
         parser = _build_parser()
         with pytest.raises(SystemExit):
             parser.parse_args(["--keep-awake", "invalid-mode"])
+
 
 
 class TestKeepAwakeController:
@@ -74,6 +81,7 @@ class TestKeepAwakeController:
 class TestKeepAwakeTelemetryLogging:
     def test_init_logfile_includes_keep_awake_mode(self, tmp_path):
         import os
+        from ping_checker import _event_log_path
         orig = os.getcwd()
         os.chdir(tmp_path)
         try:
@@ -81,13 +89,23 @@ class TestKeepAwakeTelemetryLogging:
                 network_info={"interface": "en0", "medium": "Wi-Fi", "wifi": {"is_wifi": True, "channel": 100, "rssi": -48}},
                 keep_awake_mode="udp-tick"
             )
+            # CSV must be pure RFC-4180 without comments
             with open(logfile) as f:
                 content = f.read()
-            assert "# keep_awake_mode: udp-tick" in content
+            assert not any(l.startswith("#") for l in content.splitlines())
 
+            # Sidecar JSON contains keep_awake metadata
             sidecar = _meta_sidecar_path(logfile)
             with open(sidecar) as f:
                 meta = json.load(f)
             assert meta.get("keep_awake_mode") == "udp-tick"
+            assert meta.get("keep_awake", {}).get("mode") == "udp-tick"
+
+            # Event log contains human-readable keep_awake configuration
+            event_log = _event_log_path(logfile)
+            with open(event_log) as f:
+                event_content = f.read()
+            assert "Keep-Awake:      udp-tick" in event_content
         finally:
             os.chdir(orig)
+

@@ -313,7 +313,8 @@ python3 ping_checker.py [OPTIONS]
 | `--overhead-window`                    | `60`                                                                                    | Rolling overhead window size (samples)                                    |
 | `--overhead-baseline-samples`          | `30`                                                                                    | Samples before baseline is established (~60 s at default interval)        |
 | `--overhead-alert-ms`                  | `20.0`                                                                                  | Alert when rolling p50 exceeds baseline by this many ms                   |
-| `--keep-awake`, `--low-latency`        | `off`                                                                                   | Suppress 802.11 PSM sleep buffering via background side-channel (`udp-tick`, `qos-vo`, `assertion`) |
+| `--keep-awake`, `--low-latency`        | `udp-tick`                                                                              | Suppress 802.11 PSM sleep buffering via background side-channel (`udp-tick`, `qos-vo`, `assertion`) |
+| `--no-keep-awake`                      | off                                                                                     | Disable keep-awake side-channel (passive measurement with 802.11 PSM doze)|
 | `--logfile`                            | auto                                                                                    | Custom logfile path; default: `ping_checker_YYYYMMDD_HHMMSS.csv`          |
 | `--no-notify`                          | off                                                                                     | Disable macOS desktop notifications (on by default)                       |
 
