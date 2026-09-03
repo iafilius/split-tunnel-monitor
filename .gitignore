@@ -4,9 +4,12 @@
 *.csv
 *.csv.gz
 *.meta.json
+*.schema.json
 ping_checker_*.log*
 ping_checker_*.csv*
 ping_checker_*.meta.json
+ping_checker_*.schema.json
+
 
 # Except curated raw trace evidence committed for the Wi-Fi latency forensics guide
 !docs/traces/**/*.log

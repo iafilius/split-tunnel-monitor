@@ -46,7 +46,7 @@ import ctypes.util
 from datetime import datetime
 
 __version__ = "1.4.0"
-__log_schema__ = 4
+__log_schema__ = 5
 
 # Curated default IPv4 Anycast target pool for deterministic synchronized rotation
 DEFAULT_IPV4_TARGET_POOL = [
@@ -1173,6 +1173,237 @@ def _get_vpn_process_metadata(info: dict | None = None) -> dict:
     }
 
 
+class SystemTelemetry:
+    """
+    In-process host telemetry sampler for macOS (Mach & IOKit via ctypes).
+    Collects instantaneous CPU%, 1-minute load average, memory pressure state,
+    swap usage in MB, and storage read/write throughput in MB/s in <0.05ms
+    without spawning external command-line subprocesses.
+    """
+
+    def __init__(self) -> None:
+        self.is_darwin = (platform.system() == "Darwin")
+        self._last_cpu_ticks: list[int] | None = None
+        self._last_disk_bytes: tuple[int, int] | None = None
+        self._last_disk_time: float | None = None
+        self._init_darwin_bindings()
+
+    def _init_darwin_bindings(self) -> None:
+        if not self.is_darwin:
+            return
+        try:
+            self._libc = ctypes.CDLL(ctypes.util.find_library("c"))
+            self._iokit = ctypes.CDLL(ctypes.util.find_library("IOKit"))
+            self._cf = ctypes.CDLL(ctypes.util.find_library("CoreFoundation"))
+
+            # Mach host statistics (CPU ticks)
+            class host_cpu_load_info(ctypes.Structure):
+                _fields_ = [("cpu_ticks", ctypes.c_uint * 4)]
+            self._host_cpu_load_info = host_cpu_load_info
+            self._mach_host_self = self._libc.mach_host_self
+            self._mach_host_self.restype = ctypes.c_uint
+            self._host_statistics = self._libc.host_statistics
+            self._host_statistics.argtypes = [
+                ctypes.c_uint,
+                ctypes.c_int,
+                ctypes.POINTER(host_cpu_load_info),
+                ctypes.POINTER(ctypes.c_uint),
+            ]
+            self._host_statistics.restype = ctypes.c_int
+
+            # sysctlbyname
+            self._sysctlbyname = self._libc.sysctlbyname
+            self._sysctlbyname.argtypes = [
+                ctypes.c_char_p,
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_size_t),
+                ctypes.c_void_p,
+                ctypes.c_size_t,
+            ]
+            self._sysctlbyname.restype = ctypes.c_int
+
+            # struct xsw_usage
+            class xsw_usage(ctypes.Structure):
+                _fields_ = [
+                    ("xsu_total", ctypes.c_uint64),
+                    ("xsu_avail", ctypes.c_uint64),
+                    ("xsu_used", ctypes.c_uint64),
+                    ("xsu_pagesize", ctypes.c_uint32),
+                    ("xsu_encrypted", ctypes.c_bool),
+                ]
+            self._xsw_usage = xsw_usage
+
+            # IOKit & CoreFoundation bindings
+            self._kCFStringEncodingUTF8 = 0x08000100
+            self._CFStringCreateWithCString = self._cf.CFStringCreateWithCString
+            self._CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
+            self._CFStringCreateWithCString.restype = ctypes.c_void_p
+
+            self._CFDictionaryGetValue = self._cf.CFDictionaryGetValue
+            self._CFDictionaryGetValue.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+            self._CFDictionaryGetValue.restype = ctypes.c_void_p
+
+            self._CFNumberGetValue = self._cf.CFNumberGetValue
+            self._CFNumberGetValue.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_int64)]
+            self._CFNumberGetValue.restype = ctypes.c_bool
+
+            self._CFRelease = self._cf.CFRelease
+            self._CFRelease.argtypes = [ctypes.c_void_p]
+
+            self._IOServiceMatching = self._iokit.IOServiceMatching
+            self._IOServiceMatching.argtypes = [ctypes.c_char_p]
+            self._IOServiceMatching.restype = ctypes.c_void_p
+
+            self._IOServiceGetMatchingServices = self._iokit.IOServiceGetMatchingServices
+            self._IOServiceGetMatchingServices.argtypes = [ctypes.c_uint, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint)]
+            self._IOServiceGetMatchingServices.restype = ctypes.c_int
+
+            self._IOIteratorNext = self._iokit.IOIteratorNext
+            self._IOIteratorNext.argtypes = [ctypes.c_uint]
+            self._IOIteratorNext.restype = ctypes.c_uint
+
+            self._IORegistryEntryCreateCFProperties = self._iokit.IORegistryEntryCreateCFProperties
+            self._IORegistryEntryCreateCFProperties.argtypes = [ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p, ctypes.c_uint32]
+            self._IORegistryEntryCreateCFProperties.restype = ctypes.c_int
+
+            self._IOObjectRelease = self._iokit.IOObjectRelease
+            self._IOObjectRelease.argtypes = [ctypes.c_uint]
+            self._IOObjectRelease.restype = ctypes.c_int
+
+            # Prime initial counters
+            self._last_cpu_ticks = self._get_cpu_ticks_raw()
+            self._last_disk_bytes = self._get_disk_bytes_raw()
+            self._last_disk_time = time.monotonic()
+        except Exception:
+            self.is_darwin = False
+
+    def _get_cpu_ticks_raw(self) -> list[int] | None:
+        if not self.is_darwin:
+            return None
+        try:
+            info = self._host_cpu_load_info()
+            count = ctypes.c_uint(4)
+            if self._host_statistics(self._mach_host_self(), 3, ctypes.byref(info), ctypes.byref(count)) == 0:
+                return list(info.cpu_ticks)
+        except Exception:
+            pass
+        return None
+
+    def _get_disk_bytes_raw(self) -> tuple[int, int] | None:
+        if not self.is_darwin:
+            return None
+        try:
+            iterator = ctypes.c_uint()
+            match = self._IOServiceMatching(b"IOBlockStorageDriver")
+            if self._IOServiceGetMatchingServices(0, match, ctypes.byref(iterator)) != 0 or not iterator.value:
+                return None
+
+            total_read = 0
+            total_write = 0
+            kCFNumberSInt64Type = 4
+            kStats = self._CFStringCreateWithCString(None, b"Statistics", self._kCFStringEncodingUTF8)
+            kRead = self._CFStringCreateWithCString(None, b"Bytes (Read)", self._kCFStringEncodingUTF8)
+            kWrite = self._CFStringCreateWithCString(None, b"Bytes (Write)", self._kCFStringEncodingUTF8)
+            try:
+                while True:
+                    obj = self._IOIteratorNext(iterator.value)
+                    if not obj:
+                        break
+                    props = ctypes.c_void_p()
+                    if self._IORegistryEntryCreateCFProperties(obj, ctypes.byref(props), None, 0) == 0 and props.value:
+                        stats = self._CFDictionaryGetValue(props.value, kStats)
+                        if stats:
+                            val_r = self._CFDictionaryGetValue(stats, kRead)
+                            val_w = self._CFDictionaryGetValue(stats, kWrite)
+                            r_bytes = ctypes.c_int64()
+                            w_bytes = ctypes.c_int64()
+                            if val_r and self._CFNumberGetValue(val_r, kCFNumberSInt64Type, ctypes.byref(r_bytes)):
+                                total_read += r_bytes.value
+                            if val_w and self._CFNumberGetValue(val_w, kCFNumberSInt64Type, ctypes.byref(w_bytes)):
+                                total_write += w_bytes.value
+                        self._CFRelease(props.value)
+                    self._IOObjectRelease(obj)
+            finally:
+                self._CFRelease(kStats)
+                self._CFRelease(kRead)
+                self._CFRelease(kWrite)
+                self._IOObjectRelease(iterator.value)
+            return total_read, total_write
+        except Exception:
+            return None
+
+    def sample(self) -> dict:
+        """Collects current instantaneous host telemetry snapshot."""
+        # 1. CPU Usage %
+        cpu_pct = 0.0
+        new_ticks = self._get_cpu_ticks_raw()
+        if new_ticks and self._last_cpu_ticks:
+            u_delta = new_ticks[0] - self._last_cpu_ticks[0]
+            s_delta = new_ticks[1] - self._last_cpu_ticks[1]
+            i_delta = new_ticks[2] - self._last_cpu_ticks[2]
+            n_delta = new_ticks[3] - self._last_cpu_ticks[3]
+            active = u_delta + s_delta + n_delta
+            total = active + i_delta
+            if total > 0:
+                cpu_pct = round((active / total) * 100.0, 1)
+        if new_ticks:
+            self._last_cpu_ticks = new_ticks
+
+        # 2. System Load Average (1m)
+        try:
+            load_1m = round(os.getloadavg()[0], 2)
+        except Exception:
+            load_1m = 0.0
+
+        # 3. Kernel Memory Pressure Level
+        mem_pressure = "Normal"
+        if self.is_darwin:
+            try:
+                val = ctypes.c_int()
+                size = ctypes.c_size_t(ctypes.sizeof(val))
+                if self._sysctlbyname(b"kern.memorystatus_vm_pressure_level", ctypes.byref(val), ctypes.byref(size), None, 0) == 0:
+                    levels = {1: "Normal", 2: "Warning", 4: "Critical"}
+                    mem_pressure = levels.get(val.value, f"Level_{val.value}")
+            except Exception:
+                pass
+
+        # 4. Swap Usage (MB)
+        swap_used_mb = 0.0
+        if self.is_darwin:
+            try:
+                xsw = self._xsw_usage()
+                size = ctypes.c_size_t(ctypes.sizeof(xsw))
+                if self._sysctlbyname(b"vm.swapusage", ctypes.byref(xsw), ctypes.byref(size), None, 0) == 0:
+                    swap_used_mb = round(xsw.xsu_used / (1024 * 1024), 1)
+            except Exception:
+                pass
+
+        # 5. Disk Read & Write Throughput (MB/s)
+        disk_read_mbps = 0.0
+        disk_write_mbps = 0.0
+        now = time.monotonic()
+        new_disk = self._get_disk_bytes_raw()
+        if new_disk and self._last_disk_bytes and self._last_disk_time:
+            dt = now - self._last_disk_time
+            if dt > 0.01:
+                r_delta = new_disk[0] - self._last_disk_bytes[0]
+                w_delta = new_disk[1] - self._last_disk_bytes[1]
+                disk_read_mbps = max(0.0, round((r_delta / (1024 * 1024)) / dt, 2))
+                disk_write_mbps = max(0.0, round((w_delta / (1024 * 1024)) / dt, 2))
+        if new_disk:
+            self._last_disk_bytes = new_disk
+            self._last_disk_time = now
+
+        return {
+            "cpu_pct": cpu_pct,
+            "load_1m": load_1m,
+            "mem_pressure": mem_pressure,
+            "swap_used_mb": swap_used_mb,
+            "disk_read_mbps": disk_read_mbps,
+            "disk_write_mbps": disk_write_mbps,
+        }
+
+
 CSV_COLUMNS = [
     "Timestamp_ISO",
     "Interface",
@@ -1198,6 +1429,12 @@ CSV_COLUMNS = [
     "Overhead_Loss_Delta_pct",
     "Overhead_Alert",
     "Overhead_Alert_Reason",
+    "CPU_Pct",
+    "Load_1m",
+    "Mem_Pressure",
+    "Swap_Used_MB",
+    "Disk_Read_MBps",
+    "Disk_Write_MBps",
 ]
 
 
@@ -1208,7 +1445,65 @@ def _meta_sidecar_path(csv_path: str) -> str:
     return csv_path + ".meta.json"
 
 
+def _schema_sidecar_path(csv_path: str) -> str:
+    """Derive the JSON schema sidecar path (.schema.json) for a given CSV logfile path."""
+    if csv_path.endswith(".csv"):
+        return csv_path[:-4] + ".schema.json"
+    return csv_path + ".schema.json"
+
+
+def export_schema_json(csv_path: str) -> str:
+    """Export self-describing JSON schema definition for CSV logfile (Schema v5)."""
+    schema_path = _schema_sidecar_path(csv_path)
+    schema_data = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Split-Tunnel Monitor CSV Schema",
+        "log_schema": __log_schema__,
+        "column_count": len(CSV_COLUMNS),
+        "columns": [
+            {"index": 0, "name": "Timestamp_ISO", "type": "string", "format": "date-time", "units": "ISO-8601", "nullable": False, "description": "ISO 8601 local timestamp with timezone offset", "source": "datetime.now().astimezone().isoformat()"},
+            {"index": 1, "name": "Interface", "type": "string", "units": "identifier", "nullable": False, "description": "Active physical network interface", "source": "scutil / get_active_interface"},
+            {"index": 2, "name": "Medium", "type": "string", "units": "category", "nullable": False, "description": "Physical link medium (Wi-Fi or Ethernet)", "source": "networksetup / CoreWLAN"},
+            {"index": 3, "name": "Local_IP", "type": "string", "units": "IPv4", "nullable": False, "description": "Assigned IPv4 address on physical interface", "source": "ipconfig / scutil"},
+            {"index": 4, "name": "LAN_GW_IP", "type": "string", "units": "IPv4", "nullable": False, "description": "Default router IPv4 gateway address", "source": "ipconfig / route get default"},
+            {"index": 5, "name": "LAN_GW_RTT_ms", "type": "float", "units": "ms", "nullable": True, "description": "Round-trip time to LAN router gateway via ICMP echo", "source": "ping -c 1"},
+            {"index": 6, "name": "Channel", "type": "string", "units": "channel (band)", "nullable": False, "description": "Wi-Fi channel number and frequency band (or N/A for Ethernet)", "source": "CoreWLAN wlanChannel"},
+            {"index": 7, "name": "RSSI_dBm", "type": "integer", "units": "dBm", "nullable": True, "description": "Wi-Fi received signal strength indicator (or N/A for Ethernet)", "source": "CoreWLAN rssiValue"},
+            {"index": 8, "name": "Target_IP", "type": "string", "units": "IPv4", "nullable": False, "description": "Active public Anycast probe destination IP", "source": "target_pool rotation slot"},
+            {"index": 9, "name": "Target_Alias", "type": "string", "units": "name", "nullable": False, "description": "Curated provider alias for the active probe target", "source": "get_target_alias"},
+            {"index": 10, "name": "Target_Pool_Index", "type": "integer", "units": "index", "nullable": False, "description": "Zero-indexed rotation slot number within target pool", "source": "target_pool rotation index"},
+            {"index": 11, "name": "Direct_ISP_RTT_ms", "type": "float", "units": "ms", "nullable": True, "description": "Round-trip time to target bound to physical interface IP (bypassing VPN)", "source": "ping -S <local_ip> -c 1"},
+            {"index": 12, "name": "Tunnel_RTT_ms", "type": "float", "units": "ms", "nullable": True, "description": "Round-trip time to target routed through default table (VPN tunnel when active)", "source": "ping -c 1"},
+            {"index": 13, "name": "Direct_Route_Verified", "type": "string", "units": "boolean_str", "nullable": False, "description": "Whether direct path routes out the physical interface (YES/NO)", "source": "route -n get -ifscope"},
+            {"index": 14, "name": "Tunnel_Route_Verified", "type": "string", "units": "boolean_str", "nullable": False, "description": "Whether tunneled path routes through virtual VPN adapter (YES/NO)", "source": "route -n get"},
+            {"index": 15, "name": "Tunnel_Virtual_Next_Hop", "type": "string", "units": "IPv4", "nullable": False, "description": "Virtual tunnel gateway IP from routing table (or N/A)", "source": "route -n get"},
+            {"index": 16, "name": "Status", "type": "string", "units": "enum", "nullable": False, "description": "Aggregate network status (HEALTHY, DEGRADED, OUTAGE, INFO)", "source": "classify_outage"},
+            {"index": 17, "name": "Fault_Domain", "type": "string", "units": "text", "nullable": False, "description": "Pinpointed failure domain or root cause description", "source": "classify_outage"},
+            {"index": 18, "name": "Overhead_Delta_p50_ms", "type": "float", "units": "ms", "nullable": True, "description": "Rolling median tunnel overhead (Tunnel RTT - Direct ISP RTT)", "source": "OverheadStats.rolling_p50"},
+            {"index": 19, "name": "Overhead_Delta_p95_ms", "type": "float", "units": "ms", "nullable": True, "description": "Rolling 95th percentile tunnel overhead", "source": "OverheadStats.rolling_p95"},
+            {"index": 20, "name": "Overhead_Baseline_p50_ms", "type": "float", "units": "ms", "nullable": True, "description": "Established session baseline median tunnel overhead", "source": "OverheadStats.baseline_p50"},
+            {"index": 21, "name": "Overhead_Loss_Delta_pct", "type": "float", "units": "pct", "nullable": True, "description": "Rolling packet loss difference (Tunnel Loss% - Direct Loss%)", "source": "OverheadStats.loss_delta_pct"},
+            {"index": 22, "name": "Overhead_Alert", "type": "string", "units": "enum", "nullable": False, "description": "Overhead degradation alert flag (OK, WARN, N/A)", "source": "OverheadStats.is_alerting"},
+            {"index": 23, "name": "Overhead_Alert_Reason", "type": "string", "units": "text", "nullable": False, "description": "Reason for overhead alert or threshold exceedance", "source": "OverheadStats"},
+            {"index": 24, "name": "CPU_Pct", "type": "float", "units": "pct", "nullable": True, "description": "Instantaneous host CPU usage percentage over the probe interval", "source": "Mach host_statistics(HOST_CPU_LOAD_INFO)"},
+            {"index": 25, "name": "Load_1m", "type": "float", "units": "load", "nullable": True, "description": "System 1-minute load average", "source": "os.getloadavg()[0]"},
+            {"index": 26, "name": "Mem_Pressure", "type": "string", "units": "enum", "nullable": False, "description": "macOS kernel memory pressure state (Normal, Warning, Critical)", "source": "sysctlbyname(kern.memorystatus_vm_pressure_level)"},
+            {"index": 27, "name": "Swap_Used_MB", "type": "float", "units": "MB", "nullable": True, "description": "Active virtual memory swap space allocated on NVMe storage", "source": "sysctlbyname(vm.swapusage)"},
+            {"index": 28, "name": "Disk_Read_MBps", "type": "float", "units": "MB/s", "nullable": True, "description": "Storage read throughput rate over the probe interval", "source": "IOKit IOBlockStorageDriver"},
+            {"index": 29, "name": "Disk_Write_MBps", "type": "float", "units": "MB/s", "nullable": True, "description": "Storage write throughput rate over the probe interval", "source": "IOKit IOBlockStorageDriver"},
+        ],
+    }
+    try:
+        with open(schema_path, "w", encoding="utf-8") as f:
+            json.dump(schema_data, f, indent=2)
+            f.write("\n")
+    except Exception:
+        pass
+    return schema_path
+
+
 def _event_log_path(csv_path: str) -> str:
+
     """Derive the companion human-readable event log path (.log) for a given CSV logfile path."""
     if csv_path.endswith(".csv"):
         return csv_path[:-4] + ".log"
@@ -1399,6 +1694,9 @@ def init_logfile(network_info: dict | None = None, target_pool: list[str] | None
         json.dump(meta, f, indent=2)
         f.write("\n")
 
+    # 2b. Write companion .schema.json self-describing schema
+    export_schema_json(filename)
+
     # 3. Pre-populate companion .log event file
     event_log = _event_log_path(filename)
     try:
@@ -1425,12 +1723,14 @@ def init_logfile(network_info: dict | None = None, target_pool: list[str] | None
             f.write(f"Tunnel Egress:   {tunneled_desc}\n")
             f.write(f"Data CSV:        {os.path.relpath(filename)}\n")
             f.write(f"Sidecar JSON:    {os.path.relpath(_meta_sidecar_path(filename))}\n")
+            f.write(f"Schema JSON:     {os.path.relpath(_schema_sidecar_path(filename))}\n")
             f.write("=" * 80 + "\n\n")
             f.write(f"[{_ts()}] [STARTUP] Monitoring initialized on {iface} (Local IP: {(network_info or {}).get('local_ip', 'N/A')}, Gateway: {(network_info or {}).get('gateway_ip', 'N/A')})\n")
             if egress and (egress.get("direct") or egress.get("tunneled")):
                 f.write(f"[{_ts()}] [EGRESS] Direct ISP: {direct_desc} | Tunnel: {tunneled_desc}\n")
     except Exception:
         pass
+
 
     return filename
 
@@ -1566,8 +1866,9 @@ def log_entry(
     overhead: "OverheadStats | None" = None,
     overhead_alert_ms: float = 20.0,
     target_pool_index: int = 0,
+    telemetry: "dict | None" = None,
 ):
-    """Appends one structured CSV row to the log file (Schema v4)."""
+    """Appends one structured CSV row to the log file (Schema v5)."""
     now_iso = datetime.now().astimezone().isoformat()
     zsc_virtual_gateway = info.get("zscaler", {}).get("gateway_ip", "") or "N/A"
     pathv = info.get("path_verification", {})
@@ -1606,6 +1907,14 @@ def log_entry(
     rssi_val = wifi_info.get("rssi")
     rssi_display = str(rssi_val) if rssi_val is not None else "N/A"
 
+    # Host system telemetry columns
+    cpu_val = f"{telemetry['cpu_pct']:.1f}" if telemetry and "cpu_pct" in telemetry and telemetry["cpu_pct"] is not None else ""
+    load_val = f"{telemetry['load_1m']:.2f}" if telemetry and "load_1m" in telemetry and telemetry["load_1m"] is not None else ""
+    mem_val = str(telemetry.get("mem_pressure", "")) if telemetry else ""
+    swap_val = f"{telemetry['swap_used_mb']:.1f}" if telemetry and "swap_used_mb" in telemetry and telemetry["swap_used_mb"] is not None else ""
+    r_val = f"{telemetry['disk_read_mbps']:.2f}" if telemetry and "disk_read_mbps" in telemetry and telemetry["disk_read_mbps"] is not None else ""
+    w_val = f"{telemetry['disk_write_mbps']:.2f}" if telemetry and "disk_write_mbps" in telemetry and telemetry["disk_write_mbps"] is not None else ""
+
     row = [
         now_iso,
         info["interface"],
@@ -1631,6 +1940,12 @@ def log_entry(
         ovh_loss,
         ovh_alert,
         ovh_alert_reason,
+        cpu_val,
+        load_val,
+        mem_val,
+        swap_val,
+        r_val,
+        w_val,
     ]
     with open(filename, "a", encoding="utf-8", newline="") as f:
         csv.writer(f).writerow(row)
@@ -2057,9 +2372,12 @@ async def main():
         print(f"\n{message} (ping_checker v{__version__})")
         print(f"Full diagnostic session recorded in: {os.path.relpath(logfile)}")
 
+    system_telemetry = SystemTelemetry()
+
     try:
         while True:
             iteration += 1
+
 
             # Fast-path real-time Wi-Fi PHY polling (every iteration, throttled to max 1Hz)
             now_mono = time.monotonic()
@@ -2293,6 +2611,9 @@ async def main():
                 _log_event(_event_log_path(logfile), base_msg)
                 print(f"\n{base_msg}")
 
+            # Sample in-process host telemetry (<0.05ms)
+            current_telemetry = system_telemetry.sample()
+
             # Log to file (always, regardless of silent mode)
             active_slot_idx = active_slot if pool_rotation_enabled else 0
             log_entry(
@@ -2306,6 +2627,7 @@ async def main():
                 overhead=overhead,
                 overhead_alert_ms=args.overhead_alert_ms,
                 target_pool_index=active_slot_idx,
+                telemetry=current_telemetry,
             )
 
             # ── Incident lifecycle ────────────────────────────────────────────

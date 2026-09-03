@@ -51,7 +51,7 @@ def _read_row(logfile: str) -> list:
 
 
 class TestLogEntryFieldCount:
-    def test_24_fields_with_overhead(self, tmp_path):
+    def test_30_fields_with_overhead(self, tmp_path):
         logfile = str(tmp_path / "test.csv")
         with open(logfile, "w") as f:
             f.write("")
@@ -65,9 +65,9 @@ class TestLogEntryFieldCount:
                   "HEALTHY", "None", overhead=stats, target_pool_index=0)
 
         fields = _read_row(logfile)
-        assert len(fields) == len(CSV_COLUMNS) == 24, f"Expected 24 fields, got {len(fields)}: {fields}"
+        assert len(fields) == len(CSV_COLUMNS) == 30, f"Expected 30 fields, got {len(fields)}: {fields}"
 
-    def test_24_fields_without_overhead(self, tmp_path):
+    def test_30_fields_without_overhead(self, tmp_path):
         logfile = str(tmp_path / "test.csv")
         with open(logfile, "w") as f:
             f.write("")
@@ -76,7 +76,8 @@ class TestLogEntryFieldCount:
                   "HEALTHY", "None", overhead=None, target_pool_index=0)
 
         fields = _read_row(logfile)
-        assert len(fields) == 24
+        assert len(fields) == 30
+
 
 
 class TestLogEntryAtomicColumns:
@@ -242,7 +243,7 @@ class TestVersionMetadata:
     def test_log_schema_is_positive_integer(self):
         import ping_checker
         assert isinstance(ping_checker.__log_schema__, int)
-        assert ping_checker.__log_schema__ == 4
+        assert ping_checker.__log_schema__ == 5
 
     def test_init_logfile_writes_pure_csv_meta_sidecar_and_event_log(self, tmp_path):
         import ping_checker
@@ -267,6 +268,14 @@ class TestVersionMetadata:
             with open(sidecar) as f:
                 meta = json.load(f)
 
+            schema_sidecar = ping_checker._schema_sidecar_path(logfile)
+            assert os.path.exists(schema_sidecar)
+            with open(schema_sidecar) as f:
+                schema = json.load(f)
+            assert schema["log_schema"] == 5
+            assert schema["column_count"] == 30
+            assert len(schema["columns"]) == 30
+
             event_log = ping_checker._event_log_path(logfile)
             assert os.path.exists(event_log)
             with open(event_log) as f:
@@ -275,6 +284,8 @@ class TestVersionMetadata:
             assert "Channel 100 (5GHz)" in event_text
             assert "RSSI: -48 dBm" in event_text
             assert "[STARTUP] Monitoring initialized" in event_text
+            assert "Schema JSON:" in event_text
+
         finally:
             os.chdir(orig)
 
