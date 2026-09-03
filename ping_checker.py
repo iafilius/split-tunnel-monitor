@@ -1794,7 +1794,48 @@ class KeepAwakeController:
         self._task = None
 
 
-def init_logfile(network_info: dict | None = None, target_pool: list[str] | None = None, keep_awake_mode: str = "udp-tick", egress: dict | None = None) -> str:
+def _build_startup_config(
+    pool_rotation_enabled: bool,
+    rotate_interval: float,
+    current_isp_target: str,
+    current_zsc_target: str,
+    init_target: str,
+    init_slot: int,
+    pool_size: int,
+    direct_override: str | None,
+    zscaler_override: str | None,
+    path_verification: dict | None,
+    trace_verify: bool,
+    trace_verify_every: int,
+    silent: bool,
+    heartbeat_minutes: int,
+    rotate_daily: bool,
+    compress_rotated: bool,
+) -> dict:
+    """Bundle the startup-time operational fields needed for the `.log` header, mirroring the console banner."""
+    return {
+        "rotation": {
+            "enabled": pool_rotation_enabled,
+            "interval": rotate_interval,
+            "isp_target": current_isp_target,
+            "zsc_target": current_zsc_target,
+            "init_target": init_target,
+            "init_slot": init_slot,
+            "pool_size": pool_size,
+            "direct_override": direct_override,
+            "zscaler_override": zscaler_override,
+        },
+        "path_verification": path_verification or {},
+        "trace_verify": trace_verify,
+        "trace_verify_every": trace_verify_every,
+        "silent": silent,
+        "heartbeat_minutes": heartbeat_minutes,
+        "rotate_daily": rotate_daily,
+        "compress_rotated": compress_rotated,
+    }
+
+
+def init_logfile(network_info: dict | None = None, target_pool: list[str] | None = None, keep_awake_mode: str = "udp-tick", egress: dict | None = None, startup_config: dict | None = None) -> str:
     """
     Creates a pure RFC-4180 CSV logfile starting directly on Line 1 with the column headers,
     writes complete structured session metadata to <filename>.meta.json, and initializes
@@ -1900,6 +1941,37 @@ def init_logfile(network_info: dict | None = None, target_pool: list[str] | None
             )
             f.write(f"Direct Egress:   {direct_desc}\n")
             f.write(f"Tunnel Egress:   {tunneled_desc}\n")
+            if startup_config:
+                rot = startup_config.get("rotation", {})
+                f.write(f"Monitor Version: {__version__} (log-schema: {__log_schema__})\n")
+                f.write(f"Local IPv4:      {format_local_ip_line((network_info or {}).get('local_ip', ''), (network_info or {}).get('ip_assignment_mode', ''))}\n")
+                if rot.get("enabled"):
+                    interval = rot.get("interval", 0)
+                    f.write(f"Target Rotation: ENABLED (every {int(interval)}s / {interval/60:.1f}m, initial: {rot.get('init_target')} [Slot {rot.get('init_slot', 0) + 1}/{rot.get('pool_size', 0)}])\n")
+                elif rot.get("direct_override") or rot.get("zscaler_override"):
+                    f.write(f"Target Rotation: DISABLED (static override: ISP={rot.get('isp_target')}, ZSC={rot.get('zsc_target')})\n")
+                else:
+                    f.write(f"Target Rotation: DISABLED (--rotate-interval 0, static target: {rot.get('isp_target')})\n")
+                f.write(f"Probe Targets:   ISP Direct={rot.get('isp_target')}, Zscaler Tunnel={rot.get('zsc_target')}\n")
+                pathv = startup_config.get("path_verification") or {}
+                zsc_v_tag = "VERIFIED" if pathv.get("zsc_status") == "OK" else pathv.get("zsc_status", "UNCERTAIN")
+                f.write(f"Path Verify:     Direct={'VERIFIED' if pathv.get('direct_verified') else 'UNCERTAIN'} ({pathv.get('direct_reason', 'N/A')}), Zscaler={zsc_v_tag} ({pathv.get('zsc_reason', 'N/A')})\n")
+                if startup_config.get("trace_verify"):
+                    f.write(f"Trace Verify:    ENABLED (background, every {startup_config.get('trace_verify_every', 30)} iterations)\n")
+                else:
+                    f.write("Trace Verify:    DISABLED\n")
+                if startup_config.get("silent"):
+                    f.write(f"Silent Mode:     ENABLED (alerts only; heartbeat every {startup_config.get('heartbeat_minutes')} min)\n")
+                else:
+                    f.write("Silent Mode:     DISABLED\n")
+                if startup_config.get("rotate_daily"):
+                    f.write("Daily Rotation:  ENABLED (rotates at midnight, baseline resets)\n")
+                    if startup_config.get("compress_rotated"):
+                        f.write("Rotated Compress: ENABLED (gzip background, nice 10)\n")
+                    else:
+                        f.write("Rotated Compress: DISABLED (--no-compress-rotated)\n")
+                else:
+                    f.write("Daily Rotation:  DISABLED (--no-rotate-daily set; single session logfile)\n")
             f.write(f"Data CSV:        {os.path.relpath(filename)}\n")
             f.write(f"Sidecar JSON:    {os.path.relpath(_meta_sidecar_path(filename))}\n")
             f.write(f"Schema JSON:     {os.path.relpath(_schema_sidecar_path(filename))}\n")
@@ -2368,6 +2440,7 @@ async def main():
     current_isp_target = direct_override if direct_override is not None else init_target
     current_zsc_target = zscaler_override if zscaler_override is not None else init_target
     prev_active_target = init_target if pool_rotation_enabled else None
+    trace_verify_every = 30
 
     # Tool availability check
     tools = check_required_tools()
@@ -2416,7 +2489,15 @@ async def main():
         active_wifi["idle_tx_rate"] = idle_tx_rate
         network_info["wifi"] = active_wifi
 
-    logfile = args.logfile if args.logfile else init_logfile(network_info=network_info, target_pool=target_pool, keep_awake_mode=args.keep_awake, egress=egress_info)
+    logfile = args.logfile if args.logfile else init_logfile(
+        network_info=network_info, target_pool=target_pool, keep_awake_mode=args.keep_awake, egress=egress_info,
+        startup_config=_build_startup_config(
+            pool_rotation_enabled, args.rotate_interval, current_isp_target, current_zsc_target,
+            init_target, init_slot, len(target_pool), direct_override, zscaler_override,
+            startup_pathv, args.trace_verify, trace_verify_every, args.silent, args.heartbeat_minutes,
+            args.rotate_daily, args.compress_rotated,
+        )
+    )
     print("=" * 90)
     print(f" Tri-Path Split-Tunnel Network & Root-Cause Outage Analyzer (v{__version__})")
     print(" Pinpointing: [1] Local Network (LAN) · [2] Generic Internet (ISP) · [3] Corporate Tunnel (Zscaler)")
@@ -2481,7 +2562,6 @@ async def main():
     print(f"Direct Path Verification:  {'VERIFIED' if startup_pathv['direct_verified'] else 'UNCERTAIN'} ({startup_pathv['direct_reason']})")
     print(f"Zscaler Verification:      {zsc_v_tag} ({startup_pathv['zsc_reason']})")
 
-    trace_verify_every = 30
     trace_verify_task = None
     if args.trace_verify:
         print(f"Trace Verification:        ENABLED (background, every {trace_verify_every} iterations)")
@@ -2602,7 +2682,16 @@ async def main():
                     _write_log_footer(logfile, status_counts=status_counts, reason="END OF DAY — Rotated", session_summary_text=rot_summary)
                     old_logfile = logfile
                     # Open new logfile for the new day
-                    logfile = init_logfile(network_info=network_info, target_pool=target_pool, keep_awake_mode=args.keep_awake, egress=current_egress)
+                    active_slot_for_rotation = active_slot if pool_rotation_enabled else init_slot
+                    logfile = init_logfile(
+                        network_info=network_info, target_pool=target_pool, keep_awake_mode=args.keep_awake, egress=current_egress,
+                        startup_config=_build_startup_config(
+                            pool_rotation_enabled, args.rotate_interval, current_isp_target, current_zsc_target,
+                            current_isp_target, active_slot_for_rotation, len(target_pool), direct_override, zscaler_override,
+                            network_info.get("path_verification"), args.trace_verify, trace_verify_every, args.silent,
+                            args.heartbeat_minutes, args.rotate_daily, args.compress_rotated,
+                        )
+                    )
                     current_log_date = today
                     # Reset overhead stats for fresh baseline
                     overhead = OverheadStats(window_size=args.overhead_window)

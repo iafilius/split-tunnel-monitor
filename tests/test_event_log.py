@@ -18,6 +18,7 @@ from ping_checker import (
     _meta_sidecar_path,
     _log_event,
     _compress_logfile_background,
+    _build_startup_config,
     init_logfile,
     _write_log_footer,
     CSV_COLUMNS,
@@ -157,6 +158,144 @@ class TestThreeTierLogging:
         assert "[SHUTDOWN] Monitoring ended: User Terminated (Ctrl+C)" in event_content
         assert "Session Summary" in event_content
         assert "Samples: 2,500" in event_content
+
+
+class TestStartupConfigHeader:
+    """Test the .log startup header's full operational config snapshot (mirrors console banner)."""
+
+    def _config(self, **overrides):
+        base = dict(
+            pool_rotation_enabled=True,
+            rotate_interval=900.0,
+            current_isp_target="149.112.112.112",
+            current_zsc_target="149.112.112.112",
+            init_target="149.112.112.112",
+            init_slot=5,
+            pool_size=8,
+            direct_override=None,
+            zscaler_override=None,
+            path_verification={"direct_verified": True, "direct_reason": "ifscope route via en0", "zsc_status": "OK", "zsc_reason": "route via utun0 with Zscaler process active"},
+            trace_verify=True,
+            trace_verify_every=30,
+            silent=True,
+            heartbeat_minutes=30,
+            rotate_daily=True,
+            compress_rotated=True,
+        )
+        base.update(overrides)
+        return _build_startup_config(**base)
+
+    def test_startup_config_none_omits_new_lines_without_error(self, tmp_path):
+        orig = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            csv_path = init_logfile(network_info=_mock_network_info(), target_pool=["1.1.1.1"])
+            with open(_event_log_path(csv_path)) as f:
+                content = f.read()
+            assert "Started At:" in content
+            assert "Monitor Version:" not in content
+            assert "Target Rotation:" not in content
+        finally:
+            os.chdir(orig)
+
+    def test_rotation_enabled_recorded(self, tmp_path):
+        orig = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            csv_path = init_logfile(network_info=_mock_network_info(), target_pool=["1.1.1.1"] * 8, startup_config=self._config())
+            with open(_event_log_path(csv_path)) as f:
+                content = f.read()
+            assert f"Monitor Version: {__version__} (log-schema: {__log_schema__})" in content
+            assert "Target Rotation: ENABLED (every 900s / 15.0m, initial: 149.112.112.112 [Slot 6/8])" in content
+            assert "Probe Targets:   ISP Direct=149.112.112.112, Zscaler Tunnel=149.112.112.112" in content
+        finally:
+            os.chdir(orig)
+
+    def test_rotation_disabled_with_static_override_recorded(self, tmp_path):
+        orig = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            cfg = self._config(pool_rotation_enabled=False, direct_override="8.8.8.8", current_isp_target="8.8.8.8", current_zsc_target="8.8.8.8")
+            csv_path = init_logfile(network_info=_mock_network_info(), target_pool=["1.1.1.1"], startup_config=cfg)
+            with open(_event_log_path(csv_path)) as f:
+                content = f.read()
+            assert "Target Rotation: DISABLED (static override: ISP=8.8.8.8, ZSC=8.8.8.8)" in content
+        finally:
+            os.chdir(orig)
+
+    def test_rotation_disabled_static_target_recorded(self, tmp_path):
+        orig = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            cfg = self._config(pool_rotation_enabled=False, current_isp_target="1.1.1.1", current_zsc_target="1.1.1.1")
+            csv_path = init_logfile(network_info=_mock_network_info(), target_pool=["1.1.1.1"], startup_config=cfg)
+            with open(_event_log_path(csv_path)) as f:
+                content = f.read()
+            assert "Target Rotation: DISABLED (--rotate-interval 0, static target: 1.1.1.1)" in content
+        finally:
+            os.chdir(orig)
+
+    def test_path_verification_uncertain_recorded(self, tmp_path):
+        orig = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            cfg = self._config(path_verification={"direct_verified": False, "direct_reason": "no interface route", "zsc_status": "BYPASSED", "zsc_reason": "no utun interface"})
+            csv_path = init_logfile(network_info=_mock_network_info(), target_pool=["1.1.1.1"], startup_config=cfg)
+            with open(_event_log_path(csv_path)) as f:
+                content = f.read()
+            assert "Path Verify:     Direct=UNCERTAIN (no interface route), Zscaler=BYPASSED (no utun interface)" in content
+        finally:
+            os.chdir(orig)
+
+    def test_trace_verify_disabled_recorded(self, tmp_path):
+        orig = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            cfg = self._config(trace_verify=False)
+            csv_path = init_logfile(network_info=_mock_network_info(), target_pool=["1.1.1.1"], startup_config=cfg)
+            with open(_event_log_path(csv_path)) as f:
+                content = f.read()
+            assert "Trace Verify:    DISABLED" in content
+        finally:
+            os.chdir(orig)
+
+    def test_silent_mode_disabled_recorded(self, tmp_path):
+        orig = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            cfg = self._config(silent=False)
+            csv_path = init_logfile(network_info=_mock_network_info(), target_pool=["1.1.1.1"], startup_config=cfg)
+            with open(_event_log_path(csv_path)) as f:
+                content = f.read()
+            assert "Silent Mode:     DISABLED" in content
+        finally:
+            os.chdir(orig)
+
+    def test_daily_rotation_and_compression_disabled_recorded(self, tmp_path):
+        orig = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            cfg = self._config(rotate_daily=False, compress_rotated=False)
+            csv_path = init_logfile(network_info=_mock_network_info(), target_pool=["1.1.1.1"], startup_config=cfg)
+            with open(_event_log_path(csv_path)) as f:
+                content = f.read()
+            assert "Daily Rotation:  DISABLED (--no-rotate-daily set; single session logfile)" in content
+            assert "Rotated Compress" not in content
+        finally:
+            os.chdir(orig)
+
+    def test_daily_rotation_enabled_compression_disabled_recorded(self, tmp_path):
+        orig = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            cfg = self._config(rotate_daily=True, compress_rotated=False)
+            csv_path = init_logfile(network_info=_mock_network_info(), target_pool=["1.1.1.1"], startup_config=cfg)
+            with open(_event_log_path(csv_path)) as f:
+                content = f.read()
+            assert "Daily Rotation:  ENABLED (rotates at midnight, baseline resets)" in content
+            assert "Rotated Compress: DISABLED (--no-compress-rotated)" in content
+        finally:
+            os.chdir(orig)
 
 
 class TestCompression:
