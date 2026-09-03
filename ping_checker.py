@@ -1980,6 +1980,22 @@ def init_logfile(network_info: dict | None = None, target_pool: list[str] | None
     return filename
 
 
+def merge_egress_result(current_egress: dict, fresh_eg: dict) -> dict:
+    """Merge a freshly discovered egress result into current_egress in place.
+
+    Only overwrites `direct`/`tunneled` when the fresh result actually resolved
+    them -- a transient discovery failure (e.g. empty local_ip mid-flap) must
+    not discard the other, still-valid, last known-good sub-part. Returns the
+    same (mutated) current_egress dict for convenient reassignment at call sites.
+    """
+    if fresh_eg.get("direct"):
+        current_egress["direct"] = fresh_eg["direct"]
+    if fresh_eg.get("tunneled"):
+        current_egress["tunneled"] = fresh_eg["tunneled"]
+    current_egress["has_tunnel"] = fresh_eg.get("has_tunnel", current_egress.get("has_tunnel"))
+    return current_egress
+
+
 def _update_meta_sidecar_egress(filename: str, egress: dict) -> None:
     """Updates the egress section in the JSON metadata sidecar."""
     try:
@@ -2771,16 +2787,19 @@ async def main():
                             old_tunneled_fp = {(r.get("ip"), r.get("classification")) for r in ((current_egress or {}).get("tunneled") or [])}
                             new_tunneled_fp = {(r.get("ip"), r.get("classification")) for r in ((fresh_eg or {}).get("tunneled") or [])}
                             direct_changed = bool(new_direct_ip and new_direct_ip != old_direct_ip)
-                            tunneled_changed = new_tunneled_fp != old_tunneled_fp
+                            tunneled_changed = bool(new_tunneled_fp and new_tunneled_fp != old_tunneled_fp)
                             if direct_changed or tunneled_changed:
-                                current_egress = fresh_eg
-                                network_info["egress"] = fresh_eg
-                                _update_meta_sidecar_egress(logf, fresh_eg)
+                                # Merge only the sub-parts that actually resolved -- a transient
+                                # discovery failure (e.g. empty local_ip mid-flap) must not discard
+                                # the other, still-valid, last known-good sub-part.
+                                current_egress = merge_egress_result(current_egress, fresh_eg)
+                                network_info["egress"] = current_egress
+                                _update_meta_sidecar_egress(logf, current_egress)
                                 parts = []
                                 if direct_changed:
-                                    parts.append(f"Direct ISP switched to: {format_egress_display(fresh_eg.get('direct'))}")
+                                    parts.append(f"Direct ISP switched to: {format_egress_display(current_egress.get('direct'))}")
                                 if tunneled_changed:
-                                    parts.append(f"Tunnel: {format_tunneled_egress_list(fresh_eg.get('tunneled'), has_tunnel=zactive, direct_ip=new_direct_ip)}")
+                                    parts.append(f"Tunnel: {format_tunneled_egress_list(current_egress.get('tunneled'), has_tunnel=zactive, direct_ip=(current_egress.get('direct') or {}).get('ip', ''))}")
                                 chg_msg = f"[{_ts()}] [EGRESS CHANGE] " + " | ".join(parts)
                                 _log_event(_event_log_path(logf), chg_msg)
                                 print(chg_msg, flush=True)
@@ -2838,14 +2857,15 @@ async def main():
                         resolved = await asyncio.to_thread(NetworkDiscovery.discover_egress, lip, zactive, args.zscaler_cidr_list)
                         if resolved.get("direct") or resolved.get("tunneled"):
                             egress_pending = False
-                            current_egress = resolved
-                            network_info["egress"] = resolved
-                            _update_meta_sidecar_egress(logf, resolved)
-                            d_str = format_egress_display(resolved.get("direct"))
+                            # Merge only the sub-parts that resolved -- see merge_egress_result().
+                            current_egress = merge_egress_result(current_egress, resolved)
+                            network_info["egress"] = current_egress
+                            _update_meta_sidecar_egress(logf, current_egress)
+                            d_str = format_egress_display(current_egress.get("direct"))
                             t_str = format_tunneled_egress_list(
-                                resolved.get("tunneled"),
+                                current_egress.get("tunneled"),
                                 has_tunnel=zactive,
-                                direct_ip=(resolved.get("direct") or {}).get("ip", "")
+                                direct_ip=(current_egress.get("direct") or {}).get("ip", "")
                             )
                             ev_msg = f"[{_ts()}] [EGRESS] Direct ISP: {d_str} | Tunnel: {t_str}"
                             _log_event(_event_log_path(logf), ev_msg)

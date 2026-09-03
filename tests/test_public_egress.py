@@ -13,6 +13,7 @@ from ping_checker import (
     NetworkDiscovery,
     format_egress_display,
     format_tunneled_egress_list,
+    merge_egress_result,
     _update_meta_sidecar_egress,
     init_logfile,
 )
@@ -221,6 +222,70 @@ class TestDiscoverEgress:
              patch.object(NetworkDiscovery, "get_zscaler_ranges", return_value=[]):
             res = NetworkDiscovery.discover_egress(local_ip="192.168.1.50", zscaler_active=True)
             assert res["tunneled"][0]["classification"] == "direct"
+
+
+class TestMergeEgressResult:
+    """Test merge_egress_result: preserves last known-good state through transient discovery failures."""
+
+    def test_preserves_direct_when_fresh_direct_is_none(self):
+        # Reproduces the exact bug scenario: local_ip empty mid-flap -> direct discovery
+        # returns None, but tunneled was previously resolved and stays resolved.
+        current = {
+            "direct": {"ip": "80.60.70.196", "asn": "AS1136", "org": "KPN B.V.", "country": "NL"},
+            "tunneled": [{"ip": "147.161.173.115", "classification": "zscaler"}],
+            "has_tunnel": True,
+        }
+        fresh = {"direct": None, "tunneled": [], "has_tunnel": True}
+        merged = merge_egress_result(current, fresh)
+        assert merged["direct"]["ip"] == "80.60.70.196"
+
+    def test_preserves_tunneled_when_fresh_tunneled_is_empty(self):
+        current = {
+            "direct": {"ip": "80.60.70.196"},
+            "tunneled": [{"ip": "147.161.173.115", "classification": "zscaler"}],
+            "has_tunnel": True,
+        }
+        fresh = {"direct": {"ip": "80.60.70.196"}, "tunneled": [], "has_tunnel": True}
+        merged = merge_egress_result(current, fresh)
+        assert merged["tunneled"] == [{"ip": "147.161.173.115", "classification": "zscaler"}]
+
+    def test_updates_direct_when_fresh_resolves(self):
+        current = {"direct": {"ip": "80.60.70.196"}, "tunneled": [], "has_tunnel": False}
+        fresh = {"direct": {"ip": "178.84.1.2"}, "tunneled": [], "has_tunnel": False}
+        merged = merge_egress_result(current, fresh)
+        assert merged["direct"]["ip"] == "178.84.1.2"
+
+    def test_updates_tunneled_when_fresh_resolves(self):
+        current = {"direct": None, "tunneled": [], "has_tunnel": True}
+        fresh = {"direct": None, "tunneled": [{"ip": "147.161.173.115", "classification": "zscaler"}], "has_tunnel": True}
+        merged = merge_egress_result(current, fresh)
+        assert merged["tunneled"] == [{"ip": "147.161.173.115", "classification": "zscaler"}]
+
+    def test_has_tunnel_always_updates(self):
+        current = {"direct": None, "tunneled": [], "has_tunnel": True}
+        fresh = {"direct": None, "tunneled": [], "has_tunnel": False}
+        merged = merge_egress_result(current, fresh)
+        assert merged["has_tunnel"] is False
+
+    def test_no_false_change_after_flap_recovery(self):
+        # Full reproduction of the log scenario: a flap nulls direct (via merge, preserved),
+        # then a later successful re-discovery returns the SAME ip as before the flap --
+        # since it was never actually lost, this must not look like a "switch".
+        current = {
+            "direct": {"ip": "80.60.70.196", "asn": "AS1136", "org": "KPN B.V.", "country": "NL"},
+            "tunneled": [{"ip": "147.161.173.115", "classification": "zscaler"}],
+            "has_tunnel": True,
+        }
+        # Flap: direct discovery fails transiently.
+        during_flap = merge_egress_result(current, {"direct": None, "tunneled": [], "has_tunnel": True})
+        assert during_flap["direct"]["ip"] == "80.60.70.196"  # preserved, not nulled
+
+        # Recovery: direct resolves again to the SAME ip it always had.
+        old_direct_ip = (during_flap.get("direct") or {}).get("ip")
+        recovered = merge_egress_result(during_flap, {"direct": {"ip": "80.60.70.196"}, "tunneled": [], "has_tunnel": True})
+        new_direct_ip = recovered["direct"]["ip"]
+        direct_changed = bool(new_direct_ip and new_direct_ip != old_direct_ip)
+        assert direct_changed is False  # no spurious "switched to" would be logged
 
 
 class TestEgressFormatting:
