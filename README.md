@@ -25,7 +25,8 @@ The underlying tri-path split-tunnel monitoring pattern applies to any corporate
 - **VPN Overhead Delta Statistics**: Tracks `overhead = vpn_rtt − direct_rtt` per iteration. Computes p50/p95 percentiles, loss-rate delta, and a session baseline. Alerts when rolling overhead rises above your normal baseline.
 - **Route-Based Path Verification**: Confirms per-iteration that the direct probe is truly using the physical interface (`DIRECT=OK`) and the VPN probe is routed via `utun` with the VPN process active (`ZSC=OK`).
 - **ICMP Traceroute Background Verification**: Runs `traceroute -I` (no elevated permissions) in the background every 30 iterations to confirm paths at the routing-hop level (`TRACE(D=OK,Z=OK)`).
-- **Dual-Path Public Egress & ASN Forensics**: Resolves both direct ISP egress (bound to physical interface) and tunneled corporate egress at launch and on network/tunnel transitions. Discovers public IPv4, Autonomous System Number (ASN), and organization (e.g. `80.60.70.196 (AS1136 KPN B.V., NL)` vs. `165.225.204.15 (AS14413 Zscaler Inc., NL)`). If offline at startup, displays `Pending / Offline` and quietly resolves as soon as the first ping succeeds.
+- **Dual-Path Public Egress & ASN Forensics**: Resolves direct ISP egress (bound to physical interface) at launch and on network/tunnel transitions, discovering public IPv4, Autonomous System Number (ASN), and organization (e.g. `80.60.70.196 (AS1136 KPN B.V., NL)`). If offline at startup, displays `Pending / Offline` and quietly resolves as soon as the first ping succeeds.
+- **Multi-Endpoint Corporate Tunnel Egress Classification**: Queries *every* configured public egress-check endpoint for the tunneled path (not just the first that responds), since policy-based per-destination routing can send different destinations out genuinely different egress points over the same default route. Each result is classified generically as `Zscaler` (matches a known Zscaler-published CIDR range), `Direct/Bypassed` (matches the Direct ISP egress — a full tunnel bypass for that destination), or `Other` (neither — e.g. a private/dedicated enforcement node). Zscaler range knowledge is a live-fetched, cached copy of Zscaler's own published Cloud Enforcement Node Ranges, with a small built-in static fallback; extend it for your environment with `--zscaler-cidr`. No organization-specific ASN, name, or IP is ever hardcoded in source.
 - **Dual Wi-Fi Link Speed Forensics**: Captures initial pre-traffic cold/idle Wi-Fi transmit rate (e.g. `286.0 Mbps` under battery/Low Power Mode) and re-samples after network warm-up to report the active operational rate (e.g. `1200.0 Mbps`), distinguishing low-power radio idling from genuine RF link degradation.
 - **Startup Tool Check**: Verifies all required CLI tools are present at launch; auto-disables traceroute verification if `traceroute` is absent.
 - **Resilient Mid-Run Discovery**: Auto-detects network interface switches (e.g. Ethernet ↔ Wi-Fi) without restarting.
@@ -95,7 +96,7 @@ python3 ping_checker.py
 Monitor Version:           1.4.0 (log-schema: 4)
 Logging to:                ping_checker_20260902_192849.csv
 Direct ISP Egress:         80.60.70.196 (AS1136 KPN B.V., NL)
-Corporate Tunnel Egress:   165.225.204.15 (AS14413 Zscaler Inc., NL)
+Corporate Tunnel Egress:   [Zscaler] 147.161.173.115 (AS62044 Zscaler Switzerland GmbH, CH); [Other] 156.114.10.14 (AS59630 Some Org, NL)
 Target Pool:               1.1.1.1, 1.0.0.1, 8.8.8.8, 8.8.4.4, 9.9.9.9, ... (8 IPv4 Anycast targets)
 Target Rotation:           ENABLED (every 900s / 15.0m, initial: 149.112.112.112 [Slot 6/8])
 ISP Direct Probe Target:   149.112.112.112
@@ -273,7 +274,7 @@ Daily logfile rotation is **on by default** — each calendar day gets its own C
 ==========================================================================================
 Logging to:                /Users/you/ping_checker_20260901_080001.csv
 Direct ISP Egress:         80.60.70.196 (AS1136 KPN B.V., NL)
-Corporate Tunnel Egress:   165.225.204.15 (AS14413 Zscaler Inc., NL)
+Corporate Tunnel Egress:   [Zscaler] 147.161.173.115 (AS62044 Zscaler Switzerland GmbH, CH)
 Target Pool:               1.1.1.1, 1.0.0.1, 8.8.8.8, 8.8.4.4, 9.9.9.9, ... (8 IPv4 Anycast targets)
 Target Rotation:           ENABLED (every 900s / 15.0m, initial: 1.1.1.1 [Slot 1/8])
 Silent Mode:               ENABLED (alerts only; heartbeat every 30 min)
@@ -326,6 +327,7 @@ python3 ping_checker.py [OPTIONS]
 | `--keep-awake`, `--low-latency`        | `udp-tick`                                                                              | Suppress 802.11 PSM sleep buffering via background side-channel (`udp-tick`, `qos-vo`, `assertion`) |
 | `--no-keep-awake`                      | off                                                                                     | Disable keep-awake side-channel (passive measurement with 802.11 PSM doze)|
 | `--logfile`                            | auto                                                                                    | Custom logfile path; default: `ping_checker_YYYYMMDD_HHMMSS.csv`          |
+| `--zscaler-cidr`                       | none                                                                                    | Comma-separated extra CIDR ranges to classify as `zscaler` Corporate Tunnel egress, in addition to Zscaler's published ranges |
 | `--no-notify`                          | off                                                                                     | Disable macOS desktop notifications (on by default)                       |
 
 ---

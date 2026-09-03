@@ -328,45 +328,208 @@ class NetworkDiscovery:
             "zscaler": zscaler_info
         }
 
-    @classmethod
-    def get_public_egress(cls, local_ip: str | None = None) -> dict | None:
-        """Query external public egress IPv4, ASN, and organization.
+    # Public egress-check endpoints. The Corporate Tunnel path queries ALL of
+    # these every discovery cycle (not first-success-wins) because policy-based,
+    # per-destination routing over the same default route can send different
+    # destinations out genuinely different egress points.
+    EGRESS_ENDPOINTS = ["https://ifconfig.co/json", "https://ipinfo.io/json"]
+
+    # Zscaler's own published Cloud Enforcement Node Ranges, a small subset
+    # captured 2026-09-03 as a last-resort fallback for when the live fetch
+    # (see get_zscaler_ranges) is unavailable. The live fetch is always tried first.
+    ZSCALER_STATIC_SEED_RANGES = [
+        "147.161.128.0/17",
+        "165.225.0.0/17",
+        "165.225.192.0/18",
+        "136.226.0.0/16",
+        "137.83.128.0/18",
+        "170.85.0.0/16",
+        "104.129.192.0/20",
+        "94.188.131.0/25",
+    ]
+
+    ZSCALER_RANGES_URL = "https://config.zscaler.com/api/zscaler.net/cenr/json"
+    ZSCALER_RANGES_CACHE_FILE = os.path.expanduser("~/.cache/ping_checker/zscaler_ranges.json")
+    ZSCALER_RANGES_CACHE_TTL = 86400  # 24 hours
+
+    @staticmethod
+    def _query_egress_endpoint(url: str, local_ip: str | None = None) -> dict | None:
+        """Query a single public egress-check endpoint. Returns parsed ip/asn/org/country, or None on failure.
 
         If local_ip is provided, binds to that local IP (--interface <local_ip>)
         to force the query out the physical interface, bypassing any VPN tunnel.
         """
-        endpoints = ["https://ifconfig.co/json", "https://ipinfo.io/json"]
-        for url in endpoints:
-            cmd = ["curl", "-4", "-s", "-k", "--max-time", "3"]
-            if local_ip:
-                cmd.extend(["--interface", local_ip])
-            cmd.append(url)
-            try:
-                res = subprocess.run(cmd, capture_output=True, text=True, timeout=4)
-                if res.returncode == 0 and res.stdout.strip():
-                    data = json.loads(res.stdout)
-                    ip = data.get("ip", "")
-                    if not ip:
-                        continue
-                    asn = data.get("asn", "")
-                    org = data.get("asn_org", "")
-                    country = data.get("country_iso", "") or data.get("country", "")
-                    if not asn and "org" in data:
-                        m = re.match(r"^(AS\d+)\s*(.*)", data["org"])
-                        if m:
-                            asn, org = m.group(1), m.group(2).strip()
-                        else:
-                            org = data["org"]
-                    return {"ip": ip, "asn": asn, "org": org, "country": country}
-            except Exception:
-                continue
+        cmd = ["curl", "-4", "-s", "-k", "--max-time", "3"]
+        if local_ip:
+            cmd.extend(["--interface", local_ip])
+        cmd.append(url)
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=4)
+            if res.returncode == 0 and res.stdout.strip():
+                data = json.loads(res.stdout)
+                ip = data.get("ip", "")
+                if not ip:
+                    return None
+                asn = data.get("asn", "")
+                org = data.get("asn_org", "")
+                country = data.get("country_iso", "") or data.get("country", "")
+                if not asn and "org" in data:
+                    m = re.match(r"^(AS\d+)\s*(.*)", data["org"])
+                    if m:
+                        asn, org = m.group(1), m.group(2).strip()
+                    else:
+                        org = data["org"]
+                return {"ip": ip, "asn": asn, "org": org, "country": country}
+        except Exception:
+            pass
         return None
 
     @classmethod
-    def discover_egress(cls, local_ip: str | None = None, zscaler_active: bool = False) -> dict:
-        """Discover both Direct ISP and Corporate Tunnel public egress points."""
+    def get_public_egress(cls, local_ip: str | None = None) -> dict | None:
+        """Query egress-check endpoints in turn, returning the first successful result.
+
+        Used for the Direct ISP path, where a single physical interface binding
+        is expected to yield one consistent answer.
+        """
+        for url in cls.EGRESS_ENDPOINTS:
+            result = cls._query_egress_endpoint(url, local_ip=local_ip)
+            if result:
+                return result
+        return None
+
+    @classmethod
+    def get_all_public_egress(cls, local_ip: str | None = None) -> list[dict]:
+        """Query every configured egress-check endpoint and return all successful results.
+
+        Unlike get_public_egress(), this does not stop at the first success: used
+        for the Corporate Tunnel (default route) path, where different endpoints
+        can legitimately resolve to different egress points.
+        """
+        results = []
+        for url in cls.EGRESS_ENDPOINTS:
+            result = cls._query_egress_endpoint(url, local_ip=local_ip)
+            if result:
+                result = dict(result)
+                result["endpoint"] = url
+                results.append(result)
+        return results
+
+    @staticmethod
+    def _extract_cidr_ranges(node) -> list[str]:
+        """Recursively harvest every 'range' value from Zscaler's nested CENR JSON structure."""
+        ranges: list[str] = []
+        if isinstance(node, dict):
+            r = node.get("range")
+            if isinstance(r, str):
+                ranges.append(r)
+            for v in node.values():
+                ranges.extend(NetworkDiscovery._extract_cidr_ranges(v))
+        elif isinstance(node, list):
+            for item in node:
+                ranges.extend(NetworkDiscovery._extract_cidr_ranges(item))
+        return ranges
+
+    @classmethod
+    def _fetch_zscaler_ranges_live(cls) -> list[str] | None:
+        """Live-fetch Zscaler's published Cloud Enforcement Node Ranges. Returns None on any failure."""
+        try:
+            res = subprocess.run(
+                ["curl", "-4", "-s", "-k", "--max-time", "5", cls.ZSCALER_RANGES_URL],
+                capture_output=True, text=True, timeout=6,
+            )
+            if res.returncode != 0 or not res.stdout.strip():
+                return None
+            data = json.loads(res.stdout)
+            ranges = cls._extract_cidr_ranges(data)
+            return ranges or None
+        except Exception:
+            return None
+
+    @classmethod
+    def _load_cached_zscaler_ranges(cls) -> list[str] | None:
+        """Return cached ranges if the cache file exists and is within the TTL, else None."""
+        try:
+            if not os.path.exists(cls.ZSCALER_RANGES_CACHE_FILE):
+                return None
+            age = time.time() - os.path.getmtime(cls.ZSCALER_RANGES_CACHE_FILE)
+            if age > cls.ZSCALER_RANGES_CACHE_TTL:
+                return None
+            with open(cls.ZSCALER_RANGES_CACHE_FILE, "r") as f:
+                cached = json.load(f)
+            return cached.get("ranges") or None
+        except Exception:
+            return None
+
+    @classmethod
+    def _save_cached_zscaler_ranges(cls, ranges: list[str]) -> None:
+        """Best-effort write of freshly-fetched ranges to the local cache file."""
+        try:
+            os.makedirs(os.path.dirname(cls.ZSCALER_RANGES_CACHE_FILE), exist_ok=True)
+            with open(cls.ZSCALER_RANGES_CACHE_FILE, "w") as f:
+                json.dump({"fetched_at": time.time(), "ranges": ranges}, f)
+        except Exception:
+            pass
+
+    @classmethod
+    def get_zscaler_ranges(cls, extra_cidrs: list[str] | None = None) -> list:
+        """Return parsed IPv4 networks to treat as 'zscaler' for egress classification.
+
+        Hybrid source: a cached (TTL) live fetch of Zscaler's own published ranges,
+        falling back to a small built-in static seed list if both the cache and a
+        fresh live fetch are unavailable. User-supplied extra CIDRs (--zscaler-cidr)
+        are always appended on top.
+        """
+        raw_ranges = cls._load_cached_zscaler_ranges()
+        if raw_ranges is None:
+            raw_ranges = cls._fetch_zscaler_ranges_live()
+            if raw_ranges:
+                cls._save_cached_zscaler_ranges(raw_ranges)
+        if not raw_ranges:
+            raw_ranges = cls.ZSCALER_STATIC_SEED_RANGES
+
+        networks = []
+        for cidr in list(raw_ranges) + list(extra_cidrs or []):
+            try:
+                net = ipaddress.ip_network(cidr, strict=False)
+                if net.version == 4:
+                    networks.append(net)
+            except ValueError:
+                continue
+        return networks
+
+    @staticmethod
+    def classify_egress_ip(ip: str, direct_ip: str, zscaler_ranges: list) -> str:
+        """Classify a tunneled-path egress IP as 'direct' (matches Direct ISP egress),
+        'zscaler' (within a known Zscaler CIDR range), or 'other' (neither)."""
+        if direct_ip and ip == direct_ip:
+            return "direct"
+        try:
+            addr = ipaddress.ip_address(ip)
+            for net in zscaler_ranges:
+                if addr in net:
+                    return "zscaler"
+        except ValueError:
+            pass
+        return "other"
+
+    @classmethod
+    def discover_egress(cls, local_ip: str | None = None, zscaler_active: bool = False, extra_zscaler_cidrs: list[str] | None = None) -> dict:
+        """Discover Direct ISP and Corporate Tunnel public egress points.
+
+        The Corporate Tunnel path queries all configured endpoints (not just the
+        first success) and classifies each result as 'direct' (a full tunnel
+        bypass matching the Direct ISP egress), 'zscaler' (within a known
+        Zscaler-published or user-supplied CIDR range), or 'other'.
+        """
         direct = cls.get_public_egress(local_ip=local_ip) if local_ip else None
-        tunneled = cls.get_public_egress(local_ip=None)
+        direct_ip = (direct or {}).get("ip", "")
+        tunneled_raw = cls.get_all_public_egress(local_ip=None)
+        zscaler_ranges = cls.get_zscaler_ranges(extra_cidrs=extra_zscaler_cidrs)
+        tunneled = []
+        for result in tunneled_raw:
+            result = dict(result)
+            result["classification"] = cls.classify_egress_ip(result["ip"], direct_ip, zscaler_ranges)
+            tunneled.append(result)
         return {
             "direct": direct,
             "tunneled": tunneled,
@@ -374,11 +537,8 @@ class NetworkDiscovery:
         }
 
 
-def format_egress_display(egress_data: dict | None, is_tunnel: bool = False, has_tunnel: bool = False, direct_ip: str = "") -> str:
-    """Format public egress dictionary into a clean human-readable string."""
-    if not egress_data:
-        return "Pending / Offline"
-    ip = egress_data.get("ip", "Unknown")
+def _format_egress_details(egress_data: dict) -> str:
+    """Return the '(ASN Org, Country)' descriptor substring for an egress result dict."""
     asn = egress_data.get("asn", "")
     org = egress_data.get("org", "")
     country = egress_data.get("country", "")
@@ -392,14 +552,34 @@ def format_egress_display(egress_data: dict | None, is_tunnel: bool = False, has
     if country:
         details.append(country)
     joined = ", ".join(details)
-    desc = f" ({joined})" if details else ""
-    base = f"{ip}{desc}"
+    return f" ({joined})" if details else ""
+
+
+def format_egress_display(egress_data: dict | None, is_tunnel: bool = False, has_tunnel: bool = False, direct_ip: str = "") -> str:
+    """Format public egress dictionary into a clean human-readable string."""
+    if not egress_data:
+        return "Pending / Offline"
+    ip = egress_data.get("ip", "Unknown")
+    base = f"{ip}{_format_egress_details(egress_data)}"
     if is_tunnel:
         if not has_tunnel:
             return f"{base} [Direct Route; No VPN Tunnel]"
         elif direct_ip and ip == direct_ip:
             return f"{base} [VPN Bypassed / Direct Egress]"
     return base
+
+
+def format_tunneled_egress_list(tunneled_results: list[dict] | None, has_tunnel: bool = False, direct_ip: str = "") -> str:
+    """Format the classified Corporate Tunnel egress results (direct/zscaler/other) into one readable line."""
+    if not tunneled_results:
+        return "Pending / Offline" if has_tunnel else "N/A [Direct Route; No VPN Tunnel]"
+    labels = {"direct": "Direct/Bypassed", "zscaler": "Zscaler", "other": "Other"}
+    parts = []
+    for result in tunneled_results:
+        ip = result.get("ip", "Unknown")
+        label = labels.get(result.get("classification"), "Other")
+        parts.append(f"[{label}] {ip}{_format_egress_details(result)}")
+    return "; ".join(parts)
 
 
 def get_route_info(target_ip: str, ifscope: str = "") -> dict:
@@ -1713,9 +1893,8 @@ def init_logfile(network_info: dict | None = None, target_pool: list[str] | None
             f.write(f"VPN Agent:       Zscaler (ProcessActive={vpn_meta['zscaler_process_active']}, TunnelIface={vpn_meta['tunnel_interface']}, VirtualGW={vpn_meta['tunnel_virtual_gateway']})\n")
             f.write(f"Target Pool:     {targets_str}\n")
             direct_desc = format_egress_display(egress.get("direct") if egress else None)
-            tunneled_desc = format_egress_display(
+            tunneled_desc = format_tunneled_egress_list(
                 egress.get("tunneled") if egress else None,
-                is_tunnel=True,
                 has_tunnel=vpn_meta.get("zscaler_process_active", False),
                 direct_ip=(egress.get("direct") or {}).get("ip", "") if egress else ""
             )
@@ -2151,6 +2330,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable background keep-awake side-channel (equivalent to --keep-awake off; passive measurement with 802.11 PSM doze)",
     )
+    parser.add_argument("--zscaler-cidr", type=str, default="", help="Comma-separated extra CIDR ranges to classify as 'zscaler' Corporate Tunnel egress, in addition to Zscaler's published ranges (e.g. a Private Service Edge range not covered by Zscaler's public list)")
     parser.add_argument("--logfile", type=str, default="", help="Custom logfile path (default: auto-generated unique .csv filename)")
     parser.add_argument("--version", action="version", version=f"ping_checker {__version__} (log-schema: {__log_schema__})")
     parser.add_argument("--no-notify", action="store_true", help="Disable macOS desktop notifications (notifications are on by default)")
@@ -2166,6 +2346,7 @@ async def main():
     args.trace_verify = not args.no_trace_verify
     args.rotate_daily = not args.no_rotate_daily
     args.compress_rotated = not args.no_compress_rotated
+    args.zscaler_cidr_list = [c.strip() for c in args.zscaler_cidr.split(",") if c.strip()] if args.zscaler_cidr else []
     if args.count is not None and args.count <= 0:
         parser.error("--count/-n must be a positive integer")
     if args.rotate_interval < 0:
@@ -2217,7 +2398,8 @@ async def main():
     egress_info = await asyncio.to_thread(
         NetworkDiscovery.discover_egress,
         network_info.get("local_ip"),
-        network_info["zscaler"].get("is_active", False)
+        network_info["zscaler"].get("is_active", False),
+        args.zscaler_cidr_list
     )
     network_info["egress"] = egress_info
     current_egress = egress_info
@@ -2243,9 +2425,8 @@ async def main():
     print(f"Logging to:                {os.path.relpath(logfile)}")
 
     direct_disp = format_egress_display(egress_info.get("direct"))
-    tunnel_disp = format_egress_display(
+    tunnel_disp = format_tunneled_egress_list(
         egress_info.get("tunneled"),
-        is_tunnel=True,
         has_tunnel=network_info["zscaler"].get("is_active", False),
         direct_ip=(egress_info.get("direct") or {}).get("ip", "")
     )
@@ -2501,15 +2682,23 @@ async def main():
                     async def _recheck_egress_on_switch(lip: str | None, zactive: bool, logf: str):
                         nonlocal current_egress
                         try:
-                            fresh_eg = await asyncio.to_thread(NetworkDiscovery.discover_egress, lip, zactive)
-                            old_ip = (current_egress.get("direct") or {}).get("ip") if current_egress else ""
-                            new_ip = (fresh_eg.get("direct") or {}).get("ip") if fresh_eg else ""
-                            if new_ip and new_ip != old_ip:
+                            fresh_eg = await asyncio.to_thread(NetworkDiscovery.discover_egress, lip, zactive, args.zscaler_cidr_list)
+                            old_direct_ip = (current_egress.get("direct") or {}).get("ip") if current_egress else ""
+                            new_direct_ip = (fresh_eg.get("direct") or {}).get("ip") if fresh_eg else ""
+                            old_tunneled_fp = {(r.get("ip"), r.get("classification")) for r in ((current_egress or {}).get("tunneled") or [])}
+                            new_tunneled_fp = {(r.get("ip"), r.get("classification")) for r in ((fresh_eg or {}).get("tunneled") or [])}
+                            direct_changed = bool(new_direct_ip and new_direct_ip != old_direct_ip)
+                            tunneled_changed = new_tunneled_fp != old_tunneled_fp
+                            if direct_changed or tunneled_changed:
                                 current_egress = fresh_eg
                                 network_info["egress"] = fresh_eg
                                 _update_meta_sidecar_egress(logf, fresh_eg)
-                                d_str = format_egress_display(fresh_eg.get("direct"))
-                                chg_msg = f"[{_ts()}] [EGRESS CHANGE] Direct ISP switched to: {d_str}"
+                                parts = []
+                                if direct_changed:
+                                    parts.append(f"Direct ISP switched to: {format_egress_display(fresh_eg.get('direct'))}")
+                                if tunneled_changed:
+                                    parts.append(f"Tunnel: {format_tunneled_egress_list(fresh_eg.get('tunneled'), has_tunnel=zactive, direct_ip=new_direct_ip)}")
+                                chg_msg = f"[{_ts()}] [EGRESS CHANGE] " + " | ".join(parts)
                                 _log_event(_event_log_path(logf), chg_msg)
                                 print(chg_msg, flush=True)
                         except Exception:
@@ -2563,16 +2752,15 @@ async def main():
                 async def _resolve_pending_egress(lip: str | None, zactive: bool, logf: str):
                     nonlocal egress_pending, egress_resolving, current_egress
                     try:
-                        resolved = await asyncio.to_thread(NetworkDiscovery.discover_egress, lip, zactive)
+                        resolved = await asyncio.to_thread(NetworkDiscovery.discover_egress, lip, zactive, args.zscaler_cidr_list)
                         if resolved.get("direct") or resolved.get("tunneled"):
                             egress_pending = False
                             current_egress = resolved
                             network_info["egress"] = resolved
                             _update_meta_sidecar_egress(logf, resolved)
                             d_str = format_egress_display(resolved.get("direct"))
-                            t_str = format_egress_display(
+                            t_str = format_tunneled_egress_list(
                                 resolved.get("tunneled"),
-                                is_tunnel=True,
                                 has_tunnel=zactive,
                                 direct_ip=(resolved.get("direct") or {}).get("ip", "")
                             )

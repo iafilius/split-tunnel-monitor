@@ -219,9 +219,8 @@ The system SHALL output real-time compact status line updates to the terminal co
 - **WHEN** a probe (LAN gateway, ISP direct, or Zscaler tunnel) times out or fails
 - **THEN** the corresponding `_RTT_ms` column for that row is written as an empty cell, not the text `TIMEOUT/FAIL` or `N/A`.
 
-
 ### Requirement: Public Egress IP and ASN Organization Discovery
-The system SHALL asynchronously discover the external public IPv4 address, Autonomous System Number (ASN), and ISP/organization name for both the Direct ISP physical underlay path and the Corporate Tunnel routed path. Direct ISP egress discovery SHALL bind to the active physical interface local IP (bypassing any active VPN tunnel). Corporate Tunnel egress discovery SHALL route through the system default routing table (flowing through the virtual tunnel adapter when active).
+The system SHALL asynchronously discover the external public IPv4 address, Autonomous System Number (ASN), and ISP/organization name for the Direct ISP physical underlay path, and SHALL query all configured public egress-check endpoints (not stopping at the first successful response) for the Corporate Tunnel routed path, classifying each result as `direct` (matches the Direct ISP egress IP), `zscaler` (falls within a known Zscaler-published or user-supplied CIDR range), or `other` (neither). Direct ISP egress discovery SHALL bind to the active physical interface local IP (bypassing any active VPN tunnel). Corporate Tunnel egress discovery SHALL route through the system default routing table (flowing through the virtual tunnel adapter when active) for every configured endpoint. Zscaler CIDR-range knowledge SHALL be sourced from a live fetch of Zscaler's own published Cloud Enforcement Node Ranges, cached locally with a refresh TTL, falling back to a small built-in static seed list if the live fetch fails. No organization-specific ASN, name, or IP SHALL be hardcoded in source.
 
 #### Scenario: Public egress detection on startup
 - **WHEN** the monitor initializes and network discovery executes
@@ -234,6 +233,22 @@ The system SHALL asynchronously discover the external public IPv4 address, Auton
 #### Scenario: Egress re-discovery on network interface or IP switch
 - **WHEN** dynamic path discovery detects an interface change (e.g. Wi-Fi to Ethernet), a local IP change, or a VPN tunnel transition (connect/disconnect)
 - **THEN** the system re-runs public egress discovery and updates the recorded egress state.
+
+#### Scenario: All tunneled-path endpoints are queried, not just the first success
+- **WHEN** the tunneled-path egress discovery runs
+- **THEN** the system queries every configured egress-check endpoint (not returning after the first successful response), so multiple distinct egress paths reachable over the same default route are all captured rather than only the first one encountered
+
+#### Scenario: Each tunneled-path result is classified generically
+- **WHEN** a tunneled-path egress result is obtained from an endpoint
+- **THEN** the system labels it `direct` if its IP matches the already-discovered Direct ISP egress IP, `zscaler` if its IP falls within a known Zscaler CIDR range, or `other` otherwise — using only Zscaler's own published ranges (or user-supplied additions) and the tool's own previously-discovered Direct egress IP, never an organization-specific ASN, name, or IP hardcoded in source
+
+#### Scenario: Zscaler range knowledge is fetched live with a static fallback
+- **WHEN** the system needs to classify a result as `zscaler`
+- **THEN** it first attempts a live fetch of Zscaler's published Cloud Enforcement Node Ranges (cached locally with a refresh TTL to avoid re-fetching on every discovery event), and falls back to a small built-in static seed list of previously-confirmed Zscaler ranges if the live fetch fails or the host is offline
+
+#### Scenario: User-supplied CIDR/ASN additions are honored
+- **WHEN** the user supplies additional CIDRs or ASNs via a CLI flag
+- **THEN** those ranges are also treated as `zscaler` for classification purposes, without requiring any source code change
 
 ### Requirement: Dual Wi-Fi Link Speed Telemetry
 The system SHALL capture both the pre-traffic cold/idle Wi-Fi physical link transmit rate during initial discovery and the post-warmup active negotiated Wi-Fi physical link transmit rate following probe and keep-awake initialization. When the active rate differs from the cold/idle rate, both values SHALL be presented in the startup console banner and recorded in the `.meta.json` companion metadata sidecar.
@@ -256,7 +271,3 @@ The system SHALL continuously refresh active Wi-Fi physical radio metadata (incl
 #### Scenario: Real-time Wi-Fi polling rate-limiting
 - **WHEN** the monitoring loop runs at high frequency or under fast intervals
 - **THEN** physical Wi-Fi radio sampling is executed at most once per second to prevent unnecessary framework calls.
-
-
-
-

@@ -36,15 +36,15 @@ The system SHALL generate a companion human-readable event logfile (`ping_checke
 - **THEN** the active `.csv`, `.meta.json`, and `.log` files rotate synchronously with identical timestamps, and the new `.log` file receives a fresh startup banner.
 
 ### Requirement: Public Egress Logging in Event Timeline
-The system SHALL record public egress discovery results and egress transitions in the companion `.log` event timeline.
+The system SHALL record public egress discovery results and egress transitions in the companion `.log` event timeline, including every classified tunneled-path result (`direct`/`zscaler`/`other`), not only a single Direct+Tunnel pair.
 
 #### Scenario: Initial public egress logged at startup
 - **WHEN** public egress discovery completes successfully
-- **THEN** an `[EGRESS]` event is written to the companion `.log` timeline recording the Direct ISP public IP, ASN, and organization alongside the Corporate Tunnel public IP, ASN, and organization.
+- **THEN** an `[EGRESS]` event is written to the companion `.log` timeline recording the Direct ISP public IP, ASN, and organization, alongside every classified tunneled-path egress result (its IP, ASN/organization when available, and its `direct`/`zscaler`/`other` classification label)
 
 #### Scenario: Public egress transition logged on network switch
-- **WHEN** network discovery detects that the public egress IP or ASN has changed following an interface or gateway transition
-- **THEN** an `[EGRESS CHANGE]` event is written to the companion `.log` timeline detailing the new public IP and organization.
+- **WHEN** network discovery detects that the public egress IP, ASN, or classification has changed following an interface or gateway transition
+- **THEN** an `[EGRESS CHANGE]` event is written to the companion `.log` timeline detailing the new public IP, organization, and classification label
 
 ### Requirement: Dual Wi-Fi Rate Logging in Event Header
 The system SHALL record dual Wi-Fi link speed telemetry in the companion `.log` event header when cold idle and active rates differ.
@@ -67,6 +67,3 @@ The system SHALL detect transitions in active Wi-Fi radio Channel, Band, or Acce
 #### Scenario: Wi-Fi BSSID AP roam detected
 - **WHEN** dynamic re-discovery observes that the active BSSID has changed while on the same SSID
 - **THEN** an event line `[WIFI ROAM] BSSID <old_bssid> → <new_bssid> (Channel <ch>, RSSI: <rssi> dBm)` is logged to stdout and written to the companion `.log` event file.
-
-
-
