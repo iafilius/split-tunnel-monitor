@@ -49,33 +49,45 @@ class TestKeepAwakeController:
     async def test_off_mode_does_not_spawn_tasks(self):
         ctrl = KeepAwakeController(mode="off", gateway_ip="192.168.1.1")
         await ctrl.start()
-        assert ctrl._task is None
+        assert ctrl._thread is None
         await ctrl.stop()
 
     @pytest.mark.asyncio
     async def test_udp_tick_spawns_and_stops_cleanly(self):
         ctrl = KeepAwakeController(mode="udp-tick", gateway_ip="192.168.1.1")
         await ctrl.start()
-        assert ctrl._task is not None
-        assert not ctrl._task.done()
+        assert ctrl._thread is not None
+        assert ctrl._thread.is_alive()
         await asyncio.sleep(0.05)
         await ctrl.stop()
-        assert ctrl._task is None
+        assert ctrl._thread is None
 
     @pytest.mark.asyncio
     async def test_qos_vo_spawns_and_stops_cleanly(self):
         ctrl = KeepAwakeController(mode="qos-vo", gateway_ip="192.168.1.1")
         await ctrl.start()
-        assert ctrl._task is not None
-        assert not ctrl._task.done()
+        assert ctrl._thread is not None
+        assert ctrl._thread.is_alive()
         await asyncio.sleep(0.05)
         await ctrl.stop()
-        assert ctrl._task is None
+        assert ctrl._thread is None
 
     def test_update_gateway(self):
         ctrl = KeepAwakeController(mode="udp-tick", gateway_ip="192.168.1.1")
         ctrl.update_gateway("192.168.100.1")
         assert ctrl.gateway_ip == "192.168.100.1"
+
+    @pytest.mark.asyncio
+    async def test_update_gateway_mid_run_is_picked_up_without_restart(self):
+        ctrl = KeepAwakeController(mode="udp-tick", gateway_ip="192.168.1.1")
+        await ctrl.start()
+        thread_before = ctrl._thread
+        ctrl.update_gateway("192.168.100.1")
+        await asyncio.sleep(0.05)
+        assert ctrl._thread is thread_before
+        assert ctrl._thread.is_alive()
+        assert ctrl.gateway_ip == "192.168.100.1"
+        await ctrl.stop()
 
 
 class TestKeepAwakeTelemetryLogging:

@@ -15,6 +15,11 @@ ping_checker_*.schema.json
 !docs/traces/**/*.log
 !docs/traces/**/*.csv
 
+# Packet captures (tcpdump/Wireshark) - may contain sensitive traffic, not repo content
+*.cap
+*.pcap
+*.pcapng
+
 # IDE & temporary files
 .DS_Store
 .vscode/

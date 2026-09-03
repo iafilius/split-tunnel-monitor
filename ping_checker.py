@@ -43,6 +43,7 @@ import socket
 import struct
 import ctypes
 import ctypes.util
+import threading
 from datetime import datetime
 
 __version__ = "1.4.0"
@@ -1709,25 +1710,32 @@ class KeepAwakeController:
     def __init__(self, mode: str = "off", gateway_ip: str = ""):
         self.mode: str = (mode or "off").lower()
         self.gateway_ip: str = gateway_ip
-        self._stop_event = asyncio.Event()
-        self._task: asyncio.Task | None = None
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
 
     def update_gateway(self, new_gw: str) -> None:
         """Update target LAN gateway IP if it changed mid-run."""
         self.gateway_ip = new_gw
 
     async def start(self) -> None:
-        """Start the selected keep-awake side-channel task or assertion."""
+        """Start the selected keep-awake side-channel thread or assertion.
+
+        udp-tick/qos-vo run on a dedicated OS thread (not an asyncio task) so their
+        150ms cadence is scheduled by the OS, not asyncio's cooperative scheduler --
+        immune to synchronous work elsewhere on the main thread stalling the loop.
+        """
         if self.mode == "off":
             return
         if self.mode == "udp-tick":
-            self._task = asyncio.create_task(self._udp_tick_loop())
+            self._thread = threading.Thread(target=self._udp_tick_loop, daemon=True)
+            self._thread.start()
         elif self.mode == "qos-vo":
-            self._task = asyncio.create_task(self._qos_vo_loop())
+            self._thread = threading.Thread(target=self._qos_vo_loop, daemon=True)
+            self._thread.start()
         elif self.mode == "assertion":
             self._acquire_power_assertion()
 
-    async def _udp_tick_loop(self) -> None:
+    def _udp_tick_loop(self) -> None:
         """Send 1-byte micro-datagrams to gateway discard port (port 9) every 150ms."""
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -1737,16 +1745,11 @@ class KeepAwakeController:
                         sock.sendto(b"\x00", (self.gateway_ip, 9))
                     except Exception:
                         pass
-                try:
-                    await asyncio.wait_for(self._stop_event.wait(), timeout=0.15)
-                except asyncio.TimeoutError:
-                    pass
-        except asyncio.CancelledError:
-            pass
+                self._stop_event.wait(0.15)
         finally:
             sock.close()
 
-    async def _qos_vo_loop(self) -> None:
+    def _qos_vo_loop(self) -> None:
         """Send WMM Voice (SO_NET_SERVICE_TYPE=VO) datagrams every 150ms to disable DriverKit PSM sleep."""
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -1764,12 +1767,7 @@ class KeepAwakeController:
                         sock.sendto(b"\x00", (self.gateway_ip, 9))
                     except Exception:
                         pass
-                try:
-                    await asyncio.wait_for(self._stop_event.wait(), timeout=0.15)
-                except asyncio.TimeoutError:
-                    pass
-        except asyncio.CancelledError:
-            pass
+                self._stop_event.wait(0.15)
         finally:
             sock.close()
 
@@ -1783,15 +1781,11 @@ class KeepAwakeController:
             pass
 
     async def stop(self) -> None:
-        """Cleanly terminate background tasks and release assertions."""
+        """Cleanly terminate the background thread and release assertions."""
         self._stop_event.set()
-        if self._task and not self._task.done():
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-        self._task = None
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+        self._thread = None
 
 
 def _build_startup_config(
