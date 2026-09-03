@@ -1707,11 +1707,15 @@ class KeepAwakeController:
     Mode (PSM) doze states and AP DTIM sleep buffering during near-idle conditions.
     """
 
-    def __init__(self, mode: str = "off", gateway_ip: str = ""):
+    def __init__(self, mode: str = "off", gateway_ip: str = "", prewarm: bool = False, prewarm_ms: int = 15, prewarm_count: int = 1):
         self.mode: str = (mode or "off").lower()
         self.gateway_ip: str = gateway_ip
+        self.prewarm_enabled: bool = bool(prewarm or self.mode == "prewarm")
+        self.prewarm_ms: int = max(1, prewarm_ms)
+        self.prewarm_count: int = max(1, prewarm_count)
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._prewarm_sock: socket.socket | None = None
 
     def update_gateway(self, new_gw: str) -> None:
         """Update target LAN gateway IP if it changed mid-run."""
@@ -1724,7 +1728,7 @@ class KeepAwakeController:
         150ms cadence is scheduled by the OS, not asyncio's cooperative scheduler --
         immune to synchronous work elsewhere on the main thread stalling the loop.
         """
-        if self.mode == "off":
+        if self.mode in ("off", "prewarm"):
             return
         if self.mode == "udp-tick":
             self._thread = threading.Thread(target=self._udp_tick_loop, daemon=True)
@@ -1734,6 +1738,21 @@ class KeepAwakeController:
             self._thread.start()
         elif self.mode == "assertion":
             self._acquire_power_assertion()
+
+    async def prewarm(self) -> None:
+        """Send prewarm_count 1-byte micro-datagrams to the gateway discard port and settle before probe dispatch."""
+        if not self.prewarm_enabled or not self.gateway_ip:
+            return
+        try:
+            if self._prewarm_sock is None:
+                self._prewarm_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                self._prewarm_sock.setblocking(False)
+            for _ in range(self.prewarm_count):
+                self._prewarm_sock.sendto(b"\x00", (self.gateway_ip, 9))
+                if self.prewarm_ms > 0:
+                    await asyncio.sleep(self.prewarm_ms / 1000.0)
+        except Exception:
+            pass
 
     def _udp_tick_loop(self) -> None:
         """Send 1-byte micro-datagrams to gateway discard port (port 9) every 150ms."""
@@ -1786,6 +1805,12 @@ class KeepAwakeController:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=1.0)
         self._thread = None
+        if self._prewarm_sock:
+            try:
+                self._prewarm_sock.close()
+            except Exception:
+                pass
+            self._prewarm_sock = None
 
 
 def _build_startup_config(
@@ -1805,6 +1830,9 @@ def _build_startup_config(
     heartbeat_minutes: int,
     rotate_daily: bool,
     compress_rotated: bool,
+    prewarm_enabled: bool = False,
+    prewarm_ms: int = 15,
+    prewarm_count: int = 1,
 ) -> dict:
     """Bundle the startup-time operational fields needed for the `.log` header, mirroring the console banner."""
     return {
@@ -1826,10 +1854,24 @@ def _build_startup_config(
         "heartbeat_minutes": heartbeat_minutes,
         "rotate_daily": rotate_daily,
         "compress_rotated": compress_rotated,
+        "prewarm": {
+            "enabled": prewarm_enabled,
+            "count": prewarm_count if prewarm_enabled else None,
+            "settle_ms": prewarm_ms if prewarm_enabled else None,
+        },
     }
 
 
-def init_logfile(network_info: dict | None = None, target_pool: list[str] | None = None, keep_awake_mode: str = "udp-tick", egress: dict | None = None, startup_config: dict | None = None) -> str:
+def init_logfile(
+    network_info: dict | None = None,
+    target_pool: list[str] | None = None,
+    keep_awake_mode: str = "udp-tick",
+    egress: dict | None = None,
+    startup_config: dict | None = None,
+    prewarm_enabled: bool = False,
+    prewarm_ms: int = 15,
+    prewarm_count: int = 1,
+) -> str:
     """
     Creates a pure RFC-4180 CSV logfile starting directly on Line 1 with the column headers,
     writes complete structured session metadata to <filename>.meta.json, and initializes
@@ -1878,6 +1920,11 @@ def init_logfile(network_info: dict | None = None, target_pool: list[str] | None
         if keep_awake_mode == "udp-tick"
         else (" (WMM Voice DSCP EF tagging)" if keep_awake_mode == "qos-vo" else "")
     )
+    if prewarm_enabled:
+        pulse_lbl = "pulse" if prewarm_count == 1 else "pulses"
+        prewarm_desc = f"ENABLED ({prewarm_count} {pulse_lbl} × {prewarm_ms}ms settle)"
+    else:
+        prewarm_desc = "DISABLED"
 
     # 1. Write pure RFC-4180 CSV (Line 1 is strictly the column headers)
     with open(filename, "w", encoding="utf-8", newline="") as f:
@@ -1895,7 +1942,12 @@ def init_logfile(network_info: dict | None = None, target_pool: list[str] | None
         "keep_awake": {
             "mode": keep_awake_mode,
             "interval_ms": 150 if keep_awake_mode in ("udp-tick", "qos-vo") else None,
-            "target_port": 9 if keep_awake_mode == "udp-tick" else None,
+            "target_port": 9 if keep_awake_mode in ("udp-tick", "prewarm") or prewarm_enabled else None,
+            "prewarm": {
+                "enabled": prewarm_enabled,
+                "count": prewarm_count if prewarm_enabled else None,
+                "settle_ms": prewarm_ms if prewarm_enabled else None,
+            },
         },
         "vpn": vpn_meta,
         "targets": {
@@ -1925,6 +1977,7 @@ def init_logfile(network_info: dict | None = None, target_pool: list[str] | None
             f.write(f"Interface:       {iface_desc}\n")
             f.write(f"Power State:     Source={power_meta['power_source']}, LowPowerMode={power_meta['low_power_mode']}\n")
             f.write(f"Keep-Awake:      {keep_awake_mode}{keep_awake_desc}\n")
+            f.write(f"Pre-Warm Probe:  {prewarm_desc}\n")
             f.write(f"VPN Agent:       Zscaler (ProcessActive={vpn_meta['zscaler_process_active']}, TunnelIface={vpn_meta['tunnel_interface']}, VirtualGW={vpn_meta['tunnel_virtual_gateway']})\n")
             f.write(f"Target Pool:     {targets_str}\n")
             direct_desc = format_egress_display(egress.get("direct") if egress else None)
@@ -2403,14 +2456,41 @@ def _build_parser() -> argparse.ArgumentParser:
         nargs="?",
         const="udp-tick",
         default="udp-tick",
-        choices=["off", "udp-tick", "qos-vo", "assertion"],
-        help="Suppress 802.11 PSM sleep buffering via background side-channel (choices: off, udp-tick, qos-vo, assertion; default: udp-tick)",
+        choices=["off", "udp-tick", "qos-vo", "assertion", "prewarm"],
+        help="Suppress 802.11 PSM sleep buffering via background side-channel or pre-warm (choices: off, udp-tick, qos-vo, assertion, prewarm; default: udp-tick)",
     )
     parser.add_argument(
         "--no-keep-awake",
         dest="no_keep_awake",
         action="store_true",
         help="Disable background keep-awake side-channel (equivalent to --keep-awake off; passive measurement with 802.11 PSM doze)",
+    )
+    parser.add_argument(
+        "--prewarm",
+        dest="prewarm",
+        action="store_true",
+        default=None,
+        help="Transmit a synchronized 1-byte pre-warm pulse to the gateway 15ms prior to concurrent probe dispatch, guaranteeing D0 active state (can be combined with --keep-awake udp-tick)",
+    )
+    parser.add_argument(
+        "--no-prewarm",
+        dest="no_prewarm",
+        action="store_true",
+        help="Explicitly disable in-line pre-warm probe dispatch",
+    )
+    parser.add_argument(
+        "--prewarm-ms",
+        dest="prewarm_ms",
+        type=int,
+        default=15,
+        help="Hardware stabilization settle delay in milliseconds after pre-warm datagram before probe dispatch (default: 15)",
+    )
+    parser.add_argument(
+        "--prewarm-count",
+        dest="prewarm_count",
+        type=int,
+        default=1,
+        help="Number of pre-warm micro-datagrams to transmit prior to probe dispatch (default: 1)",
     )
     parser.add_argument("--zscaler-cidr", type=str, default="", help="Comma-separated extra CIDR ranges to classify as 'zscaler' Corporate Tunnel egress, in addition to Zscaler's published ranges (e.g. a Private Service Edge range not covered by Zscaler's public list)")
     parser.add_argument("--logfile", type=str, default="", help="Custom logfile path (default: auto-generated unique .csv filename)")
@@ -2425,6 +2505,16 @@ async def main():
     args = parser.parse_args()
     if getattr(args, "no_keep_awake", False):
         args.keep_awake = "off"
+
+    if getattr(args, "no_prewarm", False):
+        prewarm_enabled = False
+    elif getattr(args, "prewarm", None) is True:
+        prewarm_enabled = True
+    elif args.keep_awake == "prewarm":
+        prewarm_enabled = True
+    else:
+        prewarm_enabled = False
+
     args.trace_verify = not args.no_trace_verify
     args.rotate_daily = not args.no_rotate_daily
     args.compress_rotated = not args.no_compress_rotated
@@ -2433,6 +2523,10 @@ async def main():
         parser.error("--count/-n must be a positive integer")
     if args.rotate_interval < 0:
         parser.error("--rotate-interval/-r cannot be negative")
+    if args.prewarm_count < 1:
+        parser.error("--prewarm-count must be a positive integer")
+    if args.prewarm_ms < 1:
+        parser.error("--prewarm-ms must be a positive integer")
 
     if args.target_pool is not None:
         try:
@@ -2490,7 +2584,13 @@ async def main():
     egress_resolving = False
 
     # Start keep-awake early so radio stays warm
-    keep_awake_ctrl = KeepAwakeController(mode=args.keep_awake, gateway_ip=network_info.get("gateway_ip", ""))
+    keep_awake_ctrl = KeepAwakeController(
+        mode=args.keep_awake,
+        gateway_ip=network_info.get("gateway_ip", ""),
+        prewarm=prewarm_enabled,
+        prewarm_ms=args.prewarm_ms,
+        prewarm_count=args.prewarm_count,
+    )
     await keep_awake_ctrl.start()
 
     # Re-sample Wi-Fi PHY post-warmup to capture active operational transmit rate
@@ -2506,7 +2606,11 @@ async def main():
             init_target, init_slot, len(target_pool), direct_override, zscaler_override,
             startup_pathv, args.trace_verify, trace_verify_every, args.silent, args.heartbeat_minutes,
             args.rotate_daily, args.compress_rotated,
-        )
+            prewarm_enabled=prewarm_enabled, prewarm_ms=args.prewarm_ms, prewarm_count=args.prewarm_count,
+        ),
+        prewarm_enabled=prewarm_enabled,
+        prewarm_ms=args.prewarm_ms,
+        prewarm_count=args.prewarm_count,
     )
     print("=" * 90)
     print(f" Tri-Path Split-Tunnel Network & Root-Cause Outage Analyzer (v{__version__})")
@@ -2561,6 +2665,12 @@ async def main():
         print(f"Keep-Awake Mode:           ENABLED ({mode_desc}; suppresses 802.11 PSM doze)")
     else:
         print(f"Keep-Awake Mode:           DISABLED (passive measurement; normal PSM doze)")
+
+    if prewarm_enabled:
+        pulse_lbl = "pulse" if args.prewarm_count == 1 else "pulses"
+        print(f"Pre-Warm Probe:            ENABLED ({args.prewarm_count} {pulse_lbl} × {args.prewarm_ms}ms settle delay before dispatch)")
+    else:
+        print(f"Pre-Warm Probe:            DISABLED")
 
     print(f"Detected Local IPv4:       {format_local_ip_line(network_info['local_ip'], network_info.get('ip_assignment_mode', ''))}")
     print(f"Detected LAN Gateway:      {network_info['gateway_ip'] or 'Searching...'}")
@@ -2700,7 +2810,11 @@ async def main():
                             current_isp_target, active_slot_for_rotation, len(target_pool), direct_override, zscaler_override,
                             network_info.get("path_verification"), args.trace_verify, trace_verify_every, args.silent,
                             args.heartbeat_minutes, args.rotate_daily, args.compress_rotated,
-                        )
+                            prewarm_enabled=prewarm_enabled, prewarm_ms=args.prewarm_ms, prewarm_count=args.prewarm_count,
+                        ),
+                        prewarm_enabled=prewarm_enabled,
+                        prewarm_ms=args.prewarm_ms,
+                        prewarm_count=args.prewarm_count,
                     )
                     current_log_date = today
                     # Reset overhead stats for fresh baseline
@@ -2838,6 +2952,10 @@ async def main():
                     trace_verify_task = asyncio.create_task(
                         asyncio.to_thread(assess_traceroute_verification, trace_info_snapshot, current_isp_target, current_zsc_target)
                     )
+
+            # In-line pre-warm pulse to ensure Wi-Fi radio is in D0 active state
+            if keep_awake_ctrl:
+                await keep_awake_ctrl.prewarm()
 
             # Run 3-way concurrent ping probes
             tasks = [
