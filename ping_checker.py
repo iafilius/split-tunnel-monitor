@@ -28,6 +28,7 @@ import sys
 import os
 import re
 import time
+import random
 import asyncio
 import argparse
 import subprocess
@@ -916,13 +917,21 @@ async def ping_target(target_ip: str, source_ip: str = "", timeout_sec: int = 2)
         return ProbeResult(target_ip, False, -1.0, str(e))
 
 
+async def _staggered_ping(delay_sec: float, *args, **kwargs) -> ProbeResult:
+    """Await delay_sec before invoking ping_target, ensuring inter-probe timing separation."""
+    if delay_sec > 0:
+        await asyncio.sleep(delay_sec)
+    return await ping_target(*args, **kwargs)
+
+
 def classify_outage(
     lan_res: ProbeResult,
     isp_res: ProbeResult,
     zsc_res: ProbeResult,
     zsc_target_is_virtual_gateway: bool = False,
     lan_gateway_ever_responded: bool = True,
-    zscaler_active: bool = True
+    zscaler_active: bool = True,
+    consecutive_redundant_drops: int = 2,
 ) -> tuple:
     """
     Evaluates 3-way probe matrix to determine root cause failure domain.
@@ -951,6 +960,8 @@ def classify_outage(
     # public IP, the gateway suppresses ICMP by policy — classify as DEGRADED, not OUTAGE.
     elif lan_ok and isp_ok and not zsc_ok:
         if not zscaler_active:
+            if consecutive_redundant_drops <= 1:
+                return ("INFO", "Redundant Probe Dropped (Direct Internet Reachable)")
             return ("DEGRADED", "Partial Packet Loss / Standard Route Probe Dropped (Internet Reachable)")
         if zsc_target_is_virtual_gateway:
             return ("DEGRADED", "Virtual Tunnel Next-Hop ICMP Blocked (Data-Plane Probe Required)")
@@ -978,6 +989,8 @@ def classify_outage(
     # Split-tunnel traffic still flows via Zscaler if active; otherwise transient packet loss on direct bound probe.
     elif lan_ok and not isp_ok and zsc_ok:
         if not zscaler_active:
+            if consecutive_redundant_drops <= 1:
+                return ("INFO", "Redundant Probe Dropped (Direct Internet Reachable)")
             return ("DEGRADED", "Partial Packet Loss / Direct Probe Dropped (Internet Reachable)")
         return ("DEGRADED", "ISP Direct Path Degraded (Zscaler Tunnel Active)")
 
@@ -995,7 +1008,8 @@ def determine_status_and_fault(
     zsc_res: ProbeResult,
     zsc_target_is_virtual_gateway: bool = False,
     lan_gateway_ever_responded: bool = True,
-    zscaler_active: bool = True
+    zscaler_active: bool = True,
+    consecutive_redundant_drops: int = 2,
 ) -> tuple:
     """
     Decide (status, fault) for one iteration. Short-circuits to a distinct
@@ -1013,7 +1027,8 @@ def determine_status_and_fault(
         lan_res, isp_res, zsc_res,
         zsc_target_is_virtual_gateway=zsc_target_is_virtual_gateway,
         lan_gateway_ever_responded=lan_gateway_ever_responded,
-        zscaler_active=zscaler_active
+        zscaler_active=zscaler_active,
+        consecutive_redundant_drops=consecutive_redundant_drops,
     )
 
 
@@ -1225,6 +1240,19 @@ def _get_wifi_phy_metadata(interface: str = "en0") -> dict:
         pass
 
     return telemetry
+
+
+def check_wifi_power_state(wifi_interface: str = "en0") -> bool | None:
+    """Query networksetup -getairportpower to determine if Wi-Fi interface radio is powered on."""
+    if platform.system() != "Darwin":
+        return None
+    try:
+        res = subprocess.run(["networksetup", "-getairportpower", wifi_interface], capture_output=True, text=True, timeout=1)
+        if res.returncode == 0:
+            return ": on" in res.stdout.lower()
+    except Exception:
+        pass
+    return None
 
 
 def poll_wifi_phy_fast(interface: str = "en0") -> dict | None:
@@ -1833,6 +1861,8 @@ def _build_startup_config(
     prewarm_enabled: bool = False,
     prewarm_ms: int = 15,
     prewarm_count: int = 1,
+    probe_stagger_ms: int = 15,
+    randomize_probe_order: bool = True,
 ) -> dict:
     """Bundle the startup-time operational fields needed for the `.log` header, mirroring the console banner."""
     return {
@@ -1859,6 +1889,8 @@ def _build_startup_config(
             "count": prewarm_count if prewarm_enabled else None,
             "settle_ms": prewarm_ms if prewarm_enabled else None,
         },
+        "probe_stagger_ms": probe_stagger_ms,
+        "randomize_probe_order": randomize_probe_order,
     }
 
 
@@ -1871,6 +1903,8 @@ def init_logfile(
     prewarm_enabled: bool = False,
     prewarm_ms: int = 15,
     prewarm_count: int = 1,
+    probe_stagger_ms: int = 15,
+    randomize_probe_order: bool = True,
 ) -> str:
     """
     Creates a pure RFC-4180 CSV logfile starting directly on Line 1 with the column headers,
@@ -1926,6 +1960,16 @@ def init_logfile(
     else:
         prewarm_desc = "DISABLED"
 
+    stagger_val = startup_config.get("probe_stagger_ms", probe_stagger_ms) if startup_config else probe_stagger_ms
+    rand_order = startup_config.get("randomize_probe_order", randomize_probe_order) if startup_config else randomize_probe_order
+    rand_lbl = ", randomized public target order" if rand_order else ", sequential order"
+    stagger_desc = f"ENABLED ({stagger_val}ms{rand_lbl})" if stagger_val > 0 else "DISABLED"
+
+    if wifi_meta.get("is_wifi"):
+        medium_advisory = "Wi-Fi (susceptible to RF contention, DFS scans & PSM sleep jitter; test over wired Ethernet with Wi-Fi disabled for clean-room baseline)"
+    else:
+        medium_advisory = "Wired Ethernet (clean-room baseline link)"
+
     # 1. Write pure RFC-4180 CSV (Line 1 is strictly the column headers)
     with open(filename, "w", encoding="utf-8", newline="") as f:
         csv.writer(f).writerow(CSV_COLUMNS)
@@ -1938,6 +1982,7 @@ def init_logfile(
         "host": host_meta,
         "power": power_meta,
         "wifi": wifi_meta,
+        "physical_medium_advisory": medium_advisory,
         "keep_awake_mode": keep_awake_mode,
         "keep_awake": {
             "mode": keep_awake_mode,
@@ -1948,6 +1993,11 @@ def init_logfile(
                 "count": prewarm_count if prewarm_enabled else None,
                 "settle_ms": prewarm_ms if prewarm_enabled else None,
             },
+        },
+        "probe_stagger_ms": stagger_val,
+        "probe_stagger": {
+            "interval_ms": stagger_val,
+            "randomize_order": rand_order,
         },
         "vpn": vpn_meta,
         "targets": {
@@ -1975,9 +2025,11 @@ def init_logfile(
             f.write(f"Started At:      {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write(f"Host / OS:       {host_meta['hostname']} ({host_meta['architecture']}, {host_meta['os']})\n")
             f.write(f"Interface:       {iface_desc}\n")
+            f.write(f"Physical Medium: {medium_advisory}\n")
             f.write(f"Power State:     Source={power_meta['power_source']}, LowPowerMode={power_meta['low_power_mode']}\n")
             f.write(f"Keep-Awake:      {keep_awake_mode}{keep_awake_desc}\n")
             f.write(f"Pre-Warm Probe:  {prewarm_desc}\n")
+            f.write(f"Probe Stagger:   {stagger_desc}\n")
             f.write(f"VPN Agent:       Zscaler (ProcessActive={vpn_meta['zscaler_process_active']}, TunnelIface={vpn_meta['tunnel_interface']}, VirtualGW={vpn_meta['tunnel_virtual_gateway']})\n")
             f.write(f"Target Pool:     {targets_str}\n")
             direct_desc = format_egress_display(egress.get("direct") if egress else None)
@@ -1999,7 +2051,8 @@ def init_logfile(
                     f.write(f"Target Rotation: DISABLED (static override: ISP={rot.get('isp_target')}, ZSC={rot.get('zsc_target')})\n")
                 else:
                     f.write(f"Target Rotation: DISABLED (--rotate-interval 0, static target: {rot.get('isp_target')})\n")
-                f.write(f"Probe Targets:   ISP Direct={rot.get('isp_target')}, Zscaler Tunnel={rot.get('zsc_target')}\n")
+                zsc_label = "Standard Route" if not vpn_meta.get("zscaler_process_active", False) and rot.get("isp_target") != rot.get("zsc_target") else "Zscaler Tunnel"
+                f.write(f"Probe Targets:   ISP Direct={rot.get('isp_target')}, {zsc_label}={rot.get('zsc_target')}\n")
                 pathv = startup_config.get("path_verification") or {}
                 zsc_v_tag = "VERIFIED" if pathv.get("zsc_status") == "OK" else pathv.get("zsc_status", "UNCERTAIN")
                 f.write(f"Path Verify:     Direct={'VERIFIED' if pathv.get('direct_verified') else 'UNCERTAIN'} ({pathv.get('direct_reason', 'N/A')}), Zscaler={zsc_v_tag} ({pathv.get('zsc_reason', 'N/A')})\n")
@@ -2492,6 +2545,26 @@ def _build_parser() -> argparse.ArgumentParser:
         default=1,
         help="Number of pre-warm micro-datagrams to transmit prior to probe dispatch (default: 1)",
     )
+    parser.add_argument(
+        "--probe-stagger-ms",
+        dest="probe_stagger_ms",
+        type=int,
+        default=15,
+        help="Stagger delay in milliseconds between concurrent probe dispatches (default: 15; 0 to disable)",
+    )
+    parser.add_argument(
+        "--no-randomize-probe-order",
+        dest="no_randomize_probe_order",
+        action="store_true",
+        help="Disable randomized public target dispatch order (dispatches sequentially: Direct at +15ms, Tunnel at +30ms)",
+    )
+    parser.add_argument(
+        "--randomize-probe-order",
+        dest="randomize_probe_order",
+        action="store_true",
+        default=None,
+        help="Explicitly enable randomized public target dispatch order (on by default when micro-stagger is active)",
+    )
     parser.add_argument("--zscaler-cidr", type=str, default="", help="Comma-separated extra CIDR ranges to classify as 'zscaler' Corporate Tunnel egress, in addition to Zscaler's published ranges (e.g. a Private Service Edge range not covered by Zscaler's public list)")
     parser.add_argument("--logfile", type=str, default="", help="Custom logfile path (default: auto-generated unique .csv filename)")
     parser.add_argument("--version", action="version", version=f"ping_checker {__version__} (log-schema: {__log_schema__})")
@@ -2527,6 +2600,15 @@ async def main():
         parser.error("--prewarm-count must be a positive integer")
     if args.prewarm_ms < 1:
         parser.error("--prewarm-ms must be a positive integer")
+    if args.probe_stagger_ms < 0:
+        parser.error("--probe-stagger-ms cannot be negative")
+
+    if getattr(args, "no_randomize_probe_order", False):
+        randomize_probe_order = False
+    elif getattr(args, "randomize_probe_order", None) is True:
+        randomize_probe_order = True
+    else:
+        randomize_probe_order = (args.probe_stagger_ms > 0)
 
     if args.target_pool is not None:
         try:
@@ -2562,6 +2644,12 @@ async def main():
 
     print("Performing dynamic path discovery...")
     network_info = NetworkDiscovery.discover_all()
+    zsc_active = network_info.get("zscaler", {}).get("is_active", False)
+    if not zsc_active and zscaler_override is None and len(target_pool) > 1:
+        offset = len(target_pool) // 2
+        init_zsc_slot = (init_slot + offset) % len(target_pool)
+        current_zsc_target = target_pool[init_zsc_slot]
+
     network_info["path_verification"] = assess_path_verification(network_info, current_isp_target, current_zsc_target)
     startup_pathv = network_info["path_verification"]
 
@@ -2607,10 +2695,14 @@ async def main():
             startup_pathv, args.trace_verify, trace_verify_every, args.silent, args.heartbeat_minutes,
             args.rotate_daily, args.compress_rotated,
             prewarm_enabled=prewarm_enabled, prewarm_ms=args.prewarm_ms, prewarm_count=args.prewarm_count,
+            probe_stagger_ms=args.probe_stagger_ms,
+            randomize_probe_order=randomize_probe_order,
         ),
         prewarm_enabled=prewarm_enabled,
         prewarm_ms=args.prewarm_ms,
         prewarm_count=args.prewarm_count,
+        probe_stagger_ms=args.probe_stagger_ms,
+        randomize_probe_order=randomize_probe_order,
     )
     print("=" * 90)
     print(f" Tri-Path Split-Tunnel Network & Root-Cause Outage Analyzer (v{__version__})")
@@ -2637,7 +2729,10 @@ async def main():
         else:
             print(f"Target Rotation:           DISABLED (--rotate-interval 0, static target: {current_isp_target})")
     print(f"ISP Direct Probe Target:   {current_isp_target}")
-    print(f"Zscaler Tunnel Target:     {current_zsc_target}")
+    if not zsc_active and zscaler_override is None and len(target_pool) > 1:
+        print(f"Standard Route Target:     {current_zsc_target} (Diverse Anycast Target; Zscaler Inactive)")
+    else:
+        print(f"Zscaler Tunnel Target:     {current_zsc_target}")
 
     z_iface = network_info['zscaler'].get('interface') or "N/A"
     z_vgw = network_info['zscaler'].get('gateway_ip') or "N/A"
@@ -2657,8 +2752,14 @@ async def main():
         print(f"Detected Interface:        {network_info['interface']} (Wi-Fi)")
         print(f"Wi-Fi Radio:               {ch_disp}, RSSI: {rssi_disp}, Noise: {noise_disp} ({snr_disp})")
         print(f"Wi-Fi Link Speed:          {speed_disp}")
+        print(f"Physical Medium Note:      Wi-Fi ({network_info['interface']}; for clean-room baseline excluding RF/PSM jitter, test over Ethernet with Wi-Fi disabled)")
     else:
-        print(f"Detected Interface:        {network_info['interface']} ({medium_name})")
+        print(f"Detected Interface:        {network_info['interface']} ({medium_name} / Wired)")
+        print(f"Physical Medium Note:      Wired Ethernet (clean-room baseline link)")
+        wifi_power = check_wifi_power_state("en0")
+        if wifi_power is True:
+            print(f"Wi-Fi Multi-Home Warning:  Wi-Fi interface (en0) is also active. To prevent AWDL channel hopping from")
+            print(f"                           introducing micro-jitter: networksetup -setairportpower en0 off")
 
     if args.keep_awake != "off":
         mode_desc = "udp-tick @ 150ms" if args.keep_awake == "udp-tick" else args.keep_awake
@@ -2672,12 +2773,21 @@ async def main():
     else:
         print(f"Pre-Warm Probe:            DISABLED")
 
+    if args.probe_stagger_ms > 0:
+        rand_desc = ", randomized public target order: ±15ms/30ms" if randomize_probe_order else f": LAN=0ms, ISP=+{args.probe_stagger_ms}ms, Tunnel=+{2*args.probe_stagger_ms}ms"
+        print(f"Probe Stagger:             ENABLED ({args.probe_stagger_ms}ms micro-stagger{rand_desc}; LAN=0ms)")
+    else:
+        print(f"Probe Stagger:             DISABLED (concurrent 0ms dispatch)")
+
     print(f"Detected Local IPv4:       {format_local_ip_line(network_info['local_ip'], network_info.get('ip_assignment_mode', ''))}")
     print(f"Detected LAN Gateway:      {network_info['gateway_ip'] or 'Searching...'}")
     print(f"Detected Zscaler Tunnel:   {z_status}")
     print(f"Zscaler Virtual Next-Hop:  {z_vgw}")
     print(f"ISP Direct Target:         {current_isp_target}")
-    print(f"Zscaler Target:            {current_zsc_target}")
+    if not zsc_active and zscaler_override is None and len(target_pool) > 1:
+        print(f"Standard Route Target:     {current_zsc_target} (Diverse Anycast Target; Zscaler Inactive)")
+    else:
+        print(f"Zscaler Target:            {current_zsc_target}")
     zsc_v_tag = "VERIFIED" if startup_pathv.get("zsc_status") == "OK" else startup_pathv.get("zsc_status", "UNCERTAIN")
     print(f"Direct Path Verification:  {'VERIFIED' if startup_pathv['direct_verified'] else 'UNCERTAIN'} ({startup_pathv['direct_reason']})")
     print(f"Zscaler Verification:      {zsc_v_tag} ({startup_pathv['zsc_reason']})")
@@ -2718,6 +2828,7 @@ async def main():
     trace_reconcile_attempts = 0         # consecutive disagreeing re-checks since last transition
     trace_reconcile_max_attempts = 20    # cap on reconciliation retries per transition (~60s; real tunnel re-establishment observed taking up to ~12s)
     lan_gateway_ever_responded = False           # session baseline: has the LAN gateway ever answered ICMP?
+    consecutive_redundant_drops = 0              # tracks sequential isolated drops on redundant probe when VPN inactive
     # Session tracking (incident lifecycle, exit summary, notifications)
     session_start = datetime.now()
     status_counts: dict = {"HEALTHY": 0, "DEGRADED": 0, "OUTAGE": 0, "INFO": 0}
@@ -2787,7 +2898,15 @@ async def main():
                     print(rot_msg, flush=True)
                 prev_active_target = active_target
                 current_isp_target = active_target
-                current_zsc_target = active_target
+
+            zsc_active = network_info.get("zscaler", {}).get("is_active", False)
+            if not zsc_active and zscaler_override is None and len(target_pool) > 1:
+                offset = len(target_pool) // 2
+                active_slot_now = active_slot if pool_rotation_enabled else init_slot
+                zsc_slot = (active_slot_now + offset) % len(target_pool)
+                current_zsc_target = target_pool[zsc_slot]
+            elif zsc_active and zscaler_override is None:
+                current_zsc_target = current_isp_target
 
             # Daily logfile rotation at midnight
             if args.rotate_daily:
@@ -2811,10 +2930,14 @@ async def main():
                             network_info.get("path_verification"), args.trace_verify, trace_verify_every, args.silent,
                             args.heartbeat_minutes, args.rotate_daily, args.compress_rotated,
                             prewarm_enabled=prewarm_enabled, prewarm_ms=args.prewarm_ms, prewarm_count=args.prewarm_count,
+                            probe_stagger_ms=args.probe_stagger_ms,
+                            randomize_probe_order=randomize_probe_order,
                         ),
                         prewarm_enabled=prewarm_enabled,
                         prewarm_ms=args.prewarm_ms,
                         prewarm_count=args.prewarm_count,
+                        probe_stagger_ms=args.probe_stagger_ms,
+                        randomize_probe_order=randomize_probe_order,
                     )
                     current_log_date = today
                     # Reset overhead stats for fresh baseline
@@ -2957,11 +3080,20 @@ async def main():
             if keep_awake_ctrl:
                 await keep_awake_ctrl.prewarm()
 
-            # Run 3-way concurrent ping probes
+            # Run 3-way concurrent ping probes (with micro-staggering and randomized public dispatch)
+            stagger_sec = max(0.0, args.probe_stagger_ms / 1000.0)
+            if randomize_probe_order and stagger_sec > 0:
+                flip = (random.getrandbits(1) == 1)
+                isp_delay = (2 * stagger_sec) if flip else stagger_sec
+                zsc_delay = stagger_sec if flip else (2 * stagger_sec)
+            else:
+                isp_delay = stagger_sec
+                zsc_delay = 2 * stagger_sec
+
             tasks = [
                 ping_target(gw_ip, timeout_sec=2) if gw_ip else asyncio.sleep(0, result=ProbeResult("N/A", False, -1.0, "No Gateway")),
-                ping_target(current_isp_target, source_ip=local_ip, timeout_sec=2) if local_ip else ping_target(current_isp_target, timeout_sec=2),
-                ping_target(current_zsc_target, timeout_sec=2)
+                _staggered_ping(isp_delay, current_isp_target, source_ip=local_ip, timeout_sec=2) if local_ip else _staggered_ping(isp_delay, current_isp_target, timeout_sec=2),
+                _staggered_ping(zsc_delay, current_zsc_target, timeout_sec=2)
             ]
 
             lan_res, isp_res, zsc_res = await asyncio.gather(*tasks)
@@ -3000,6 +3132,14 @@ async def main():
             zsc_virtual_gateway = network_info.get("zscaler", {}).get("gateway_ip", "")
             zsc_target_is_virtual_gateway = bool(zsc_virtual_gateway and current_zsc_target == zsc_virtual_gateway)
 
+            if not zsc_active:
+                if (lan_res.success and isp_res.success and not zsc_res.success) or (lan_res.success and not isp_res.success and zsc_res.success):
+                    consecutive_redundant_drops += 1
+                else:
+                    consecutive_redundant_drops = 0
+            else:
+                consecutive_redundant_drops = 0
+
             status, fault = determine_status_and_fault(
                 local_ip,
                 lan_res,
@@ -3007,18 +3147,20 @@ async def main():
                 zsc_res,
                 zsc_target_is_virtual_gateway=zsc_target_is_virtual_gateway,
                 lan_gateway_ever_responded=lan_gateway_ever_responded,
-                zscaler_active=network_info.get("zscaler", {}).get("is_active", False)
+                zscaler_active=zsc_active,
+                consecutive_redundant_drops=consecutive_redundant_drops,
             )
             if lan_res.success:
                 lan_gateway_ever_responded = True
 
-            # Update overhead statistics
-            overhead.add_sample(isp_res, zsc_res)
-            baseline_just_set = overhead.maybe_set_baseline(args.overhead_baseline_samples)
-            if baseline_just_set:
-                base_msg = f"[{_ts()}] [BASELINE] Overhead baseline established: p50={overhead.baseline_p50:+.1f}ms (after {args.overhead_baseline_samples} samples)"
-                _log_event(_event_log_path(logfile), base_msg)
-                print(f"\n{base_msg}")
+            # Update overhead statistics (only active when VPN tunnel is established)
+            if zsc_active:
+                overhead.add_sample(isp_res, zsc_res)
+                baseline_just_set = overhead.maybe_set_baseline(args.overhead_baseline_samples)
+                if baseline_just_set:
+                    base_msg = f"[{_ts()}] [BASELINE] Overhead baseline established: p50={overhead.baseline_p50:+.1f}ms (after {args.overhead_baseline_samples} samples)"
+                    _log_event(_event_log_path(logfile), base_msg)
+                    print(f"\n{base_msg}")
 
             # Sample in-process host telemetry (<0.05ms)
             current_telemetry = system_telemetry.sample()
@@ -3033,7 +3175,7 @@ async def main():
                 zsc_res,
                 status,
                 fault,
-                overhead=overhead,
+                overhead=overhead if zsc_active else None,
                 overhead_alert_ms=args.overhead_alert_ms,
                 target_pool_index=active_slot_idx,
                 telemetry=current_telemetry,
@@ -3074,7 +3216,8 @@ async def main():
             time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             lan_str = f"LAN ({gw_ip or 'N/A'}): {lan_res.format_rtt()}"
             isp_str = f"ISP Direct ({current_isp_target}): {isp_res.format_rtt()}"
-            zsc_str = f"Zscaler ({current_zsc_target}): {zsc_res.format_rtt()}"
+            zsc_lbl = "Zscaler" if zsc_active else "Standard Route"
+            zsc_str = f"{zsc_lbl} ({current_zsc_target}): {zsc_res.format_rtt()}"
 
             if status == "HEALTHY":
                 status_color = "\033[92m[HEALTHY]\033[0m"
@@ -3102,21 +3245,24 @@ async def main():
 
             # Overhead statistics suffix
             ovh_tag = ""
-            p50 = overhead.rolling_p50()
-            p95 = overhead.rolling_p95()
             is_ovh_warn = False
-            if p50 is not None:
-                ld = overhead.loss_delta_pct()
-                ld_str = f" Δloss={ld:+.1f}%" if ld is not None else ""
-                ovh_tag = f" | OVH: p50={p50:+.1f}ms p95={p95:+.1f}ms{ld_str}"
-                if overhead.is_alerting(args.overhead_alert_ms) and overhead.baseline_p50 is not None:
-                    above = p50 - overhead.baseline_p50
-                    ovh_tag += f" \033[93m[OVERHEAD-WARN: {above:+.1f}ms above baseline]\033[0m"
-                    is_ovh_warn = True
-                # Track session peak
-                if peak_ovh is None or p50 > peak_ovh:
-                    peak_ovh = p50
-                    peak_ovh_time = datetime.now()
+            if zsc_active:
+                p50 = overhead.rolling_p50()
+                p95 = overhead.rolling_p95()
+                if p50 is not None:
+                    ld = overhead.loss_delta_pct()
+                    ld_str = f" Δloss={ld:+.1f}%" if ld is not None else ""
+                    ovh_tag = f" | OVH: p50={p50:+.1f}ms p95={p95:+.1f}ms{ld_str}"
+                    if overhead.is_alerting(args.overhead_alert_ms) and overhead.baseline_p50 is not None:
+                        above = p50 - overhead.baseline_p50
+                        ovh_tag += f" \033[93m[OVERHEAD-WARN: {above:+.1f}ms above baseline]\033[0m"
+                        is_ovh_warn = True
+                    # Track session peak
+                    if peak_ovh is None or p50 > peak_ovh:
+                        peak_ovh = p50
+                        peak_ovh_time = datetime.now()
+            else:
+                ovh_tag = " | OVH: N/A (VPN Inactive)"
 
             # Overhead-warn transition notifications (fire once on entry/exit, not every iteration)
             if is_ovh_warn and not prev_ovh_warn:
@@ -3128,9 +3274,9 @@ async def main():
 
             console_line = f"[{time_str}] {status_color} {lan_str} | {isp_str} | {zsc_str} | {direct_tag} | {zsc_tag}{trace_tag}{ovh_tag}{fault_str}"
 
-            # Silent mode: suppress HEALTHY unless there's an alert; always print non-HEALTHY
+            # Silent mode: suppress HEALTHY and INFO unless there's an alert; always print non-HEALTHY
             should_print = True
-            if args.silent and status == "HEALTHY" and not is_ovh_warn:
+            if args.silent and status in ("HEALTHY", "INFO") and not is_ovh_warn:
                 should_print = False
 
             # Print update; handle broken pipe gracefully (e.g. piped to head)

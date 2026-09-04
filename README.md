@@ -330,9 +330,41 @@ python3 ping_checker.py [OPTIONS]
 | `--no-prewarm`                         | off                                                                                     | Explicitly disable in-line pre-warm probe dispatch                                                                             |
 | `--prewarm-ms`                         | `15`                                                                                    | Hardware stabilization settle delay in milliseconds after pre-warm datagram before probe dispatch                             |
 | `--prewarm-count`                      | `1`                                                                                     | Number of pre-warm micro-datagrams to transmit prior to probe dispatch                                                         |
+| `--probe-stagger-ms`                   | `15`                                                                                    | Stagger delay in milliseconds between concurrent probe dispatches (default: 15; 0 to disable)                                  |
+| `--no-randomize-probe-order`           | off                                                                                     | Disable randomized public target dispatch order (dispatches sequentially: Direct at +15ms, Tunnel at +30ms)                  |
+| `--randomize-probe-order`              | off                                                                                     | Explicitly enable randomized public target dispatch order (enabled by default when micro-stagger is active)                 |
 | `--logfile`                            | auto                                                                                    | Custom logfile path; default: `ping_checker_YYYYMMDD_HHMMSS.csv`                                                              |
 | `--zscaler-cidr`                       | none                                                                                    | Comma-separated extra CIDR ranges to classify as `zscaler` Corporate Tunnel egress, in addition to Zscaler's published ranges |
 | `--no-notify`                          | off                                                                                     | Disable macOS desktop notifications (on by default)                                                                           |
+
+---
+
+## Diagnostic Best Practices: Isolating Wi-Fi Artifacts vs. True Network Faults
+
+> [!TIP]
+> **Gold-Standard Baseline Testing: Use Wired Ethernet with Wi-Fi Disabled**
+>
+> When isolating upstream ISP packet loss, Anycast edge rate-limiting, or Corporate VPN tunnel latency overhead, running on Wi-Fi introduces non-deterministic physical-layer RF artifacts that can masquerade as network routing issues:
+> 1. **802.11 Power Save Mode (PSM)**: Periodic 50ms DTIM beacon sleep buffering when traffic pauses.
+> 2. **Apple Wireless Direct Link (AWDL)**: Background AirDrop / AirPlay channel-hopping scans on `en0` causing periodic 20–100ms multi-modal latency spikes.
+> 3. **RF Contention & FIFO Retries**: CSMA/CA channel backoff, neighbor AP interference, and tail-of-burst packet drops (0.01%–0.05%) under normal RF noise.
+> 4. **DFS Radar Events**: 5GHz channels 52–144 occasionally trigger CAC/radar avoidance hops.
+>
+> ### Clean-Room Baseline Protocol
+> To establish pure ground-truth baseline measurements for your ISP and Corporate VPN stack (zero RF jitter, zero sleep states, sub-millisecond local LAN RTT):
+> 1. Connect via a USB-C / Thunderbolt Ethernet adapter or docking station.
+> 2. Disable the Wi-Fi radio to prevent background AWDL discovery scans from introducing micro-jitter:
+>    ```bash
+>    networksetup -setairportpower en0 off
+>    ```
+> 3. Run the monitor:
+>    ```bash
+>    python3 ping_checker.py --keep-awake udp-tick --probe-stagger-ms 15 -n 300
+>    ```
+> 4. Re-enable Wi-Fi when testing is complete:
+>    ```bash
+>    networksetup -setairportpower en0 on
+>    ```
 
 ---
 
