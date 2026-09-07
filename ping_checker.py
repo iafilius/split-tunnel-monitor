@@ -47,7 +47,7 @@ import ctypes.util
 import threading
 from datetime import datetime
 
-__version__ = "1.5.0"
+__version__ = "1.5.1"
 __log_schema__ = 5
 
 # Curated default IPv4 Anycast target pool for deterministic synchronized rotation
@@ -1359,7 +1359,12 @@ def detect_wifi_roam(old_wifi: dict, new_wifi: dict) -> str | None:
         old_ch_str = f"Channel {old_ch} ({old_band})" if old_band else f"Channel {old_ch}"
         new_ch_str = f"Channel {new_ch} ({new_band})" if new_band else f"Channel {new_ch}"
         rssi_str = f" | RSSI: {new_rssi} dBm" if new_rssi is not None else ""
-        return f"[WIFI ROAM] {old_ch_str} → {new_ch_str}{rssi_str} (SSID: {new_ssid})"
+        advisory_suffix = ""
+        is_old_higher = old_band in ("5GHz", "6GHz") or old_ch > 14
+        is_new_2ghz = new_band == "2.4GHz" or (1 <= new_ch <= 14)
+        if is_old_higher and is_new_2ghz:
+            advisory_suffix = " (shared 2.4GHz band -- higher RF contention risk)"
+        return f"[WIFI ROAM] {old_ch_str} → {new_ch_str}{rssi_str} (SSID: {new_ssid}){advisory_suffix}"
 
     # 2. Same-channel AP BSSID roam
     if old_bssid and new_bssid and new_bssid != old_bssid:
@@ -1971,6 +1976,15 @@ def init_logfile(
     rand_lbl = ", randomized public target order" if rand_order else ", sequential order"
     stagger_desc = f"ENABLED ({stagger_val}ms{rand_lbl})" if stagger_val > 0 else "DISABLED"
 
+    is_2ghz = False
+    if wifi_meta.get("is_wifi"):
+        ch_num = wifi_meta.get("channel", 0)
+        band_str = wifi_meta.get("band", "")
+        if band_str == "2.4GHz" or (1 <= ch_num <= 14):
+            is_2ghz = True
+    rf_band_advisory = "2.4GHZ_SHARED_ISM_RISK" if is_2ghz else None
+    wifi_meta["rf_band_advisory"] = rf_band_advisory
+
     if wifi_meta.get("is_wifi"):
         medium_advisory = "Wi-Fi (susceptible to RF contention, DFS scans & PSM sleep jitter; test over wired Ethernet with Wi-Fi disabled for clean-room baseline)"
     else:
@@ -1988,6 +2002,7 @@ def init_logfile(
         "host": host_meta,
         "power": power_meta,
         "wifi": wifi_meta,
+        "rf_band_advisory": rf_band_advisory,
         "physical_medium_advisory": medium_advisory,
         "keep_awake_mode": keep_awake_mode,
         "keep_awake": {
@@ -2032,6 +2047,8 @@ def init_logfile(
             f.write(f"Host / OS:       {host_meta['hostname']} ({host_meta['architecture']}, {host_meta['os']})\n")
             f.write(f"Interface:       {iface_desc}\n")
             f.write(f"Physical Medium: {medium_advisory}\n")
+            if is_2ghz:
+                f.write(f"RF Advisory:     Active Wi-Fi on 2.4GHz (Channel {ch_num}) -- shared ISM band with higher susceptibility to Bluetooth, peripheral dongle, and USB 3.0 EMI contention. (Test on 5GHz/6GHz or wired Ethernet to rule out local RF interference)\n")
             f.write(f"Power State:     Source={power_meta['power_source']}, LowPowerMode={power_meta['low_power_mode']}\n")
             f.write(f"Keep-Awake:      {keep_awake_mode}{keep_awake_desc}\n")
             f.write(f"Pre-Warm Probe:  {prewarm_desc}\n")
@@ -2768,6 +2785,11 @@ async def main():
         print(f"Wi-Fi Radio:               {ch_disp}, RSSI: {rssi_disp}, Noise: {noise_disp} ({snr_disp})")
         print(f"Wi-Fi Link Speed:          {speed_disp}")
         print(f"Physical Medium Note:      Wi-Fi ({network_info['interface']}; for clean-room baseline excluding RF/PSM jitter, test over Ethernet with Wi-Fi disabled)")
+        is_2ghz = band_str == "2.4GHz" or (1 <= ch_num <= 14)
+        if is_2ghz:
+            print(f"RF Band Advisory:          Active Wi-Fi on 2.4GHz (Channel {ch_num}) -- shared ISM band with higher")
+            print(f"                           susceptibility to RF contention (Bluetooth, wireless dongles, USB 3.0 EMI).")
+            print(f"                           If experiencing latency spikes, test on 5GHz/6GHz or wired Ethernet.")
     else:
         print(f"Detected Interface:        {network_info['interface']} ({medium_name} / Wired)")
         print(f"Physical Medium Note:      Wired Ethernet (clean-room baseline link)")

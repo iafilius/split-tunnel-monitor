@@ -47,6 +47,7 @@ This protocol establishes the standardized telemetry intake and forensic feedbac
    - **Router Control Plane vs. Hardware Forwarding**: If the LAN gateway times out for 1–2 cycles while both public internet probes succeed with normal RTT ($\le 50\text{ms}$), diagnose as **Router Control-Plane ICMP Deprioritization** (hardware NSS forwarding is alive; CPU dropped echo request). Do *not* declare a local link failure.
    - **802.11 Power Save Mode (PSM) Sawtooth**: If latency exhibits a periodic ~20s sawtooth profile (~50ms resting baseline dropping to ~5ms upon bursts), diagnose as **802.11 DTIM Beacon Buffering**, not WAN or Wi-Fi congestion. Recommend `--keep-awake udp-tick`.
    - **Host Sleep Gaps**: Check `.log` event timelines for `[SYSTEM RESUME]` or monotonic time gaps $> 10\text{s}$ before diagnosing script freezes or target rotation jumps.
+   - **2.4 GHz RF Contention & Bluetooth Coexistence**: If the client's Wi-Fi link is on the 2.4 GHz band (Channels 1–13) and exhibits non-periodic multi-modal latency spikes (50ms–200ms+) or intermittent packet loss, diagnose as **2.4 GHz ISM Band Contention** (susceptibility to coexistence collisions with Bluetooth audio/HID, wireless dongles, or adjacent USB 3.0 EMI). Do *not* diagnose ISP underlay or enterprise VPN degradation without first validating on 5/6 GHz Wi-Fi or wired Ethernet.
 
 4. **Structure Client Feedback in Standardized 4-Part Report**:
    - **Executive Verdict**: 1-sentence root-cause determination and status classification (`HEALTHY`, `DEGRADED`, or `OUTAGE`).

@@ -12,13 +12,13 @@ When diagnosing network performance and VPN split-tunneling on macOS, engineers 
                                   MACOS LATENCY FINGERPRINT TYPES
                                   ═══════════════════════════════
 
-   [Fingerprint A: PSM Sleep]      [Fingerprint B: AWDL Scan]      [Fingerprint C: Host EDR]      [Fingerprint D: Zscaler Overlay]
-     (Radio Power State)             (Radio Off-Channel Hop)         (Local Endpoint Security)       (Network VPN & Cloud Proxy)
-   ┌───────────────────────────┐   ┌───────────────────────────┐   ┌───────────────────────────┐   ┌───────────────────────────┐
-   │ • ~50–60ms resting floor  │   │ • 48ms–96ms sync spikes   │   │ • 90ms–170ms+ LAN/Direct  │   │ • +15ms to +90ms+ OVH     │
-   │ • AP DTIM beacon buffer   │   │ • Radio leaves AP channel │   │ • DriverKit socket queues │   │ • utun MTU encapsulation  │
-   │ • Drops to 3ms on active  │   │ • All 3 targets jump      │   │ • Affects ALL local paths │   │ • ZIA Cloud Edge latency  │
-   └───────────────────────────┘   └───────────────────────────┘   └───────────────────────────┘   └───────────────────────────┘
+   [Fingerprint A: PSM Sleep]      [Fingerprint B: AWDL Scan]      [Fingerprint C: Host EDR]      [Fingerprint D: Zscaler Overlay]     [Fingerprint E: 2.4GHz / RF Coexistence]
+     (Radio Power State)             (Radio Off-Channel Hop)         (Local Endpoint Security)       (Network VPN & Cloud Proxy)          (Shared ISM Band & Peripheral EMI)
+   ┌───────────────────────────┐   ┌───────────────────────────┐   ┌───────────────────────────┐   ┌───────────────────────────┐        ┌───────────────────────────┐
+   │ • ~50–60ms resting floor  │   │ • 48ms–96ms sync spikes   │   │ • 90ms–170ms+ LAN/Direct  │   │ • +15ms to +90ms+ OVH     │        │ • 50ms–200ms+ erratic     │
+   │ • AP DTIM beacon buffer   │   │ • Radio leaves AP channel │   │ • DriverKit socket queues │   │ • utun MTU encapsulation  │        │ • Bluetooth PTA TDM pause │
+   │ • Drops to 3ms on active  │   │ • All 3 targets jump      │   │ • Affects ALL local paths │   │ • ZIA Cloud Edge latency  │        │ • USB 3.0 broadband noise │
+   └───────────────────────────┘   └───────────────────────────┘   └───────────────────────────┘   └───────────────────────────┘        └───────────────────────────┘
 ```
 
 1. **Fingerprint A: 802.11 PSM Idle Sleep Floor (~50–60ms)**:
@@ -33,12 +33,17 @@ When diagnosing network performance and VPN split-tunneling on macOS, engineers 
 4. **Fingerprint D: Zscaler VPN Tunnel Encapsulation & Cloud Edge Overhead (+15ms to +90ms+ Delta)**:
    * Virtual interface (`utun0`) MTU encapsulation, TLS proxy inspection, and routing to the ZIA Public Service Edge gateway.
    * **Affects ONLY tunneled traffic**, measured directly by `split-tunnel-monitor`'s **`OVH: p50/p95`** columns ($RTT_{\text{Zscaler}} - RTT_{\text{Direct}}$).
+5. **Fingerprint E: 2.4 GHz ISM Contention, Bluetooth Coexistence & USB 3.0 EMI (50ms – 200ms+ Erratic Multi-Modal Jitter)**:
+   * Operating Wi-Fi on the crowded 2.4 GHz band (Channels 1–13) exposes the physical link to uncoordinated collisions from Bluetooth/BLE frequency hopping (79 channels), proprietary 2.4 GHz dongles (Logitech Bolt/Unifying), and adjacent unshielded USB 3.0 / USB-C data cables radiating broadband clock noise.
+   * On Apple Silicon laptops sharing internal antennas between Wi-Fi and Bluetooth, hardware Packet Traffic Arbitration (PTA) time-slices the radio, pausing Wi-Fi transmission during Bluetooth audio/HID bursts.
+   * **Affects ALL traffic across the local hop**, causing non-periodic, multi-modal latency spikes and packet loss that can mimic ISP or VPN degradation.
 
 > ⚠️ **Counter-case: `OVH` can legitimately be negative (Zscaler faster than direct)** — Fingerprint D is the *typical* pattern in this guide's larger captures, not a universal law. Observed live on 2026-09-01: a bypassed direct ping (`ping -S <local_ip> 1.1.1.1`, n=6) averaged 12.6ms with 3.8ms stddev, while the same destination via the Zscaler tunnel (default route, n=9) averaged 7.5ms with only ~1ms spread — the tunnel was both faster and tighter. Zscaler has long advertised that its global cloud can offer better peering/lower-latency routing to some destinations than a consumer ISP's default path; this had previously been assumed to be marketing language until observed directly here. Caveat: this is a small ad-hoc sample (not a `--count 120` Trace) captured minutes after a separate transient ICMP-throttling incident on the same direct path, so residual recovery jitter on the direct side cannot be ruled out as a contributing factor. A negative `OVH` reading is an expected, valid outcome — not a measurement error or classifier bug.
 
-> 💡 **Critical Conceptual Disambiguation (Benign Sleep vs. Software Degradation)**: 
+> 💡 **Critical Conceptual Disambiguation (Benign Sleep vs. Software Degradation vs. RF Coexistence)**: 
 > * **Fingerprint A (PSM Sleep Buffering)** is **NOT** network degradation. On a clean Mac, the flat ~50ms baseline during solitary 2.0s probes is an intentional, energy-efficient 802.11 PHY power-save state that instantly collapses to ultra-low **3.0ms – 6.0ms** when active traffic begins.
 > * **Fingerprint C (Host EDR)** and **Fingerprint D (Zscaler Tunnel Tax)** are **TRUE** software-induced performance degradations introduced by corporate endpoint security and cloud routing.
+> * **Fingerprint E (2.4 GHz RF Contention)** is an **ENVIRONMENTAL & PROTOCOL SUSCEPTIBILITY**, not an automatic failure. A 2.4 GHz link in an isolated environment can be clean and steady; however, in dense environments with active Bluetooth or unshielded USB 3.0 devices, it carries a structurally higher probability of local physical-layer packet corruption and arbitration stalls.
 
 ---
 
@@ -360,7 +365,48 @@ When monitoring split-tunnel networks outside standard home Wi-Fi setups, two co
   3. **LAN Gateway baseline drops to flat 0.8ms – 1.2ms**.
 * **Diagnostic Value**: If a user on a wired docking station still observes 90ms–150ms spikes on LAN or Zscaler, **100% of the wireless physical medium is ruled out**, conclusively proving that the latency is generated exclusively by EDR socket inspection hooks (`sysx`) or Zscaler `utun` cloud-edge encapsulation.
 
-### 3.4 Mathematical Path Overhead (`OVH: p50/p95`) vs. Host EDR Overhead
+---
+
+### 3.4 Deep Dive: Fingerprint E — 2.4 GHz ISM Contention, Bluetooth Coexistence & USB 3.0 EMI
+
+When a user or client runs network diagnostics over **2.4 GHz Wi-Fi** (Channels 1–13, 2400 MHz – 2483.5 MHz), ICMP ping sessions frequently exhibit erratic, multi-modal latency spikes (50ms – 200ms+) and intermittent packet drops that can easily be misdiagnosed as ISP WAN underlay congestion or enterprise VPN tunnel degradation.
+
+Understanding the underlying spectral physics and hardware coexistence mechanisms reveals why 2.4 GHz links carry a structurally higher probability of local physical-layer contention:
+
+```
+                            2.4 GHz ISM BAND (2400 - 2483.5 MHz)
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│ [1] Wi-Fi (802.11b/g/n/ax): Ch 1, 6, or 11 (20–40 MHz wide, 100–200 mW transmit power)│
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│ [2] Bluetooth / BLE / Bolt: 79 FHSS channels (1 MHz wide, 2.5–10 mW, 1600 hops/sec)   │
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│ [3] USB 3.0 / Thunderbolt EMI: Broadband radiated clock noise (-80 to -60 dBm floor)   │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 1. Spectral Scarcity and Uncoordinated Coexistence
+* **Severe Channel Scarcity**: Unlike 5 GHz (which offers 25+ non-overlapping channels) and 6 GHz (59 non-overlapping channels), 2.4 GHz contains only **three non-overlapping 20 MHz channels** (1, 6, and 11). In typical residential and office environments, dozens of neighboring access points overlap continuously.
+* **Bluetooth Frequency Hopping (FHSS)**: Classic Bluetooth hops 1,600 times per second across 79 1-MHz channels spanning the entire 2.4 GHz band. Although Bluetooth 1.2+ Adaptive Frequency Hopping (AFH) attempts to map and blacklist busy Wi-Fi frequencies, AFH re-evaluation requires 1–3 seconds of observed packet loss. Sudden bursts of Wi-Fi traffic collide directly with Bluetooth audio (A2DP/HFP) or HID transfers.
+* **BLE Advertising Channels**: Bluetooth Low Energy intentionally places its 3 primary advertising channels (37, 38, 39 at 2402, 2426, and 2480 MHz) into the guard bands outside channels 1, 6, and 11 to guarantee discovery, but active BLE connections hop across the remaining 37 data channels directly through active Wi-Fi spectrum.
+
+#### 2. Apple Combo-Chip Packet Traffic Arbitration (PTA) & Shared Antennas
+On Apple Silicon laptops (e.g. MacBook Pro M-series using Broadcom or Apple custom combo-chips), Wi-Fi and Bluetooth share the internal RF front-end and physical antennas:
+* **Hardware Time-Division Multiplexing (TDM)**: The internal Packet Traffic Arbiter (PTA) must serialize airtime. When high-priority Bluetooth traffic (such as synchronous audio packets to AirPods or low-latency mouse tracking) is scheduled, the PTA **silences the 2.4 GHz Wi-Fi radio** during those microsecond slots.
+* **Queuing Delay**: Outbound Wi-Fi ICMP echo requests and incoming replies are queued in the DriverKit hardware ring buffer until the Bluetooth transmission clears. This hardware-level pause introduces erratic, non-periodic 30ms–120ms ping delays on local LAN hops (`192.168.xx.1`) that mimic network congestion.
+* **Band Isolation**: When infrastructure Wi-Fi is connected to **5 GHz or 6 GHz**, the 2.4 GHz radio and antenna path are left dedicated to Bluetooth, completely eliminating combo-chip PTA antenna thrashing.
+
+#### 3. USB 3.0 / SuperSpeed Broadband EMI Radiation
+Intel's landmark whitepaper (*"USB 3.0 Radio Frequency Interference on 2.4 GHz Devices"*) documented that USB 3.0 SuperSpeed data signaling (5 Gbps differential clock with spread-spectrum modulation) radiates wideband electromagnetic noise directly across **2.4 GHz to 2.5 GHz**:
+* **Receiver Desensitization**: An unshielded USB 3.0 cable, external NVMe SSD, or poorly shielded USB-C hub plugged adjacent to an internal antenna or a 2.4 GHz wireless transceiver dongle elevates the local RF noise floor by **20 to 30 dB**.
+* **SNR Collapse**: The Signal-to-Noise Ratio (SNR) collapses from a healthy ~40 dB down to 10–15 dB. While 2.4 GHz Wi-Fi drops to lower modulation schemes (MCS) or retransmits frames, 2.4 GHz proprietary mouse transceivers (Logitech Bolt, Unifying, Lightspeed) suffer severe packet loss, manifesting as cursor stutter and dropped keystrokes.
+
+#### 4. Diagnostic Value & Probabilistic Distinction
+* **Susceptibility, Not Certainty**: Being on 2.4 GHz Wi-Fi is not a guarantee of network failure. In a radio-isolated environment with no active Bluetooth audio or USB 3.0 noise, 2.4 GHz can provide stable, low-latency transmission. However, it carries a structurally higher probability of intermittent RF collisions.
+* **Clean-Room Baseline**: Whenever diagnosing unexplained latency spikes or packet loss on a 2.4 GHz Wi-Fi connection, engineers must test on a 5 GHz / 6 GHz SSID or over wired Ethernet before assuming that ISP or VPN infrastructure is degraded. For wireless peripheral dongles, using a short USB 2.0 extension cable (moving the transceiver 10–20 cm away from USB 3.0 ports) immediately resolves RF desensitization.
+
+---
+
+### 3.5 Mathematical Path Overhead (`OVH: p50/p95`) vs. Host EDR Overhead
 
 `split-tunnel-monitor` computes real-time statistical path overhead in every iteration. Understanding how this is calculated—and what it does and does *not* incorporate—is essential for accurate network forensics:
 
@@ -406,7 +452,7 @@ $$\text{Overhead}_{\text{EDR}} = \text{RTT}_{\text{Corporate Direct (AC)}} - \te
 
 ---
 
-### 3.5 Dual-Sided 802.11 Power Save Mode (PSM) & DTIM Buffering Forensics
+### 3.6 Dual-Sided 802.11 Power Save Mode (PSM) & DTIM Buffering Forensics
 
 In near-idle network conditions (such as standard 2.0-second solitary ping intervals without active background streaming), wireless latency is dominated by **802.11 Power Save Mode (PSM)** and **Access Point DTIM (Delivery Traffic Indication Map) queueing**.
 
