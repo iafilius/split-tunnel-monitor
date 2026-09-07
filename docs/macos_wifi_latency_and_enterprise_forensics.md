@@ -30,6 +30,7 @@ When diagnosing network performance and VPN split-tunneling on macOS, engineers 
 3. **Fingerprint C: Enterprise Host EDR & Kernel Socket Hooks (90ms – 170ms+)**:
    * Endpoint security agents (Microsoft Defender ATP, CrowdStrike Falcon) intercept BSD socket calls and hold `mbuf` kernel buffers for inspection before releasing them to DriverKit.
    * **Affects ALL traffic (LAN and Direct ISP alike)**, stretching local LAN pings up to **100ms – 170ms+** (and 300ms–800ms+ under heavy CPU load/swap page faults).
+   * This is the *spike* manifestation. The same EDR + DriverKit combination also raises the *resting floor* by a much smaller, ever-present amount (~1–4ms instead of sub-millisecond) even with zero spikes and zero Wi-Fi involvement at all — see §3.8 for a third-party USB-Ethernet adapter case with confirmed chipset/driver/EDR evidence.
 4. **Fingerprint D: Zscaler VPN Tunnel Encapsulation & Cloud Edge Overhead (+15ms to +90ms+ Delta)**:
    * Virtual interface (`utun0`) MTU encapsulation, TLS proxy inspection, and routing to the ZIA Public Service Edge gateway.
    * **Affects ONLY tunneled traffic**, measured directly by `split-tunnel-monitor`'s **`OVH: p50/p95`** columns ($RTT_{\text{Zscaler}} - RTT_{\text{Direct}}$).
@@ -102,14 +103,14 @@ Even when `split-tunnel-monitor` shows a **100% `HEALTHY`** state with low laten
 
 ### C. Triage Guide: Network Failure vs. Application/Proxy Failure
 
-| Symptom | Tool Indication | Primary Investigation Domain |
-| :--- | :--- | :--- |
-| **Complete Internet Drop** | `[OUTAGE]` Local Network or ISP Issue | Physical Wi-Fi, Ethernet cable, DHCP lease, or ISP WAN modem. |
-| **Corporate Intranet / Internal Apps Down** | `[OUTAGE]` Zscaler Issue | VPN client process (`ZscalerTunnel`), virtual adapter (`utun`), or ZIA cloud edge. |
-| **High Ping / Zoom Audio Stalls** | High RTT across all 3 paths | Wi-Fi 802.11 PSM sleep doze, AWDL social scan, or EDR socket hooks. |
-| **`git clone` / `pip install` SSL Error** | `[HEALTHY]` (Low RTT, 0% Loss) | Missing corporate Root CA in Python/Node certificate store (`SSL_CERT_FILE`). |
-| **Specific Website Returns HTTP 403 / Block** | `[HEALTHY]` (Low RTT, 0% Loss) | Layer 7 SWG policy rule, URL filtering category, or tenant restriction. |
-| **Browser Spins on Initial Page Load (High TTFB)** | `[HEALTHY]` (Low RTT, 0% Loss) | Proxy stream buffering, DLP payload scanning, or PAC file evaluation. |
+| Symptom                                            | Tool Indication                       | Primary Investigation Domain                                                       |
+| :------------------------------------------------- | :------------------------------------ | :--------------------------------------------------------------------------------- |
+| **Complete Internet Drop**                         | `[OUTAGE]` Local Network or ISP Issue | Physical Wi-Fi, Ethernet cable, DHCP lease, or ISP WAN modem.                      |
+| **Corporate Intranet / Internal Apps Down**        | `[OUTAGE]` Zscaler Issue              | VPN client process (`ZscalerTunnel`), virtual adapter (`utun`), or ZIA cloud edge. |
+| **High Ping / Zoom Audio Stalls**                  | High RTT across all 3 paths           | Wi-Fi 802.11 PSM sleep doze, AWDL social scan, or EDR socket hooks.                |
+| **`git clone` / `pip install` SSL Error**          | `[HEALTHY]` (Low RTT, 0% Loss)        | Missing corporate Root CA in Python/Node certificate store (`SSL_CERT_FILE`).      |
+| **Specific Website Returns HTTP 403 / Block**      | `[HEALTHY]` (Low RTT, 0% Loss)        | Layer 7 SWG policy rule, URL filtering category, or tenant restriction.            |
+| **Browser Spins on Initial Page Load (High TTFB)** | `[HEALTHY]` (Low RTT, 0% Loss)        | Proxy stream buffering, DLP payload scanning, or PAC file evaluation.              |
 
 ---
 
@@ -197,12 +198,12 @@ Analysis of continuous empirical telemetry ($n=566$ samples, 63 discrete spike e
 
 #### 2. The 4 Classes of Real-World Outliers
 
-| Outlier Classification | Magnitude | Periodicity / Timing | Tri-Path Behavior | Root Cause & Physical Mechanism |
-| :--- | :---: | :--- | :---: | :--- |
-| **A. AWDL Off-Channel Scan** | **110 – 140 ms** | **Clockwork 14.5s intervals** (or $2\times, 3\times$ harmonics) | **LAN = Direct = VPN** (all elevate identically) | Broadcom radio leaves AP channel for 80–100ms discovery on social channels (44/149). Frames stall in hardware FIFO queue. |
-| **B. Post-Scan Queue Draining** | **25 – 45 ms** | Directly follows an AWDL peak (trailing 1 sample) | **LAN $\approx$ Direct $\approx$ VPN** | DriverKit emptying hardware queues and restoring 802.11 active state immediately following off-channel return. |
-| **C. True Upstream WAN Jitter** | **90 – 145 ms** | Sporadic, non-periodic | **LAN is low (3.5ms!)**, Direct/VPN elevated | Radio and local AP hop are 100% healthy. Bufferbloat or queueing occurs upstream on ISP WAN fiber/cable or target edge. |
-| **D. Single-Probe Stack Variance**| Variable | Rare (<1% of samples) | Asymmetric (only 1 target delayed) | Transient asyncio event-loop or kernel BSD socket scheduling delay affecting one thread/probe. |
+| Outlier Classification             |    Magnitude     | Periodicity / Timing                                            |                Tri-Path Behavior                 | Root Cause & Physical Mechanism                                                                                           |
+| :--------------------------------- | :--------------: | :-------------------------------------------------------------- | :----------------------------------------------: | :------------------------------------------------------------------------------------------------------------------------ |
+| **A. AWDL Off-Channel Scan**       | **110 – 140 ms** | **Clockwork 14.5s intervals** (or $2\times, 3\times$ harmonics) | **LAN = Direct = VPN** (all elevate identically) | Broadcom radio leaves AP channel for 80–100ms discovery on social channels (44/149). Frames stall in hardware FIFO queue. |
+| **B. Post-Scan Queue Draining**    |  **25 – 45 ms**  | Directly follows an AWDL peak (trailing 1 sample)               |      **LAN $\approx$ Direct $\approx$ VPN**      | DriverKit emptying hardware queues and restoring 802.11 active state immediately following off-channel return.            |
+| **C. True Upstream WAN Jitter**    | **90 – 145 ms**  | Sporadic, non-periodic                                          |   **LAN is low (3.5ms!)**, Direct/VPN elevated   | Radio and local AP hop are 100% healthy. Bufferbloat or queueing occurs upstream on ISP WAN fiber/cable or target edge.   |
+| **D. Single-Probe Stack Variance** |     Variable     | Rare (<1% of samples)                                           |        Asymmetric (only 1 target delayed)        | Transient asyncio event-loop or kernel BSD socket scheduling delay affecting one thread/probe.                            |
 
 #### 3. Why LAN, Direct ISP, and Tunnel Rise to Identical Values
 When the Broadcom radio hops off-channel, **every outbound packet is frozen in the client-side DriverKit transmit buffer**. When the radio returns to Channel 100, the queued packets leave simultaneously in a micro-burst:
@@ -362,7 +363,7 @@ When monitoring split-tunnel networks outside standard home Wi-Fi setups, two co
 * **Forensic Power**: On wired Ethernet:
   1. **802.11 PSM DTIM sleep delays (~50ms) are eliminated** (0.0ms PHY sleep).
   2. **AWDL social channel hopping spikes (48ms–96ms) drop to zero** (wired Ethernet has no radio off-channel scan).
-  3. **LAN Gateway baseline drops to flat 0.8ms – 1.2ms**.
+  3. **LAN Gateway baseline drops to flat 0.8ms – 1.2ms** — *this specific figure was observed on a native/well-integrated Ethernet path. It does not hold universally: a third-party USB-attached adapter running through Apple's post-KEXT DriverKit driver model measurably sits higher (~1.0–2.3ms baseline, not flat) even with zero Wi-Fi radio involved — see §3.8 for the full breakdown and why this is still not a bug.*
 * **Diagnostic Value**: If a user on a wired docking station still observes 90ms–150ms spikes on LAN or Zscaler, **100% of the wireless physical medium is ruled out**, conclusively proving that the latency is generated exclusively by EDR socket inspection hooks (`sysx`) or Zscaler `utun` cloud-edge encapsulation.
 
 ---
@@ -503,24 +504,24 @@ python3 ping_checker.py --no-keep-awake
 python3 ping_checker.py --keep-awake off
 ```
 
-| Keep-Awake Mode | Underlying Protocol | Operating System & Radio Impact | Bandwidth Overhead |
-| :--- | :--- | :--- | :--- |
-| **`udp-tick`** *(Default)* | 1-byte micro-datagram to LAN gateway discard port (port 9) every 150ms | Keeps inter-packet arrival time $< 200\text{ms}$ ($> 6\text{ pps}$), preventing the Wi-Fi MAC idle timer from triggering radio doze. Stabilizes resting LAN latency at **3.2ms – 6.0ms**. | ~500 bps (negligible) |
-| **`qos-vo`** | WMM Voice socket option (`SO_NET_SERVICE_TYPE=NET_SERVICE_TYPE_VO`) | Instructs Darwin kernel and `IO80211Family` DriverKit that the socket carries real-time voice traffic (WMM UP=6 / DSCP EF), causing the driver to automatically disable PSM sleep timers. | ~300 bps |
-| **`assertion`** | macOS IOKit `kIOPMAssertionTypeNetworkClientActive` | Holds a system-level network power assertion to keep OS subsystems active. | 0 bps |
-| **`off`** *(via `--no-keep-awake`)* | Passive Probing | Observes natural operating system PSM sleep and AP DTIM buffering (~50ms baseline with 21s dips). | 0 bps |
+| Keep-Awake Mode                     | Underlying Protocol                                                    | Operating System & Radio Impact                                                                                                                                                           | Bandwidth Overhead    |
+| :---------------------------------- | :--------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------- |
+| **`udp-tick`** *(Default)*          | 1-byte micro-datagram to LAN gateway discard port (port 9) every 150ms | Keeps inter-packet arrival time $< 200\text{ms}$ ($> 6\text{ pps}$), preventing the Wi-Fi MAC idle timer from triggering radio doze. Stabilizes resting LAN latency at **3.2ms – 6.0ms**. | ~500 bps (negligible) |
+| **`qos-vo`**                        | WMM Voice socket option (`SO_NET_SERVICE_TYPE=NET_SERVICE_TYPE_VO`)    | Instructs Darwin kernel and `IO80211Family` DriverKit that the socket carries real-time voice traffic (WMM UP=6 / DSCP EF), causing the driver to automatically disable PSM sleep timers. | ~300 bps              |
+| **`assertion`**                     | macOS IOKit `kIOPMAssertionTypeNetworkClientActive`                    | Holds a system-level network power assertion to keep OS subsystems active.                                                                                                                | 0 bps                 |
+| **`off`** *(via `--no-keep-awake`)* | Passive Probing                                                        | Observes natural operating system PSM sleep and AP DTIM buffering (~50ms baseline with 21s dips).                                                                                         | 0 bps                 |
 
 #### Empirical Verification: Undisturbed Passive PSM vs. Keep-Awake Side-Channel
 
-| Metric | Undisturbed Passive (`keep-awake off`, Trace 1h, n=120) | With `--keep-awake udp-tick` (Trace 1g, n=110) | With `--keep-awake qos-vo` (Trace 1g, n=60) | Absolute Improvement |
-| :--- | :--- | :--- | :--- | :--- |
-| **LAN Gateway Median ($p50$)** | **57.2 ms** | **5.2 ms** | **5.4 ms** | 🟢 **-52.0 ms (-90.9% drop!)** |
-| **Direct ISP Median ($p50$)** | **58.1 ms** | **9.2 ms** | **8.2 ms** | 🟢 **-48.9 ms (-84.2% drop!)** |
-| **Tunnel Path Median ($p50$)** | **56.0 ms** | **8.3 ms** | **7.3 ms** | 🟢 **-47.7 ms (-85.2% drop!)** |
-| **LAN Mean Latency** | **49.29 ms** | **9.02 ms** | **9.73 ms** | 🟢 **-40.27 ms (-81.7% overall)** |
-| **Probes under 10.0 ms** | **13.3%** *(Only during 21s pulse)* | **76.4%** *(True resting floor)* | **90.0%** *(WMM Voice priority)* | 🟢 **6.8x increase in fast samples** |
-| **Probes over 30.0 ms (PSM)** | **85.0%** *(Dominated by sleep)* | **5.5%** *(Suppressed)* | **8.3%** *(Suppressed)* | 🟢 **PSM buffering crushed by ~93%** |
-| **Probes over 50.0 ms** | **75.0%** *(In DTIM queue)* | **1.8%** *(Suppressed)* | **1.7%** *(Suppressed)* | 🟢 **Virtually eliminated** |
+| Metric                         | Undisturbed Passive (`keep-awake off`, Trace 1h, n=120) | With `--keep-awake udp-tick` (Trace 1g, n=110) | With `--keep-awake qos-vo` (Trace 1g, n=60) | Absolute Improvement                |
+| :----------------------------- | :------------------------------------------------------ | :--------------------------------------------- | :------------------------------------------ | :---------------------------------- |
+| **LAN Gateway Median ($p50$)** | **57.2 ms**                                             | **5.2 ms**                                     | **5.4 ms**                                  | 🟢 **-52.0 ms (-90.9% drop!)**       |
+| **Direct ISP Median ($p50$)**  | **58.1 ms**                                             | **9.2 ms**                                     | **8.2 ms**                                  | 🟢 **-48.9 ms (-84.2% drop!)**       |
+| **Tunnel Path Median ($p50$)** | **56.0 ms**                                             | **8.3 ms**                                     | **7.3 ms**                                  | 🟢 **-47.7 ms (-85.2% drop!)**       |
+| **LAN Mean Latency**           | **49.29 ms**                                            | **9.02 ms**                                    | **9.73 ms**                                 | 🟢 **-40.27 ms (-81.7% overall)**    |
+| **Probes under 10.0 ms**       | **13.3%** *(Only during 21s pulse)*                     | **76.4%** *(True resting floor)*               | **90.0%** *(WMM Voice priority)*            | 🟢 **6.8x increase in fast samples** |
+| **Probes over 30.0 ms (PSM)**  | **85.0%** *(Dominated by sleep)*                        | **5.5%** *(Suppressed)*                        | **8.3%** *(Suppressed)*                     | 🟢 **PSM buffering crushed by ~93%** |
+| **Probes over 50.0 ms**        | **75.0%** *(In DTIM queue)*                             | **1.8%** *(Suppressed)*                        | **1.7%** *(Suppressed)*                     | 🟢 **Virtually eliminated**          |
 
 #### Protocol Mechanics: The 802.11 MAC Power Management Bit & Outbound-Only Keep-Alive
 
@@ -561,12 +562,12 @@ If no outbound frames are enqueued in the DriverKit TX ring buffer before this t
 
 The four keep-awake mechanisms were benchmarked back-to-back under identical environmental conditions on battery power with Low Power Mode enabled:
 
-| Keep-Awake Mode | Underlying Mechanism | LAN Median ($p50$) | LAN Mean | Probes $<10\text{ms}$ | Probes $>30\text{ms}$ (PSM Sleep) | Max Spike | Physical Air-Link Verdict |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`off`** *(Passive Baseline)* | Passive Probing | **9.2 ms** | 19.43 ms | 60.0% | **23.3%** | 69.1 ms | Natural Broadcom PSM doze; AP buffers replies in DTIM queue. |
-| **`assertion`** | IOKit `kIOPMAssertionTypeNetworkClientActive` | **8.9 ms** | 15.84 ms | 73.3% | **16.7%** | 94.3 ms | Prevents OS sleep, but PHY RF transceiver still enters 802.11 doze. |
-| **`udp-tick`** | 1-byte UDP datagram to port 9 @ 150ms | **5.7 ms** | 16.37 ms | 73.3% | **16.7%** | 82.2 ms | Resets DriverKit timer; keeps AP station table in active state. |
-| **`qos-vo`** | WMM Voice `SO_NET_SERVICE_TYPE=VO` @ 150ms | **5.4 ms** | **9.73 ms** | **90.0%** | **8.3%** | 77.5 ms | **Superior Stability**: 90% of samples under 10ms; average latency under 10ms. |
+| Keep-Awake Mode                | Underlying Mechanism                          | LAN Median ($p50$) | LAN Mean    | Probes $<10\text{ms}$ | Probes $>30\text{ms}$ (PSM Sleep) | Max Spike | Physical Air-Link Verdict                                                      |
+| :----------------------------- | :-------------------------------------------- | :----------------- | :---------- | :-------------------- | :-------------------------------- | :-------- | :----------------------------------------------------------------------------- |
+| **`off`** *(Passive Baseline)* | Passive Probing                               | **9.2 ms**         | 19.43 ms    | 60.0%                 | **23.3%**                         | 69.1 ms   | Natural Broadcom PSM doze; AP buffers replies in DTIM queue.                   |
+| **`assertion`**                | IOKit `kIOPMAssertionTypeNetworkClientActive` | **8.9 ms**         | 15.84 ms    | 73.3%                 | **16.7%**                         | 94.3 ms   | Prevents OS sleep, but PHY RF transceiver still enters 802.11 doze.            |
+| **`udp-tick`**                 | 1-byte UDP datagram to port 9 @ 150ms         | **5.7 ms**         | 16.37 ms    | 73.3%                 | **16.7%**                         | 82.2 ms   | Resets DriverKit timer; keeps AP station table in active state.                |
+| **`qos-vo`**                   | WMM Voice `SO_NET_SERVICE_TYPE=VO` @ 150ms    | **5.4 ms**         | **9.73 ms** | **90.0%**             | **8.3%**                          | 77.5 ms   | **Superior Stability**: 90% of samples under 10ms; average latency under 10ms. |
 
 ---
 
@@ -628,6 +629,57 @@ Note also that rows 0–1 (clean M3) and rows 2–3 (corporate M2 Pro) come from
    * The difference in latency between consecutive packets: $\text{IPDV}_i = |RTT_{i+1} - RTT_i|$. Measures packet-to-packet smoothness.
 3. **Coefficient of Variation ($CV = \frac{\sigma}{\mu}$)**:
    * Standard deviation divided by the mean. High CV (>0.8) indicates severe unpredictability.
+
+---
+
+### 3.8 USB-Ethernet (DriverKit) Adapter Latency: Why "Wired" Isn't Automatically Sub-Millisecond
+
+§3.3.B's "flat 0.8ms – 1.2ms" wired baseline is real, but it is not a universal floor for *every* wired path. It was observed on a native/well-integrated Ethernet link. A common alternate scenario — a third-party USB-C-to-Ethernet dongle — sits measurably higher even with the Wi-Fi radio completely out of the picture, because the wired path itself is no longer purely "wire + kernel": it now includes a USB bus and a sandboxed userspace-ish driver process in between.
+
+#### A. Identifying what's actually in the path (reproducible, non-root)
+
+```bash
+# 1. Confirm the interface is genuinely wired, not Wi-Fi, and its negotiated link speed:
+ifconfig <en_iface> | grep -E "media|status"
+networksetup -listallhardwareports | grep -A2 "<en_iface>"
+
+# 2. Identify the adapter chipset (vendor/product IDs; 0x0BDA = Realtek, 0x0B95 = ASIX, etc.):
+ioreg -p IOUSB -l | grep -i -B2 -A15 "lan\|ethernet" | grep -i "USB Vendor Name\|USB Product Name\|idVendor\|idProduct"
+
+# 3. Confirm it's bound via DriverKit (a "dext") rather than a legacy in-kernel KEXT
+#    (look for IOServiceDEXTEntitlements near the device entry in the ioreg output above).
+
+# 4. Confirm active EDR network/endpoint extensions (same command as §7 Step 4):
+systemextensionsctl list | grep -i "network\|endpoint"
+ps -axo pid,comm | grep -iE "wdav|defender|falcon|crowdstrike|netext|epsext"
+```
+
+#### B. Empirical evidence (Corporate Managed Mac, Apple M2 Pro, AC power, Zscaler active)
+
+Captured 2026-09-04. Adapter: `en14`, macOS-reported medium name `USB 10/100/1G/2.5G LAN`, negotiated `media: autoselect (1000baseT <full-duplex>)` (correctly at Gigabit, not downshifted). `ioreg` confirms `USB Vendor Name = Realtek`, `idVendor=0x0BDA idProduct=0x8156` (RTL8156 chipset), bound with `IOServiceDEXTEntitlements` present (DriverKit, not a legacy KEXT). `systemextensionsctl`/`ps` confirm the full Microsoft Defender for Endpoint stack active, including `com.microsoft.wdav.netext` (`[activated enabled]`) — a `NEFilterDataProvider` Network Extension that inspects traffic on **every** interface, not just this one.
+
+| Measurement                                                                                   | n    | Mean   | Median | Stdev  | Min    | Max    | Notes                                                                             |
+| :-------------------------------------------------------------------------------------------- | :--- | :----- | :----- | :----- | :----- | :----- | :-------------------------------------------------------------------------------- |
+| Clean standalone `ping -i 0.2` to LAN gateway                                                 | 30   | 1.03ms | —      | 0.31ms | 0.55ms | 2.17ms | Nothing else concurrently probing; isolates the adapter+driver+EDR floor.         |
+| `split-tunnel-monitor`'s own `LAN_GW_RTT_ms` column, same gateway, same adapter, same session | 101  | 2.31ms | 2.20ms | 0.64ms | 1.20ms | 4.40ms | Concurrent 3-target `asyncio.gather` probing + probe-stagger jitter added on top. |
+
+Live system state during capture: `vm.swapusage` showed 5.9GB of 7GB swap in use, `memory_pressure -Q` reported 41% system-wide free — a real, persistent background condition, but the clean standalone ping above was captured *during* this same condition and still came in tight (0.31ms stdev), so swap pressure is not the primary driver of the *difference* between the two rows above — the monitoring tool's own concurrent-probe methodology is.
+
+**Reading the numbers**: even in the best case (clean, isolated, single-target ping), this adapter+driver+EDR combination never went below 0.55ms and averaged just above 1ms — sub-millisecond was not achievable here, full stop. It is still meaningfully better than this guide's clean-Wi-Fi PSM-suppressed floor (~3.8ms, §3.7 Row 0), so "wired beats Wi-Fi" still holds — "wired means sub-millisecond" does not.
+
+#### C. Why this isn't a bug, and why a laptop isn't a dedicated server/datacenter NIC
+
+| Factor                            | Consumer laptop (this scenario)                                                                                                                         | Dedicated server / datacenter NIC                                                                                   |
+| :-------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------ | :------------------------------------------------------------------------------------------------------------------ |
+| **NIC attachment**                | USB bus (shared, packetized, polled) sitting between the Ethernet PHY and the host                                                                      | PCIe lane(s) with direct DMA into host memory — no intermediate bus protocol                                        |
+| **Driver model**                  | DriverKit "dext": a sandboxed, semi-userspace process; each I/O crosses an IPC boundary to the kernel                                                   | In-kernel driver (or kernel-bypass frameworks like DPDK/SR-IOV) — no per-packet userspace round-trip                |
+| **Interrupt/coalescing tuning**   | Vendor-tuned for USB bus throughput and low CPU-interrupt count on a general-purpose laptop, not for minimum latency                                    | Tuned (or bypassed entirely) for minimum latency; dedicated/isolated CPU cores can be pinned to interrupt handling  |
+| **OS scheduler**                  | General-purpose, preemptible desktop scheduler sharing the CPU with everything else running on the machine                                              | Often a tickless/real-time-tuned kernel, or at minimum far fewer competing processes                                |
+| **Mandatory security inspection** | Corporate EDR (Microsoft Defender, CrowdStrike, etc.) hooks **every socket on every interface** by policy — not optional, not tunable from the endpoint | Datacenter fabrics inspect at the network edge/fabric level (if at all), not by intercepting every host socket call |
+| **Switching fabric**              | Consumer/SMB switch or home router, not tuned for latency                                                                                               | Purpose-built low-latency ToR (top-of-rack) switches, often sub-100µs port-to-port                                  |
+| **Background load**               | Shares the machine with a full desktop OS, browser tabs, IDEs, Spotlight, backups, memory pressure/swapping (as measured above)                         | Workload-isolated; no competing desktop processes                                                                   |
+
+None of these factors are specific to this repository's tool or this particular Mac — they're structural properties of "a general-purpose laptop with mandatory corporate endpoint security" vs. "purpose-built server/datacenter networking hardware." A `split-tunnel-monitor` reading of ~1-4ms on a wired corporate-managed laptop, with jitter in the low single-digit milliseconds, is the **expected, correct floor for this class of machine** — not evidence of a misconfiguration to chase.
 
 ---
 
