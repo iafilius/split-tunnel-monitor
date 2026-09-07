@@ -45,6 +45,8 @@ def _mock_network_info():
             "tx_rate": 866,
         },
         "zscaler": {
+            "is_active": True,
+            "process_running": True,
             "interface": "utun3",
             "gateway_ip": "100.64.0.1",
         },

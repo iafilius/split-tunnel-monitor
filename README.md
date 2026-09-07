@@ -365,6 +365,9 @@ python3 ping_checker.py [OPTIONS]
 >    ```bash
 >    networksetup -setairportpower en0 on
 >    ```
+>
+> ⚠️ **Encountering higher-than-expected jitter or packet loss on your USB Ethernet adapter?**
+> See our companion engineering reference: **[macOS USB Ethernet Latency Jitter, Driver Architecture & Chipset Guide](docs/macos_usb_ethernet_jitter_and_chipset_guide.md)** for an in-depth breakdown of DriverKit (`.dext`) vs. kernel (`.kext`) execution, CDC-NCM vs. CDC-ECM fallback, shared USB hub DisplayPort Alt-Mode bus contention, and why 2.5GbE (RTL8156B) adapters are strongly advised over 1GbE (RTL8153).
 
 ---
 
@@ -429,6 +432,7 @@ Full investigation guide including ZCC log correlation, timeline building, and t
 ## Technical Guides & Forensics
 
 - **[macOS Wi-Fi Latency Forensics (PSM, AWDL & Enterprise Stacks)](docs/macos_wifi_latency_and_enterprise_forensics.md)**: A detailed technical reference explaining why macOS Wi-Fi ICMP latency behaves counter-intuitively across different Apple Silicon hardware (M2 Pro vs. M3), 802.11 Power Save Mode (PSM) DTIM buffering, AWDL AirDrop social-channel scanning spikes, and corporate MDM/Zscaler/EDR packet filter jitter.
+- **[macOS USB Ethernet Jitter, Driver Architecture & Chipset Engineering Guide](docs/macos_usb_ethernet_jitter_and_chipset_guide.md)**: A deep-dive guide explaining why USB-to-LAN adapters exhibit unexpected latency jitter and CPU spikes under macOS, comparing DriverKit userspace (`.dext`) vs. in-kernel (`.kext`), CDC-NCM vs. CDC-ECM, shared hub bus contention (DisplayPort Alt-Mode lane starvation & HID microframe priority), diagnostic commands (`ioreg`, `ifconfig -v`), and the 2.5GbE (RTL8156B) upgrade strategy.
 
 ---
 

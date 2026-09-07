@@ -47,7 +47,7 @@ import ctypes.util
 import threading
 from datetime import datetime
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 __log_schema__ = 5
 
 # Curated default IPv4 Anycast target pool for deterministic synchronized rotation
@@ -932,6 +932,7 @@ def classify_outage(
     lan_gateway_ever_responded: bool = True,
     zscaler_active: bool = True,
     consecutive_redundant_drops: int = 2,
+    consecutive_gateway_drops: int = 2,
 ) -> tuple:
     """
     Evaluates 3-way probe matrix to determine root cause failure domain.
@@ -972,8 +973,11 @@ def classify_outage(
     # IPv6-only gateway on iPhone Personal Hotspot, or a policy that always
     # suppresses ICMP — a permanent, non-degraded characteristic) from one that
     # was responding and has gone silent (a genuine local-network state change).
+    # Debounce single-packet drops to the router CPU when internet forwarding is active:
     elif not lan_ok and isp_ok and zsc_ok:
         if lan_gateway_ever_responded:
+            if consecutive_gateway_drops <= 1:
+                return ("INFO", "Gateway Control Plane Silent (Internet Forwarding Active)")
             return ("DEGRADED", "Local Gateway Stopped Responding (Previously Reachable)")
         return ("INFO", "Local Gateway Silent (No Response Observed This Session)")
 
@@ -1010,6 +1014,7 @@ def determine_status_and_fault(
     lan_gateway_ever_responded: bool = True,
     zscaler_active: bool = True,
     consecutive_redundant_drops: int = 2,
+    consecutive_gateway_drops: int = 2,
 ) -> tuple:
     """
     Decide (status, fault) for one iteration. Short-circuits to a distinct
@@ -1029,6 +1034,7 @@ def determine_status_and_fault(
         lan_gateway_ever_responded=lan_gateway_ever_responded,
         zscaler_active=zscaler_active,
         consecutive_redundant_drops=consecutive_redundant_drops,
+        consecutive_gateway_drops=consecutive_gateway_drops,
     )
 
 
@@ -1372,7 +1378,7 @@ def _get_vpn_process_metadata(info: dict | None = None) -> dict:
             zsc_info = NetworkDiscovery.get_zscaler_info()
         except Exception:
             zsc_info = {}
-    zsc_running = bool(zsc_info.get("process_running"))
+    zsc_running = bool(zsc_info.get("process_running") or zsc_info.get("is_active"))
     tun_iface = zsc_info.get("interface", "")
     tun_gw = zsc_info.get("gateway_ip", "")
     return {
@@ -2051,7 +2057,7 @@ def init_logfile(
                     f.write(f"Target Rotation: DISABLED (static override: ISP={rot.get('isp_target')}, ZSC={rot.get('zsc_target')})\n")
                 else:
                     f.write(f"Target Rotation: DISABLED (--rotate-interval 0, static target: {rot.get('isp_target')})\n")
-                zsc_label = "Standard Route" if not vpn_meta.get("zscaler_process_active", False) and rot.get("isp_target") != rot.get("zsc_target") else "Zscaler Tunnel"
+                zsc_label = "Standard Route" if not vpn_meta.get("zscaler_process_active", False) else "Zscaler Tunnel"
                 f.write(f"Probe Targets:   ISP Direct={rot.get('isp_target')}, {zsc_label}={rot.get('zsc_target')}\n")
                 pathv = startup_config.get("path_verification") or {}
                 zsc_v_tag = "VERIFIED" if pathv.get("zsc_status") == "OK" else pathv.get("zsc_status", "UNCERTAIN")
@@ -2370,6 +2376,19 @@ def _fmt_duration(seconds: int) -> str:
     return f"{h}h {m}m {s}s" if h else f"{m}m {s}s"
 
 
+def detect_system_resume(loop_gap: float, interval: float = 2.0) -> str | None:
+    """
+    Detect whether elapsed monotonic time between iterations indicates host was
+    suspended (sleep / standby / lid closed).
+    Returns formatted resume description or None.
+    """
+    threshold = max(10.0, interval + 5.0)
+    if loop_gap > threshold:
+        return f"Host resumed from sleep/standby (suspended: {_fmt_duration(int(loop_gap))})"
+    return None
+
+
+
 def _format_session_summary(
     session_start: datetime,
     status_counts: dict,
@@ -2645,10 +2664,6 @@ async def main():
     print("Performing dynamic path discovery...")
     network_info = NetworkDiscovery.discover_all()
     zsc_active = network_info.get("zscaler", {}).get("is_active", False)
-    if not zsc_active and zscaler_override is None and len(target_pool) > 1:
-        offset = len(target_pool) // 2
-        init_zsc_slot = (init_slot + offset) % len(target_pool)
-        current_zsc_target = target_pool[init_zsc_slot]
 
     network_info["path_verification"] = assess_path_verification(network_info, current_isp_target, current_zsc_target)
     startup_pathv = network_info["path_verification"]
@@ -2729,8 +2744,8 @@ async def main():
         else:
             print(f"Target Rotation:           DISABLED (--rotate-interval 0, static target: {current_isp_target})")
     print(f"ISP Direct Probe Target:   {current_isp_target}")
-    if not zsc_active and zscaler_override is None and len(target_pool) > 1:
-        print(f"Standard Route Target:     {current_zsc_target} (Diverse Anycast Target; Zscaler Inactive)")
+    if not zsc_active:
+        print(f"Standard Route Target:     {current_zsc_target}")
     else:
         print(f"Zscaler Tunnel Target:     {current_zsc_target}")
 
@@ -2784,8 +2799,8 @@ async def main():
     print(f"Detected Zscaler Tunnel:   {z_status}")
     print(f"Zscaler Virtual Next-Hop:  {z_vgw}")
     print(f"ISP Direct Target:         {current_isp_target}")
-    if not zsc_active and zscaler_override is None and len(target_pool) > 1:
-        print(f"Standard Route Target:     {current_zsc_target} (Diverse Anycast Target; Zscaler Inactive)")
+    if not zsc_active:
+        print(f"Standard Route Target:     {current_zsc_target}")
     else:
         print(f"Zscaler Target:            {current_zsc_target}")
     zsc_v_tag = "VERIFIED" if startup_pathv.get("zsc_status") == "OK" else startup_pathv.get("zsc_status", "UNCERTAIN")
@@ -2829,6 +2844,8 @@ async def main():
     trace_reconcile_max_attempts = 20    # cap on reconciliation retries per transition (~60s; real tunnel re-establishment observed taking up to ~12s)
     lan_gateway_ever_responded = False           # session baseline: has the LAN gateway ever answered ICMP?
     consecutive_redundant_drops = 0              # tracks sequential isolated drops on redundant probe when VPN inactive
+    consecutive_gateway_drops = 0                # tracks sequential isolated drops on local gateway when WAN is active
+    last_iteration_end = None                    # monotonic timestamp of previous iteration end (for sleep resume detection)
     # Session tracking (incident lifecycle, exit summary, notifications)
     session_start = datetime.now()
     status_counts: dict = {"HEALTHY": 0, "DEGRADED": 0, "OUTAGE": 0, "INFO": 0}
@@ -2870,6 +2887,16 @@ async def main():
         while True:
             iteration += 1
 
+            # Host sleep / standby resume detection
+            if last_iteration_end is not None:
+                loop_gap = time.monotonic() - last_iteration_end
+                resume_info = detect_system_resume(loop_gap, args.interval)
+                if resume_info:
+                    resume_msg = f"[{_ts()}] [SYSTEM RESUME] {resume_info}"
+                    _log_event(_event_log_path(logfile), resume_msg)
+                    print(f"\n{resume_msg}", flush=True)
+                    last_heartbeat_time = time.time()
+
 
             # Fast-path real-time Wi-Fi PHY polling (every iteration, throttled to max 1Hz)
             now_mono = time.monotonic()
@@ -2900,12 +2927,7 @@ async def main():
                 current_isp_target = active_target
 
             zsc_active = network_info.get("zscaler", {}).get("is_active", False)
-            if not zsc_active and zscaler_override is None and len(target_pool) > 1:
-                offset = len(target_pool) // 2
-                active_slot_now = active_slot if pool_rotation_enabled else init_slot
-                zsc_slot = (active_slot_now + offset) % len(target_pool)
-                current_zsc_target = target_pool[zsc_slot]
-            elif zsc_active and zscaler_override is None:
+            if zscaler_override is None:
                 current_zsc_target = current_isp_target
 
             # Daily logfile rotation at midnight
@@ -2940,6 +2962,16 @@ async def main():
                         randomize_probe_order=randomize_probe_order,
                     )
                     current_log_date = today
+                    # Reset session accumulators and incident state for clean daily artifact
+                    session_start = datetime.now()
+                    status_counts = {"HEALTHY": 0, "DEGRADED": 0, "OUTAGE": 0, "INFO": 0}
+                    incidents = []
+                    current_incident = None
+                    incident_count = 0
+                    peak_ovh = None
+                    peak_ovh_time = None
+                    consecutive_gateway_drops = 0
+                    consecutive_redundant_drops = 0
                     # Reset overhead stats for fresh baseline
                     overhead = OverheadStats(window_size=args.overhead_window)
                     silent_healthy_count = 0
@@ -3140,6 +3172,11 @@ async def main():
             else:
                 consecutive_redundant_drops = 0
 
+            if not lan_res.success and isp_res.success and zsc_res.success:
+                consecutive_gateway_drops += 1
+            else:
+                consecutive_gateway_drops = 0
+
             status, fault = determine_status_and_fault(
                 local_ip,
                 lan_res,
@@ -3149,6 +3186,7 @@ async def main():
                 lan_gateway_ever_responded=lan_gateway_ever_responded,
                 zscaler_active=zsc_active,
                 consecutive_redundant_drops=consecutive_redundant_drops,
+                consecutive_gateway_drops=consecutive_gateway_drops,
             )
             if lan_res.success:
                 lan_gateway_ever_responded = True
@@ -3318,6 +3356,7 @@ async def main():
             if count_limit_reached(iteration, args.count):
                 break
 
+            last_iteration_end = time.monotonic()
             await asyncio.sleep(args.interval)
 
         _finish("Sample Count Reached", f"Reached requested sample count ({args.count}).")

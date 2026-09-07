@@ -26,17 +26,13 @@ See proposal.md for motivation and problem analysis. Currently, all three probes
 - **Rationale**: Keeps probe execution fully asynchronous and non-blocking while guaranteeing exact timing separation between outgoing packets.
 - **Overhead**: Total added time is 30ms (15ms for Direct, 30ms for Standard), which is <1.5% of the 2000ms iteration interval.
 
-### Decision 2: Half-Pool Target Diversity Offset Off-VPN
+### Decision 2: Unified Public Target Alignment (Single Synchronized Target)
 - **Implementation**:
   ```python
-  if not network_info["zscaler"]["is_active"] and pool_rotation_enabled:
-      offset = len(target_pool) // 2
-      zsc_slot = (active_slot + offset) % len(target_pool)
-      current_zsc_target = target_pool[zsc_slot]
-  else:
+  if zscaler_override is None:
       current_zsc_target = current_isp_target
   ```
-- **Rationale**: For an 8-target pool (e.g. `[1.1.1.1, 1.0.0.1, 8.8.8.8, 8.8.4.4, 9.9.9.9, 149.112.112.112, 208.67.222.222, 208.67.220.220]`), offsetting by 4 guarantees that Cloudflare pairs with Quad9, Google pairs with OpenDNS, etc., maximizing ISP and provider diversity.
+- **Rationale**: Keeps both Probe 2 (Direct ISP) and Probe 3 (Standard Route / Zscaler Tunnel) 100% aligned to the exact same time-synchronized target IP (`active_target`) at every second. This guarantees deterministic cross-machine target parity across all laptops regardless of whether VPN is active or inactive. Burst collision and CoPP rate-limiting protection are provided by 15ms micro-staggering (Decision 1), probe order randomization (Decision 4), and incident debounce (Decision 3), eliminating the need for off-VPN target separation.
 
 ### Decision 3: Incident Hysteresis for Redundant Probes
 - **Implementation**:

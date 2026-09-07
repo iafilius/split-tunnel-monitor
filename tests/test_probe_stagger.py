@@ -71,23 +71,20 @@ class TestStaggeredPing:
             assert res.success is True
 
 
-class TestTargetDiversityOffVpn:
-    def test_startup_target_diversity_off_vpn(self):
+class TestTargetAlignment:
+    def test_target_alignment_off_vpn(self):
         pool = ["1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4", "9.9.9.9", "149.112.112.112", "208.67.222.222", "208.67.220.220"]
         init_slot = 0
-        offset = len(pool) // 2  # 4
         isp_target = pool[init_slot]
-        zsc_target = pool[(init_slot + offset) % len(pool)]
-        assert isp_target == "1.1.1.1"
-        assert zsc_target == "9.9.9.9"
-        assert isp_target != zsc_target
+        zsc_target = pool[init_slot]
+        assert isp_target == zsc_target == "1.1.1.1"
 
     def test_target_alignment_on_vpn(self):
         pool = ["1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4", "9.9.9.9", "149.112.112.112", "208.67.222.222", "208.67.220.220"]
-        init_slot = 0
+        init_slot = 3
         isp_target = pool[init_slot]
-        zsc_target = pool[init_slot]  # identical when zsc_active is True
-        assert isp_target == zsc_target == "1.1.1.1"
+        zsc_target = pool[init_slot]
+        assert isp_target == zsc_target == "8.8.4.4"
 
 
 class TestInactiveVpnFaultDebounce:
@@ -289,7 +286,7 @@ class TestEventLogAndHeaderProbeStagger:
                 pool_rotation_enabled=True,
                 rotate_interval=900.0,
                 current_isp_target="1.1.1.1",
-                current_zsc_target="9.9.9.9",
+                current_zsc_target="1.1.1.1",
                 init_target="1.1.1.1",
                 init_slot=0,
                 pool_size=8,
@@ -319,7 +316,7 @@ class TestEventLogAndHeaderProbeStagger:
                 content = f.read()
 
             assert "Probe Stagger:   ENABLED (15ms, randomized public target order)" in content
-            assert "Standard Route=9.9.9.9" in content
+            assert "Probe Targets:   ISP Direct=1.1.1.1, Standard Route=1.1.1.1" in content
 
             # Check .meta.json sidecar
             meta_path = csv_path.replace(".csv", ".meta.json")

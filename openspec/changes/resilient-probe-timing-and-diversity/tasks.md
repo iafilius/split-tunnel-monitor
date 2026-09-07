@@ -3,10 +3,10 @@
 - [x] 1.1 Add `--probe-stagger-ms` CLI option (int, default: 15, range 0–100ms) to `build_parser()` in `ping_checker.py`.
 - [x] 1.2 Implement async staggered probe helper `_staggered_ping(delay_sec, *args, **kwargs)` and apply it to Probe 2 ($T=+15\text{ms}$) and Probe 3 ($T=+30\text{ms}$) in `main()`.
 
-## 2. Target Diversity & Overhead Bypassing on Inactive VPN
+## 2. Unified Target Alignment & Overhead Bypassing on Inactive VPN
 
-- [x] 2.1 Update target rotation resolution in `main()` to decouple Probe 2 and Probe 3 across the pool when Zscaler is inactive (`zsc_slot = (active_slot + len(pool)//2) % len(pool)`).
-- [x] 2.2 Update startup console banner and `.log` header to display both distinct target endpoints when VPN is inactive.
+- [x] 2.1 Unify public probe target resolution in `main()` so Probe 2 and Probe 3 always test the exact same synchronized IP (`current_zsc_target = current_isp_target`), ensuring deterministic cross-machine target parity.
+- [x] 2.2 Update startup console banner and `.log` header to display unified target endpoint across both Direct and Standard Route probes.
 - [x] 2.3 Update overhead calculation to bypass delta tracking when Zscaler is inactive, displaying `OVH: N/A (VPN Inactive)` and preventing skewed cross-target deltas in `OverheadStats`.
 
 ## 3. Incident Hysteresis & Outage Matrix Refinement
