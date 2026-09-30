@@ -148,11 +148,12 @@ The forensics guide SHALL formalize the concept of "macOS Wi-Fi Latency Fingerpr
 #### Scenario: Document frames latency profiles as 4 Latency Fingerprints
 
 - **WHEN** reading the forensics documentation
-- **THEN** the guide classifies observed ICMP latency behaviors into 4 distinct deterministic profiles:
+- **THEN** the guide classifies observed ICMP latency behaviors into distinct deterministic profiles:
   1. Fingerprint A: 802.11 PSM Idle Sleep Floor (~50–60ms on clean idle systems)
   2. Fingerprint B: AWDL Off-Channel Discovery Scan Spikes (48ms–96ms periodic 10s–22s sync spikes)
   3. Fingerprint C: Enterprise Host EDR & Kernel Socket Inspection (90ms–170ms+ on LAN/Direct)
   4. Fingerprint D: Zscaler VPN Tunnel Encapsulation & Cloud Edge Overhead (+15ms to +90ms+ Delta)
+  5. Fingerprint E: 2.4 GHz ISM Contention, Bluetooth Coexistence & USB 3.0 EMI (50ms–200ms+ erratic multi-modal jitter and packet drops on 2.4 GHz channels)
 
 #### Scenario: 8-Point Standardized Trace Metadata Schema
 
@@ -259,4 +260,18 @@ The forensics guide SHALL NOT present the Zscaler tunnel path (`OVH: p50/p95`) a
 
 - **WHEN** `split-tunnel-monitor`'s `OVH: p50` or `OVH: p95` column shows a negative value
 - **THEN** the guide states this is an expected, valid outcome (the tunnel outperforming the direct path for that sample), not an indication of a measurement error or classifier bug
+
+### Requirement: 2.4 GHz ISM Band Coexistence, Bluetooth & USB 3.0 EMI Forensics
+
+The forensics guide SHALL document the physical and spectral mechanisms of 2.4 GHz ISM band interference, Apple combo-chip Packet Traffic Arbitration (PTA), Bluetooth/BLE frequency hopping collisions, proprietary peripheral transceivers, and USB 3.0/USB-C SuperSpeed broadband electromagnetic radiation.
+
+#### Scenario: Spectral and architectural documentation of 2.4 GHz contention
+
+- **WHEN** an engineer consults the Wi-Fi latency forensics guide
+- **THEN** the guide explains:
+  1. Spectral overlap between 20/40 MHz 802.11 channels (1, 6, 11) and 79-channel Bluetooth FHSS / 40-channel BLE.
+  2. Apple combo-chip Packet Traffic Arbitration (PTA) time-division multiplexing (TDM) on shared 2.4 GHz antennas pausing Wi-Fi transmission during Bluetooth audio/HID bursts.
+  3. USB 3.0 / 3.1 Gen 1 5Gbps differential signaling clock spread-spectrum broadband radiation (2.4 GHz–2.5 GHz) and its desensitization of adjacent dongles and Wi-Fi receivers.
+  4. Practical remediation protocols (migrating to 5 GHz / 6 GHz SSIDs, using USB 2.0 extension cables for 2.4 GHz wireless transceivers).
+
 

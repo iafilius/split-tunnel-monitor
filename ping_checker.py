@@ -45,9 +45,10 @@ import struct
 import ctypes
 import ctypes.util
 import threading
+import concurrent.futures
 from datetime import datetime
 
-__version__ = "1.5.1"
+__version__ = "1.6.0"
 __log_schema__ = 5
 
 # Curated default IPv4 Anycast target pool for deterministic synchronized rotation
@@ -330,6 +331,99 @@ class NetworkDiscovery:
             "zscaler": zscaler_info
         }
 
+    @staticmethod
+    def get_interface_netmask(interface: str) -> str:
+        """Get IPv4 netmask string for physical interface using ifconfig (e.g. '255.255.255.0')."""
+        if not interface:
+            return ""
+        try:
+            res = subprocess.run(["ifconfig", interface], capture_output=True, text=True, timeout=2)
+            if res.returncode == 0 and res.stdout:
+                match = re.search(r"netmask\s+(0x[0-9a-fA-F]+)", res.stdout)
+                if match:
+                    val = int(match.group(1), 16)
+                    return socket.inet_ntoa(struct.pack("!I", val))
+        except Exception:
+            pass
+        return ""
+
+    @staticmethod
+    def get_active_dns_resolvers() -> list[str]:
+        """Parse active primary DNS resolver IPs from scutil --dns (macOS) with /etc/resolv.conf fallback."""
+        resolvers: list[str] = []
+        try:
+            res = subprocess.run(["scutil", "--dns"], capture_output=True, text=True, timeout=2)
+            if res.returncode == 0 and res.stdout:
+                # Look for resolver #1 block first (primary global resolver on macOS)
+                match = re.search(r"resolver #1\n(.*?)(?=\nresolver #\d|\Z)", res.stdout, re.DOTALL)
+                if match:
+                    block = match.group(1)
+                    for ns in re.findall(r"nameserver\[\d+\]\s*:\s*([^\s]+)", block):
+                        if ns not in resolvers:
+                            resolvers.append(ns)
+                # If resolver #1 had none, check any resolver block
+                if not resolvers:
+                    for ns in re.findall(r"nameserver\[\d+\]\s*:\s*([^\s]+)", res.stdout):
+                        if ns not in resolvers:
+                            resolvers.append(ns)
+        except Exception:
+            pass
+
+        if not resolvers:
+            try:
+                with open("/etc/resolv.conf", "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith("nameserver "):
+                            parts = line.split()
+                            if len(parts) >= 2 and parts[1] not in resolvers:
+                                resolvers.append(parts[1])
+            except Exception:
+                pass
+
+        return resolvers
+
+    @staticmethod
+    def get_network_service_for_interface(interface: str) -> str:
+        """Map BSD device name (e.g. en0, en8) to macOS network service name (e.g. 'Wi-Fi') via networksetup."""
+        if not interface:
+            return ""
+        try:
+            res = subprocess.run(
+                ["networksetup", "-listnetworkserviceorder"],
+                capture_output=True, text=True, timeout=2
+            )
+            if res.returncode == 0 and res.stdout:
+                pattern = re.compile(
+                    r"\(\d+\)\s+(.+?)\s*\n\(Hardware Port:\s*[^,]+,\s*Device:\s*" + re.escape(interface) + r"\)",
+                    re.MULTILINE
+                )
+                match = pattern.search(res.stdout)
+                if match:
+                    service = match.group(1).strip()
+                    return service.lstrip("*").strip()
+        except Exception:
+            pass
+        return ""
+
+    @staticmethod
+    def get_static_dns_override(service: str) -> list[str]:
+        """Query networksetup -getdnsservers for explicit manual static DNS overrides on a service."""
+        if not service:
+            return []
+        try:
+            res = subprocess.run(
+                ["networksetup", "-getdnsservers", service],
+                capture_output=True, text=True, timeout=2
+            )
+            if res.returncode == 0 and res.stdout:
+                lines = [line.strip() for line in res.stdout.strip().splitlines() if line.strip()]
+                if lines and not any("there aren't any dns servers set" in line.lower() for line in lines):
+                    return lines
+        except Exception:
+            pass
+        return []
+
     # Public egress-check endpoints. The Corporate Tunnel path queries ALL of
     # these every discovery cycle (not first-success-wins) because policy-based,
     # per-destination routing over the same default route can send different
@@ -537,6 +631,187 @@ class NetworkDiscovery:
             "tunneled": tunneled,
             "has_tunnel": zscaler_active,
         }
+
+
+# Functional aliases for direct access and testing
+get_active_dns_resolvers = NetworkDiscovery.get_active_dns_resolvers
+get_network_service_for_interface = NetworkDiscovery.get_network_service_for_interface
+get_static_dns_override = NetworkDiscovery.get_static_dns_override
+
+
+def _build_dns_query_packet(domain: str) -> bytes:
+    """Build a minimal standard 12-byte header + question section DNS query packet for an A record."""
+    packet = bytearray(b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00")
+    for part in domain.strip(".").split("."):
+        if not part:
+            continue
+        encoded = part.encode("ascii", errors="replace")
+        packet.append(len(encoded))
+        packet.extend(encoded)
+    packet.append(0)
+    packet.extend(b"\x00\x01\x00\x01")  # Type A (1), Class IN (1)
+    return bytes(packet)
+
+
+def probe_dns_server_udp(server_ip: str, timeout_sec: float = 1.0, domain: str = "apple.com") -> tuple[bool, float | None]:
+    """Send a lightweight UDP query to server_ip:53 to verify direct reachability. Returns (reachable, rtt_ms)."""
+    if not server_ip:
+        return False, None
+    packet = _build_dns_query_packet(domain)
+    is_ipv6 = ":" in server_ip
+    sock_fam = socket.AF_INET6 if is_ipv6 else socket.AF_INET
+    try:
+        sock = socket.socket(sock_fam, socket.SOCK_DGRAM)
+        sock.settimeout(timeout_sec)
+        t0 = time.perf_counter()
+        sock.sendto(packet, (server_ip, 53))
+        data, _ = sock.recvfrom(512)
+        rtt = (time.perf_counter() - t0) * 1000.0
+        sock.close()
+        if len(data) >= 12:
+            return True, round(rtt, 1)
+    except Exception:
+        pass
+    return False, None
+
+
+def audit_dns_health(
+    canary_host: str = "apple.com",
+    timeout_sec: float = 2.0,
+    local_ip: str = "",
+    iface: str = "en0",
+) -> dict:
+    """
+    Audits active DNS resolver configuration, performs system canary resolution,
+    detects stale manual static overrides and foreign RFC1918 subnets, and emits remediation details.
+    """
+    resolvers = NetworkDiscovery.get_active_dns_resolvers()
+    service = NetworkDiscovery.get_network_service_for_interface(iface)
+    static_servers = NetworkDiscovery.get_static_dns_override(service) if service else []
+    has_static_override = bool(static_servers)
+
+    netmask = NetworkDiscovery.get_interface_netmask(iface)
+    local_network = None
+    if local_ip:
+        try:
+            if netmask:
+                local_network = ipaddress.IPv4Interface(f"{local_ip}/{netmask}").network
+            else:
+                local_network = ipaddress.IPv4Interface(f"{local_ip}/24").network
+        except Exception:
+            pass
+
+    # 1. Canary resolution via system resolver (socket.getaddrinfo)
+    canary_success = False
+    canary_latency_ms: float | None = None
+    canary_error = ""
+    resolved_ips: list[str] = []
+
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    t0 = time.perf_counter()
+    future = executor.submit(socket.getaddrinfo, canary_host, 80, socket.AF_INET)
+    try:
+        res = future.result(timeout=timeout_sec)
+        canary_latency_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+        canary_success = True
+        resolved_ips = sorted(list({r[4][0] for r in res if r and len(r) >= 5 and r[4]}))
+    except concurrent.futures.TimeoutError:
+        canary_error = f"Resolution timed out after {timeout_sec:.1f}s"
+    except Exception as e:
+        canary_error = str(e)
+    finally:
+        executor.shutdown(wait=False)
+
+    # 2. Inspect active resolvers & check reachability / foreign subnets
+    resolver_details = []
+    sticky_resolvers = []
+    reachable_count = 0
+
+    for ns in resolvers:
+        is_ipv4 = False
+        is_private = False
+        is_local_subnet = True
+        try:
+            ns_addr = ipaddress.IPv4Address(ns)
+            is_ipv4 = True
+            is_private = ns_addr.is_private
+            if is_private and local_network:
+                is_local_subnet = (ns_addr in local_network)
+        except Exception:
+            is_ipv4 = False
+
+        is_static = ns in static_servers
+        reachable, rtt_ms = probe_dns_server_udp(ns, timeout_sec=min(timeout_sec, 1.0), domain=canary_host)
+        if reachable:
+            reachable_count += 1
+
+        is_foreign = is_private and not is_local_subnet
+        if is_foreign or (is_static and not reachable):
+            sticky_resolvers.append(ns)
+
+        resolver_details.append({
+            "ip": ns,
+            "is_ipv4": is_ipv4,
+            "is_private": is_private,
+            "is_local_subnet": is_local_subnet,
+            "is_static": is_static,
+            "reachable": reachable,
+            "rtt_ms": rtt_ms,
+            "is_foreign": is_foreign,
+        })
+
+    # 3. Verdict determination
+    if canary_success:
+        if sticky_resolvers or (has_static_override and reachable_count < len(resolvers)):
+            status = "DEGRADED"
+        else:
+            status = "VERIFIED"
+    else:
+        status = "FAILED"
+
+    # 4. Remediation formatting
+    remediation_cmd = f'networksetup -setdnsservers "{service}" empty' if service else 'networksetup -setdnsservers "<service>" empty'
+    warning_needed = (status in ("FAILED", "DEGRADED")) or bool(sticky_resolvers)
+
+    warning_message = ""
+    if warning_needed:
+        lines = [
+            "╔══════════════════════════════════════════════════════════════════════════════════════════╗",
+        ]
+        warn_title = f"║ [DNS WARNING] Stale/Sticky DNS resolver detected on service \"{service or iface}\"!"
+        lines.append(warn_title.ljust(91) + "║")
+
+        if sticky_resolvers:
+            for s_ip in sticky_resolvers:
+                line_msg = f"║ Configured nameserver {s_ip} is in a foreign subnet (local: {local_network or local_ip})"
+                lines.append(line_msg.ljust(91) + "║")
+            lines.append("║ Hostname resolution is degraded or failing despite raw IP pings succeeding.".ljust(91) + "║")
+        elif not canary_success:
+            lines.append(f"║ System DNS resolution to '{canary_host}' failed: {canary_error}".ljust(91) + "║")
+            if static_servers:
+                lines.append(f"║ Active static DNS override: {', '.join(static_servers)}".ljust(91) + "║")
+
+        lines.append("║".ljust(91) + "║")
+        lines.append("║ Copy-paste remediation command to restore DHCP DNS:".ljust(91) + "║")
+        lines.append(f"║   {remediation_cmd}".ljust(91) + "║")
+        lines.append("╚══════════════════════════════════════════════════════════════════════════════════════════╝")
+        warning_message = "\n".join(lines)
+
+    return {
+        "status": status,
+        "canary_host": canary_host,
+        "canary_latency_ms": canary_latency_ms,
+        "canary_error": canary_error,
+        "resolved_ips": resolved_ips,
+        "network_service": service,
+        "static_override": has_static_override,
+        "static_servers": static_servers,
+        "resolvers": resolver_details,
+        "sticky_resolvers": sticky_resolvers,
+        "warning_needed": warning_needed,
+        "warning_message": warning_message,
+        "remediation_cmd": remediation_cmd,
+    }
 
 
 def _format_egress_details(egress_data: dict) -> str:
@@ -1672,6 +1947,13 @@ def _schema_sidecar_path(csv_path: str) -> str:
     return csv_path + ".schema.json"
 
 
+def _summary_md_path(csv_path: str) -> str:
+    """Derive the Markdown session summary path (.summary.md) for a given CSV logfile path."""
+    if csv_path.endswith(".csv"):
+        return csv_path[:-4] + ".summary.md"
+    return csv_path + ".summary.md"
+
+
 def export_schema_json(csv_path: str) -> str:
     """Export self-describing JSON schema definition for CSV logfile (Schema v5)."""
     schema_path = _schema_sidecar_path(csv_path)
@@ -2026,6 +2308,7 @@ def init_logfile(
             "targets_string": targets_str,
         },
         "egress": egress,
+        "dns": (network_info or {}).get("dns"),
         "path_verification_note": "routing-based assurance only (not packet-capture proof).",
     }
     with open(_meta_sidecar_path(filename), "w", encoding="utf-8") as f:
@@ -2063,6 +2346,25 @@ def init_logfile(
             )
             f.write(f"Direct Egress:   {direct_desc}\n")
             f.write(f"Tunnel Egress:   {tunneled_desc}\n")
+            dns_data = (network_info or {}).get("dns") or {}
+            if dns_data:
+                dns_stat = dns_data.get("status", "UNKNOWN")
+                dns_lat = f" ({dns_data['canary_latency_ms']:.1f}ms)" if dns_data.get("canary_latency_ms") is not None else ""
+                dns_err = f" [{dns_data['canary_error']}]" if dns_data.get("canary_error") and dns_stat != "VERIFIED" else ""
+                f.write(f"DNS Checkup:     {dns_stat}{dns_lat}{dns_err}\n")
+                f.write(f"DNS Canary Host: {dns_data.get('canary_host', 'N/A')}\n")
+                resolvers_log_list = []
+                for r in dns_data.get("resolvers", []):
+                    r_ip = r["ip"]
+                    if r.get("reachable"):
+                        r_lat = f", {r['rtt_ms']:.1f}ms" if r.get("rtt_ms") is not None else ""
+                        resolvers_log_list.append(f"{r_ip} (Reachable{r_lat})")
+                    else:
+                        resolvers_log_list.append(f"{r_ip} (Unreachable)")
+                f.write(f"Active DNS:      {', '.join(resolvers_log_list) if resolvers_log_list else 'None'}\n")
+                if dns_data.get("warning_needed"):
+                    f.write(f"DNS Warning:     Stale/foreign static DNS detected on service '{dns_data.get('network_service')}'\n")
+                    f.write(f"DNS Remediation: {dns_data.get('remediation_cmd')}\n")
             if startup_config:
                 rot = startup_config.get("rotation", {})
                 f.write(f"Monitor Version: {__version__} (log-schema: {__log_schema__})\n")
@@ -2102,6 +2404,10 @@ def init_logfile(
             f.write(f"[{_ts()}] [STARTUP] Monitoring initialized on {iface} (Local IP: {(network_info or {}).get('local_ip', 'N/A')}, Gateway: {(network_info or {}).get('gateway_ip', 'N/A')})\n")
             if egress and (egress.get("direct") or egress.get("tunneled")):
                 f.write(f"[{_ts()}] [EGRESS] Direct ISP: {direct_desc} | Tunnel: {tunneled_desc}\n")
+            if dns_data:
+                f.write(f"[{_ts()}] [DNS] Health: {dns_data.get('status', 'N/A')} (Canary: {dns_data.get('canary_host', 'N/A')}, Latency: {dns_data.get('canary_latency_ms', 'N/A')}ms)\n")
+                if dns_data.get("warning_needed"):
+                    f.write(f"[{_ts()}] [DNS WARNING] Stale/foreign static DNS on {dns_data.get('network_service')}: {dns_data.get('remediation_cmd')}\n")
     except Exception:
         pass
 
@@ -2142,8 +2448,8 @@ def _update_meta_sidecar_egress(filename: str, egress: dict) -> None:
 
 
 
-def _write_log_footer(filename: str, status_counts: dict | None = None, reason: str = "Session Stopped", session_summary_text: str = "") -> None:
-    """Updates the JSON metadata sidecar and appends the session summary to the .log event file."""
+def _write_log_footer(filename: str, status_counts: dict | None = None, reason: str = "Session Stopped", session_summary_text: str = "", session_summary_md: str = "") -> None:
+    """Updates the JSON metadata sidecar, writes .summary.md, and appends the session summary to the .log event file."""
     try:
         sidecar = _meta_sidecar_path(filename)
         meta = {}
@@ -2165,6 +2471,14 @@ def _write_log_footer(filename: str, status_counts: dict | None = None, reason: 
         with open(sidecar, "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
             f.write("\n")
+
+        # Write standalone .summary.md artifact if provided
+        if session_summary_md:
+            summary_md_file = _summary_md_path(filename)
+            with open(summary_md_file, "w", encoding="utf-8") as f:
+                f.write(session_summary_md)
+                if not session_summary_md.endswith("\n"):
+                    f.write("\n")
 
         # Append summary block to the .log event file
         event_log = _event_log_path(filename)
@@ -2443,6 +2757,11 @@ def _format_session_summary(
     elif network_info.get("medium"):
         iface_str += f" ({network_info['medium']})"
     lines.append(f" Interface:   {iface_str}")
+    dns_meta = network_info.get("dns", {})
+    if dns_meta:
+        dns_stat = dns_meta.get("status", "N/A")
+        dns_lat = f" ({dns_meta.get('canary_latency_ms')}ms)" if dns_meta.get("canary_latency_ms") is not None else ""
+        lines.append(f" DNS Audit:   {dns_stat}{dns_lat} [Canary: {dns_meta.get('canary_host', 'N/A')}]")
     if keep_awake_mode != "off":
         lines.append(f" Keep-Awake:  {keep_awake_mode}")
     lines.append(f" Samples:     {total:,}")
@@ -2496,8 +2815,152 @@ def _format_session_summary(
     lines.append(f" Data CSV:    {os.path.relpath(logfile)}")
     lines.append(f" Sidecar:     {os.path.relpath(_meta_sidecar_path(logfile))}")
     lines.append(f" Event Log:   {os.path.relpath(_event_log_path(logfile))}")
+    lines.append(f" Summary MD:  {os.path.relpath(_summary_md_path(logfile))}")
     lines.append(sep)
     return "\n".join(lines)
+
+
+def _format_session_summary_md(
+    session_start: datetime,
+    status_counts: dict,
+    incidents: list,
+    current_incident,
+    incident_count: int,
+    peak_ovh,
+    peak_ovh_time,
+    overhead,
+    logfile: str,
+    network_info: dict,
+    keep_awake_mode: str = "off",
+) -> str:
+    """Formats the structured Markdown session report (.summary.md)."""
+    now = datetime.now()
+    total_secs = int((now - session_start).total_seconds())
+    total = sum(status_counts.values())
+
+    iface_str = network_info.get("interface", "N/A")
+    medium_str = network_info.get("medium", "N/A")
+    wifi_data = network_info.get("wifi", {})
+    wifi_details = []
+    if wifi_data.get("is_wifi"):
+        if wifi_data.get("channel"):
+            band_str = f" ({wifi_data.get('band', '')})" if wifi_data.get("band") else ""
+            wifi_details.append(f"Channel {wifi_data['channel']}{band_str}")
+        if wifi_data.get("rssi") is not None:
+            wifi_details.append(f"RSSI {wifi_data['rssi']} dBm")
+        if wifi_data.get("noise") is not None:
+            wifi_details.append(f"Noise {wifi_data['noise']} dBm")
+        if wifi_data.get("snr") is not None:
+            wifi_details.append(f"SNR {wifi_data['snr']} dB")
+        if wifi_data.get("tx_rate") is not None:
+            wifi_details.append(f"Tx {wifi_data['tx_rate']} Mbps")
+    wifi_summary = ", ".join(wifi_details) if wifi_details else "N/A"
+
+    # Incidents list including any ongoing incident
+    display_incidents = list(incidents)
+    if current_incident is not None:
+        ongoing_secs = int((now - current_incident["start"]).total_seconds())
+        display_incidents.append({
+            "number": current_incident["number"],
+            "start": current_incident["start"],
+            "worst_status": current_incident["worst_status"],
+            "domain": current_incident["domain"],
+            "duration_str": _fmt_duration(ongoing_secs),
+            "ongoing": True,
+        })
+
+    # Overhead stats
+    if overhead.baseline_p50 is not None:
+        p50 = overhead.rolling_p50()
+        p95 = overhead.rolling_p95()
+        p50_str = f"{p50:+.1f}ms" if p50 is not None else "N/A"
+        p95_str = f"{p95:+.1f}ms" if p95 is not None else "N/A"
+        peak_str = (f"{peak_ovh:+.1f}ms at {peak_ovh_time.strftime('%Y-%m-%d %H:%M:%S')}"
+                    if peak_ovh is not None else "N/A")
+        ovh_summary = f"Baseline p50: `{overhead.baseline_p50:+.1f}ms` · Current p50: `{p50_str}` · p95: `{p95_str}` · Peak: `{peak_str}`"
+    else:
+        ovh_summary = "*N/A (baseline not yet established)*"
+
+    md = []
+    md.append(f"# Tri-Path Split-Tunnel Monitor — Session Report")
+    md.append(f"> **Version**: `v{__version__}` (log-schema: `{__log_schema__}`) · **Generated**: `{now.strftime('%Y-%m-%d %H:%M:%S')}`\n")
+
+    md.append("## Executive Summary\n")
+    md.append("| Metric | Value |")
+    md.append("| :--- | :--- |")
+    md.append(f"| **Session Duration** | {_fmt_duration(total_secs)} (`{session_start.strftime('%Y-%m-%d %H:%M:%S')}` – `{now.strftime('%Y-%m-%d %H:%M:%S')}`) |")
+    md.append(f"| **Total Probe Samples** | {total:,} |")
+    md.append(f"| **Primary Interface** | `{iface_str}` ({medium_str}) |")
+    if wifi_data.get("is_wifi"):
+        md.append(f"| **Wi-Fi Radio PHY** | {wifi_summary} |")
+    dns_meta = network_info.get("dns", {})
+    if dns_meta:
+        dns_stat = dns_meta.get("status", "N/A")
+        dns_lat = f" ({dns_meta.get('canary_latency_ms')}ms)" if dns_meta.get("canary_latency_ms") is not None else ""
+        md.append(f"| **DNS Health Audit** | `{dns_stat}`{dns_lat} (Canary: `{dns_meta.get('canary_host', 'N/A')}`) |")
+        if dns_meta.get("sticky_resolvers"):
+            md.append(f"| **Sticky DNS Override** | `{' '.join(dns_meta['sticky_resolvers'])}` (Service: `{dns_meta.get('network_service', 'N/A')}`) |")
+    if keep_awake_mode != "off":
+        md.append(f"| **Keep-Awake Mode** | `{keep_awake_mode}` |")
+    md.append("")
+
+    md.append("## Health Breakdown\n")
+    md.append("| Status | Percentage | Sample Count |")
+    md.append("| :--- | :--- | :--- |")
+    for s_name in ("HEALTHY", "DEGRADED", "OUTAGE", "INFO"):
+        count = status_counts.get(s_name, 0)
+        pct = (count / total * 100) if total else 0.0
+        md.append(f"| **{s_name}** | {pct:5.1f}% | {count:,} |")
+    md.append("")
+
+    md.append("## Incidents\n")
+    if not display_incidents:
+        md.append("*No incidents occurred during this monitoring session.*\n")
+    else:
+        md.append("| # | Start Time | Worst Status | Fault Domain | Duration | State |")
+        md.append("| :--- | :--- | :--- | :--- | :--- | :--- |")
+        for inc in display_incidents[:20]:
+            state_tag = "Ongoing at Exit" if inc.get("ongoing") else "Resolved"
+            md.append(f"| #{inc['number']} | {inc['start'].strftime('%Y-%m-%d %H:%M:%S')} | `{inc['worst_status']}` | {inc['domain']} | {inc['duration_str']} | {state_tag} |")
+        if len(display_incidents) > 20:
+            md.append(f"\n*... and {len(display_incidents) - 20} more incidents.*")
+        md.append("")
+
+    md.append("## VPN Overhead Delta Statistics\n")
+    md.append(f"{ovh_summary}\n")
+
+    md.append("## Associated Artifacts\n")
+    md.append(f"- **Data CSV**: `{os.path.relpath(logfile)}`")
+    md.append(f"- **Metadata Sidecar**: `{os.path.relpath(_meta_sidecar_path(logfile))}`")
+    md.append(f"- **Event Log**: `{os.path.relpath(_event_log_path(logfile))}`")
+    md.append(f"- **Summary Markdown**: `{os.path.relpath(_summary_md_path(logfile))}`\n")
+
+    md.append("---")
+    md.append("## AI Agent Diagnostic Directive\n")
+    md.append("If you are an AI assistant analyzing this session:")
+    md.append("1. **Inspect Multi-Path Telemetry**: Cross-reference this summary with the companion `.csv` timeseries and `.log` event file.")
+    md.append("2. **Apply Failure-Domain Disambiguation Rules** (run `split-tunnel-monitor --agent-manual` for full details):")
+    md.append("   - **Router Control-Plane Shedding**: If the local LAN gateway drops 1–2 cycles while Direct ISP and Corporate Tunnel probes succeed, diagnose as local router CPU deprioritizing ICMP, **not** a Wi-Fi or physical link drop.")
+    md.append("   - **802.11 PSM Sawtooth**: Latency jumping between ~50ms resting floor and ~5ms burst floor reflects 802.11 DTIM power save sleep, **not** ISP bufferbloat.")
+    md.append("   - **2.4 GHz RF Contention**: Multi-modal latency jitter on 2.4 GHz Wi-Fi channels indicates local ISM/Bluetooth interference.")
+    md.append("3. **Deliver a 4-Part Report**: Structure your findings into (1) Executive Verdict, (2) Baseline Matrix, (3) Forensic Timeline, and (4) Actionable Remediation.")
+    md.append("4. **Conclude with Standardized Tooling Feedback**: Generate the Markdown block below for user review:\n")
+    md.append("```markdown")
+    md.append("### Split-Tunnel-Monitor Agent Diagnostic & Tooling Feedback")
+    md.append(f"- **Monitor Version**: `{__version__}` (log-schema: `{__log_schema__}`)")
+    md.append("- **Platform & Arch**: `[e.g. macOS 15.6.1 (arm64)]`")
+    md.append(f"- **Interface & PHY**: `{iface_str} ({medium_str})`")
+    md.append(f"- **Session Duration & Samples**: `{_fmt_duration(total_secs)} ({total:,} samples)`")
+    md.append(f"- **Observed Incidents**: `{len(display_incidents)} incident(s)`")
+    md.append("- **Agent Executive Verdict**: `[HEALTHY | DEGRADED | OUTAGE]`")
+    md.append("- **Diagnostic Confidence**: `[HIGH | MEDIUM | LOW]`")
+    md.append("- **Telemetry Gaps & Limitations**: `[What data was missing to prove root cause?]`")
+    md.append("- **Schema & Metric Clarity**: `[Were any columns, logs, or metrics ambiguous?]`")
+    md.append("- **Edge Cases / Uncataloged Topology**: `[Any unexpected tunnels or routing behaviors?]`")
+    md.append("- **Suggested Improvement**: `[1 concrete recommendation for split-tunnel-monitor]`")
+    md.append("```\n")
+
+    return "\n".join(md)
 
 
 def _print_session_summary(
@@ -2513,13 +2976,172 @@ def _print_session_summary(
     network_info: dict,
     keep_awake_mode: str = "off",
 ) -> None:
-    """Print a human-readable session report to stdout."""
+    """Print a human-readable session report to stdout and write the companion .summary.md file."""
     summary_text = _format_session_summary(
         session_start, status_counts, incidents, current_incident,
         incident_count, peak_ovh, peak_ovh_time, overhead, logfile, network_info,
         keep_awake_mode=keep_awake_mode,
     )
+    summary_md = _format_session_summary_md(
+        session_start, status_counts, incidents, current_incident,
+        incident_count, peak_ovh, peak_ovh_time, overhead, logfile, network_info,
+        keep_awake_mode=keep_awake_mode,
+    )
+    try:
+        with open(_summary_md_path(logfile), "w", encoding="utf-8") as f:
+            f.write(summary_md)
+            if not summary_md.endswith("\n"):
+                f.write("\n")
+    except Exception:
+        pass
     print(f"\n{summary_text}")
+
+
+def _generate_agent_manual() -> str:
+    """
+    Generates the comprehensive, high-density AI Agent Reference Manual in Markdown.
+    Provides autonomous operational parameters, file schema anatomy, failure-domain
+    disambiguation rules, 4-part reporting layout, and the standardized feedback schema.
+    """
+    return f"""# Split-Tunnel-Monitor: AI Agent Operational & Diagnostic Reference Manual
+> **Tool**: `split-tunnel-monitor` (`ping_checker.py`) · **Version**: `{__version__}` (log-schema: `{__log_schema__}`)
+> **Platform**: macOS (Apple Silicon & Intel) · **Scope**: Layers 1–4 Transport Substrate
+
+This document is the authoritative reference for AI coding agents and automated diagnostic subagents inspecting network sessions or executing `split-tunnel-monitor`.
+
+---
+
+## 1. Architectural Scope & Boundary
+
+`split-tunnel-monitor` evaluates the health, reachability, and physical latency of the underlying network transport paths:
+1. **Local Network (LAN Gateway)**: Dynamic local router default gateway via standard ICMP echo (`ping -c 1 <lan_gw>`).
+2. **Direct Internet Path (ISP WAN Underlay)**: Outbound physical interface ping bypassing the VPN virtual adapter via BSD bound socket (`ping -S <local_ip> <target>`).
+3. **Corporate Tunnel Path (VPN Virtual Adapter)**: Standard routed ICMP probe flowing through the VPN virtual tunnel interface (e.g. `utun4` on Zscaler, AnyConnect, GlobalProtect).
+
+> **Boundary**: The tool measures Layers 1–4 physical and network reachability. It does **not** inspect or diagnose Layer 7 application inspection (SSL/TLS MITM decryption, synthetic Root CA trust errors, proxy TTFB buffering, DLP latency, or URL tenant blocks).
+
+---
+
+## 2. Non-Interactive CLI Invocation for AI Agents
+
+When executing `split-tunnel-monitor` as an autonomous probe, use non-interactive flags:
+
+```bash
+# Discrete sample run (e.g. 60 samples @ 2s = 2 minutes), silent console, no desktop popups:
+split-tunnel-monitor -n 60 --silent --no-notify
+
+# High-fidelity measurement suppressing 802.11 Power Save Mode (PSM) doze:
+split-tunnel-monitor -n 120 --keep-awake udp-tick --silent --no-notify
+
+# Target pool pinning (override rotation with static targets if isolating a specific endpoint):
+split-tunnel-monitor -n 30 --isp-target 1.1.1.1 --zscaler-target 1.1.1.1 --no-notify
+```
+
+### Essential CLI Flags for Agents:
+- `-n, --count <N>`: Terminate cleanly after N samples and flush all session summaries.
+- `--silent`: Suppress normal periodic per-iteration console lines; emit only state transitions (`[INCIDENT]`, `[RECOVERY]`, `[TARGET ROTATION]`, `[SYSTEM RESUME]`) and heartbeats.
+- `--no-notify`: Suppress GUI banner notifications via `terminal-notifier` / `osascript`.
+- `--keep-awake [udp-tick | qos-vo | assertion | prewarm | off]`: Suppress macOS Wi-Fi power-save sleep latency buffering (default: `udp-tick`).
+- `--probe-stagger-ms <ms>`: Delay in ms between concurrent probe dispatches (default: 15ms) to prevent burst contention.
+- `SIGINT` / `SIGTERM`: Clean signal termination flushes `.csv`, `.log`, `.meta.json`, and `.summary.md`.
+
+---
+
+## 3. Session Artifact Ecosystem
+
+Each monitoring session generates four synchronized artifacts sharing the base filename `ping_checker_YYYYMMDD_HHMMSS`:
+
+| File Extension | Content & Format | Primary Use Case |
+| :--- | :--- | :--- |
+| `.csv` | Raw timeseries records (Schema v{__log_schema__}) | Statistical percentile analysis, RTT charts, loss rates |
+| `.log` | Human-readable chronological event stream | Incident transitions, sleep/resumes, traceroute hops |
+| `.meta.json` | JSON metadata sidecar | Platform baseline, Wi-Fi PHY, ASN egress, config |
+| `.schema.json` | JSON Schema Draft 2020-12 definition | Automated schema validation and column typing |
+| `.summary.md` | Markdown session report with incident tables | Executive review, AI prompt input, and helpdesk tickets |
+
+---
+
+## 4. Mandatory 5-Point Environmental Baseline
+
+Never diagnose split-tunnel degradation from raw ping latencies alone without inspecting the 5-point environmental baseline (recorded in `.meta.json` and `.summary.md`):
+1. **Platform & Hardware**: macOS version, Darwin kernel, Apple Silicon model (`sw_vers && uname -m`).
+2. **Power & Thermal**: AC vs Battery, Low Power Mode status (`pmset -g live`).
+3. **Physical Interface**: Primary physical interface (`en0` Wi-Fi vs `en*` USB-C/Thunderbolt Ethernet).
+4. **Wi-Fi PHY Parameters** *(if Wi-Fi)*: Frequency band (2.4/5/6 GHz), Channel, RSSI (dBm), Noise (dBm), SNR (dB), and Active Tx Rate (Mbps).
+5. **Tunnel & Process State**: Routing default interface (`route -n get default`) and active corporate VPN processes (`pgrep -il "zscaler|cisco|globalprotect"`).
+
+---
+
+## 5. Forensic Disambiguation Heuristics
+
+Apply these heuristics to prevent false-positive conclusions:
+
+### Rule 1: Router Control Plane Shedding vs Hardware NSS Forwarding
+- **Symptom**: LAN gateway times out for 1–2 cycles while Direct ISP and Corporate Tunnel probes succeed with normal RTT (<= 50ms).
+- **Verdict**: **Router Control-Plane ICMP Deprioritization**. The router's hardware data plane (NSS fast-path) is healthy; the router CPU deprioritized ICMP echo requests. Do NOT diagnose a local link failure.
+
+### Rule 2: 802.11 Power Save Mode (PSM) Sawtooth
+- **Symptom**: Latency exhibits a periodic ~20s sawtooth profile (~50ms resting baseline dropping to ~5ms upon bursts).
+- **Verdict**: **802.11 DTIM Beacon Buffering**. The Wi-Fi chipset is entering low-power doze states. Do NOT diagnose ISP or Wi-Fi congestion. Recommend `--keep-awake udp-tick`.
+
+### Rule 3: 2.4 GHz RF Contention & Bluetooth Coexistence
+- **Symptom**: Multi-modal latency spikes (50ms–200ms+) or intermittent packet loss on Wi-Fi Channels 1–13.
+- **Verdict**: **2.4 GHz ISM Band Contention**. Susceptibility to RF collisions with Bluetooth audio/HID or USB 3.0 EMI. Recommend validating on 5 GHz, 6 GHz, or wired Ethernet before attributing faults to ISP or VPN.
+
+### Rule 4: Host Sleep Gaps vs Script Freeze
+- **Symptom**: Monotonic time jump $>10\\text{{s}}$ accompanied by `[SYSTEM RESUME] Host resumed from sleep/standby`.
+- **Verdict**: **Host Sleep Suspension**. The laptop lid was closed or OS entered deep standby.
+
+### Rule 5: Wi-Fi Link Speed Radio Idling
+- **Symptom**: Initial idle link speed is low (e.g. 286 Mbps), jumping to 1200 Mbps once network traffic starts.
+- **Verdict**: **802.11 Power-Save Radio Throttling**. macOS throttles PHY modulation when idle on battery. Inspect active operational rate.
+
+---
+
+## 6. Standardized 4-Part Diagnostic Report Layout
+
+When presenting analysis to users or engineers, adhere to this structure:
+1. **Executive Verdict**: 1-sentence root-cause determination and status classification (`HEALTHY`, `DEGRADED`, or `OUTAGE`).
+2. **Environment Baseline Matrix**: Table comparing observed client metrics against reference norms.
+3. **Forensic Evidence & Timeline**: Exact timestamps, RTT values, and failure-domain proofs.
+4. **Actionable Remediation**: Specific CLI flags, physical link suggestions, or network settings.
+
+---
+
+## 7. Standardized Agent Diagnostic & Tooling Feedback Schema
+
+To report feedback to the project maintainers or evaluate tool performance, conclude your analysis with this Markdown block:
+
+```markdown
+### Split-Tunnel-Monitor Agent Diagnostic & Tooling Feedback
+
+#### Environment & Runtime Telemetry
+- **Monitor Version**: `{__version__}` (log-schema: `{__log_schema__}`)
+- **Platform & Architecture**: `[e.g. macOS 15.6.1 (Darwin 24.6.0, arm64)]`
+- **Physical Medium**: `[e.g. en0 (Wi-Fi 6, 5GHz Ch 100, RSSI: -42 dBm, SNR: 52 dB)]`
+- **Tunnel Substrate**: `[e.g. Zscaler Client Connector (utun4, vgw: 100.64.0.1)]`
+- **Session Duration & Samples**: `[e.g. 1800s (900 samples)]`
+
+#### Diagnostic Findings
+- **Observed Incidents**: `[e.g. 1 incident (#1, DEGRADED, 4s, Router Control-Plane)]`
+- **Agent Executive Verdict**: `[HEALTHY | DEGRADED | OUTAGE]`
+- **Diagnostic Confidence**: `[HIGH | MEDIUM | LOW]`
+
+#### Tooling Feedback & Gaps
+- **Telemetry Gaps**: `[What data was missing to prove root cause?]`
+- **Schema & Metric Clarity**: `[Were any columns, logs, or metrics ambiguous?]`
+- **Edge Cases / Uncataloged Topology**: `[Any unusual tunnels, route tables, or captive portals?]`
+- **Suggested Improvement**: `[1 concrete recommendation for split-tunnel-monitor]`
+```
+To submit feedback: Paste this block into https://github.com/iafilius/split-tunnel-monitor/issues
+
+---
+
+## 8. Deep Forensics Documentation
+- Wi-Fi Latency & Enterprise Forensics: `docs/macos_wifi_latency_and_enterprise_forensics.md`
+- USB Ethernet Jitter & Chipsets: `docs/macos_usb_ethernet_jitter_and_chipset_guide.md`
+- OpenSpec Specifications: `openspec/specs/`
+"""
 
 
 
@@ -2606,12 +3228,25 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"ping_checker {__version__} (log-schema: {__log_schema__})")
     parser.add_argument("--no-notify", action="store_true", help="Disable macOS desktop notifications (notifications are on by default)")
     parser.add_argument("-n", "--count", type=int, default=None, help="Stop automatically after N samples and print the session summary (default: run until interrupted)")
+    parser.add_argument(
+        "--agent-manual", "--agent-instructions",
+        dest="agent_manual",
+        action="store_true",
+        help="Print comprehensive AI agent reference manual, forensic disambiguation heuristics, and feedback schema, then exit",
+    )
+    parser.add_argument("--dns-canary", type=str, default="apple.com", help="Canary domain to verify system DNS resolution (default: apple.com)")
+    parser.add_argument("--dns-timeout", type=float, default=2.0, help="Timeout in seconds for DNS canary resolution (default: 2.0)")
+    parser.add_argument("--no-dns-check", action="store_true", help="Disable startup and transition DNS health audit")
     return parser
 
 
 async def main():
     parser = _build_parser()
     args = parser.parse_args()
+    if getattr(args, "agent_manual", False):
+        print(_generate_agent_manual())
+        return
+
     if getattr(args, "no_keep_awake", False):
         args.keep_awake = "off"
 
@@ -2682,6 +3317,18 @@ async def main():
     network_info = NetworkDiscovery.discover_all()
     zsc_active = network_info.get("zscaler", {}).get("is_active", False)
 
+    dns_audit_task = None
+    if not getattr(args, "no_dns_check", False):
+        dns_audit_task = asyncio.create_task(
+            asyncio.to_thread(
+                audit_dns_health,
+                getattr(args, "dns_canary", "apple.com"),
+                getattr(args, "dns_timeout", 2.0),
+                network_info.get("local_ip", ""),
+                network_info.get("interface", "en0")
+            )
+        )
+
     network_info["path_verification"] = assess_path_verification(network_info, current_isp_target, current_zsc_target)
     startup_pathv = network_info["path_verification"]
 
@@ -2719,6 +3366,26 @@ async def main():
         active_wifi["idle_tx_rate"] = idle_tx_rate
         network_info["wifi"] = active_wifi
 
+    if dns_audit_task:
+        dns_info = await dns_audit_task
+    else:
+        dns_info = {
+            "status": "SKIPPED",
+            "canary_host": getattr(args, "dns_canary", "apple.com"),
+            "canary_latency_ms": None,
+            "canary_error": "DNS health audit disabled (--no-dns-check)",
+            "resolved_ips": [],
+            "network_service": NetworkDiscovery.get_network_service_for_interface(network_info.get("interface", "en0")),
+            "static_override": False,
+            "static_servers": [],
+            "resolvers": [],
+            "sticky_resolvers": [],
+            "warning_needed": False,
+            "warning_message": "",
+            "remediation_cmd": "",
+        }
+    network_info["dns"] = dns_info
+
     logfile = args.logfile if args.logfile else init_logfile(
         network_info=network_info, target_pool=target_pool, keep_awake_mode=args.keep_awake, egress=egress_info,
         startup_config=_build_startup_config(
@@ -2751,6 +3418,28 @@ async def main():
     )
     print(f"Direct ISP Egress:         {direct_disp}")
     print(f"Corporate Tunnel Egress:   {tunnel_disp}")
+
+    dns_stat = dns_info.get("status", "UNKNOWN")
+    dns_lat = dns_info.get("canary_latency_ms")
+    dns_lat_str = f" ({dns_lat:.1f}ms)" if dns_lat is not None else ""
+    dns_err = f" [{dns_info['canary_error']}]" if dns_info.get("canary_error") and dns_stat != "VERIFIED" else ""
+    dns_summary = f"{dns_stat}{dns_lat_str}{dns_err}"
+
+    resolvers_disp_list = []
+    for r in dns_info.get("resolvers", []):
+        r_ip = r["ip"]
+        if r.get("reachable"):
+            r_lat = f", {r['rtt_ms']:.1f}ms" if r.get("rtt_ms") is not None else ""
+            resolvers_disp_list.append(f"{r_ip} (Reachable{r_lat})")
+        else:
+            resolvers_disp_list.append(f"{r_ip} (Unreachable)")
+    resolvers_disp = ", ".join(resolvers_disp_list) if resolvers_disp_list else ("N/A (check skipped)" if getattr(args, "no_dns_check", False) else "None detected")
+
+    print(f"DNS Checkup:               {dns_summary}")
+    print(f"DNS Tested Domain:         {dns_info.get('canary_host', 'N/A')}")
+    print(f"Active DNS Servers:        {resolvers_disp}")
+    if dns_info.get("warning_needed") and dns_info.get("warning_message"):
+        print(dns_info["warning_message"])
 
     if pool_rotation_enabled:
         print(f"Target Pool:               {', '.join(target_pool)} ({len(target_pool)} IPv4 Anycast targets)")
@@ -2898,7 +3587,18 @@ async def main():
             incident_count, peak_ovh, peak_ovh_time, overhead, logfile, network_info,
             keep_awake_mode=args.keep_awake,
         )
-        _write_log_footer(logfile, status_counts=status_counts, reason=reason, session_summary_text=summary_text)
+        summary_md = _format_session_summary_md(
+            session_start, status_counts, incidents, current_incident,
+            incident_count, peak_ovh, peak_ovh_time, overhead, logfile, network_info,
+            keep_awake_mode=args.keep_awake,
+        )
+        _write_log_footer(
+            logfile,
+            status_counts=status_counts,
+            reason=reason,
+            session_summary_text=summary_text,
+            session_summary_md=summary_md,
+        )
         print(f"\n{summary_text}")
         print(f"\n{message} (ping_checker v{__version__})")
         print(f"Full diagnostic session recorded in: {os.path.relpath(logfile)}")
@@ -2962,7 +3662,18 @@ async def main():
                         incident_count, peak_ovh, peak_ovh_time, overhead, logfile, network_info,
                         keep_awake_mode=args.keep_awake,
                     )
-                    _write_log_footer(logfile, status_counts=status_counts, reason="END OF DAY — Rotated", session_summary_text=rot_summary)
+                    rot_summary_md = _format_session_summary_md(
+                        session_start, status_counts, incidents, current_incident,
+                        incident_count, peak_ovh, peak_ovh_time, overhead, logfile, network_info,
+                        keep_awake_mode=args.keep_awake,
+                    )
+                    _write_log_footer(
+                        logfile,
+                        status_counts=status_counts,
+                        reason="END OF DAY — Rotated",
+                        session_summary_text=rot_summary,
+                        session_summary_md=rot_summary_md,
+                    )
                     old_logfile = logfile
                     # Open new logfile for the new day
                     active_slot_for_rotation = active_slot if pool_rotation_enabled else init_slot
@@ -3012,6 +3723,14 @@ async def main():
                 net_changed = (fresh_info['interface'] != network_info['interface'] or fresh_info['local_ip'] != network_info['local_ip'])
                 if net_changed:
                     network_info = fresh_info
+                    if not getattr(args, "no_dns_check", False):
+                        fresh_dns = audit_dns_health(getattr(args, "dns_canary", "apple.com"), getattr(args, "dns_timeout", 2.0), fresh_info.get("local_ip", ""), fresh_info.get("interface", "en0"))
+                        network_info["dns"] = fresh_dns
+                        dns_msg = f"[{_ts()}] [DNS AUDIT] Transition audit: {fresh_dns.get('status')} ({fresh_dns.get('canary_host')}, {fresh_dns.get('canary_latency_ms')}ms)"
+                        _log_event(_event_log_path(logfile), dns_msg)
+                        if fresh_dns.get("warning_needed"):
+                            _log_event(_event_log_path(logfile), f"[{_ts()}] [DNS WARNING] Stale/foreign static DNS detected on {fresh_dns.get('network_service')}")
+                            print(fresh_dns.get("warning_message"), flush=True)
 
                 # ── Wi-Fi channel & roaming change detection ──────────────────
                 fresh_wifi = fresh_info.get("wifi", {})
@@ -3044,6 +3763,14 @@ async def main():
                     # Force fresh path verification using the new interface
                     network_info = fresh_info
                     network_info["path_verification"] = assess_path_verification(network_info, current_isp_target, current_zsc_target)
+                    if not getattr(args, "no_dns_check", False):
+                        fresh_dns = audit_dns_health(getattr(args, "dns_canary", "apple.com"), getattr(args, "dns_timeout", 2.0), network_info.get("local_ip", ""), network_info.get("interface", "en0"))
+                        network_info["dns"] = fresh_dns
+                        dns_msg = f"[{_ts()}] [DNS AUDIT] Tunnel transition audit: {fresh_dns.get('status')} ({fresh_dns.get('canary_host')}, {fresh_dns.get('canary_latency_ms')}ms)"
+                        _log_event(_event_log_path(logfile), dns_msg)
+                        if fresh_dns.get("warning_needed"):
+                            _log_event(_event_log_path(logfile), f"[{_ts()}] [DNS WARNING] Stale/foreign static DNS detected on {fresh_dns.get('network_service')}")
+                            print(fresh_dns.get("warning_message"), flush=True)
                 if new_zsc_iface:
                     current_zsc_iface = new_zsc_iface
                 # ─────────────────────────────────────────────────────────────

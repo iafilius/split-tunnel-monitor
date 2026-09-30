@@ -44,3 +44,35 @@ The agent SHALL structure all diagnostic feedback reports using a standardized 4
   2. An Environment Baseline Matrix comparing observed metrics against reference norms.
   3. A Forensic Evidence Timeline linking exact log timestamps to failure domains.
   4. Concrete Actionable Remediation steps with runnable commands.
+
+### Requirement: CLI AI Agent Reference Manual Output
+
+The monitoring script SHALL provide an `--agent-manual` CLI option (with `--agent-instructions` as an alias) that prints a structured, high-density Markdown reference manual to stdout and immediately terminates with exit code 0.
+
+#### Scenario: Running with --agent-manual or --agent-instructions
+- **WHEN** user or AI subagent invokes `ping_checker.py` or `split-tunnel-monitor` with `--agent-manual` or `--agent-instructions`
+- **THEN** the script outputs a comprehensive Markdown guide to stdout and exits with code 0 without initiating network ping loops or writing log files
+- **AND** the output includes tool identity and L3/L4 transport scope, non-interactive execution flags (`-n`, `--silent`, `--no-notify`, `--keep-awake`), artifact file descriptions, forensic failure-domain disambiguation heuristics, the 4-part reporting standard, and the standardized Agent Feedback block schema.
+
+### Requirement: Standardized Markdown Diagnostic and Tooling Feedback Block
+
+The agent manual and session artifacts SHALL define a standardized, privacy-safe Markdown diagnostic and tooling feedback block schema for AI agents analyzing split-tunnel sessions.
+
+#### Scenario: Agent renders tooling feedback
+- **WHEN** an AI agent evaluates a `split-tunnel-monitor` session
+- **THEN** the agent is instructed to format its diagnostic verdict, confidence score, observed edge cases, telemetry gaps, and tooling improvement recommendations within a structured Markdown block suitable for review and pasting into project discussions.
+
+### Requirement: 2.4 GHz RF Contention and Bluetooth Coexistence Disambiguation
+
+The agent SHALL distinguish between 2.4 GHz ISM band RF contention (Bluetooth/BLE audio, peripheral dongles, USB 3.0 EMI, adjacent Wi-Fi networks) and genuine upstream WAN or VPN tunnel degradation.
+
+#### Scenario: Diagnosing latency anomalies on 2.4 GHz Wi-Fi links
+
+- **WHEN** client session logs or telemetry report elevated latency jitter (50ms–200ms+) or intermittent packet loss while connected to a 2.4 GHz Wi-Fi channel (Channels 1–13)
+- **THEN** the agent:
+  1. Identifies the physical interface band as 2.4 GHz.
+  2. Evaluates whether Bluetooth peripherals (audio headsets, mice, keyboards) or USB 3.0 docks are active on the host.
+  3. Diagnoses 2.4 GHz RF / Bluetooth coexistence contention rather than immediately declaring ISP or enterprise VPN tunnel degradation.
+  4. Explicitly recommends migrating to a 5 GHz or 6 GHz Wi-Fi network or testing over wired Ethernet before initiating network escalation.
+
+

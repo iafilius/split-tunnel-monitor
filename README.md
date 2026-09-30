@@ -33,7 +33,9 @@ The underlying tri-path split-tunnel monitoring pattern applies to any corporate
 - **Incident Tracking**: Automatically opens and closes incidents on status transitions. Prints an `[INCIDENT #N RESOLVED]` summary line (domain, duration, timestamps) inline when connectivity recovers.
 - **Session Exit Summary**: On Ctrl+C, prints a human-readable report — duration, status breakdown, full incident timeline, overhead statistics, and logfile path — ready to paste into a helpdesk ticket.
 - **macOS Desktop Notifications**: Fires a notification (via `terminal-notifier` or `osascript`) on every notable state transition — outage start/end, degraded start/end, overhead-warn entry/exit. On by default; suppress with `--no-notify`.
-- **Timestamped Session Logs**: Writes ISO 8601 formatted records to unique session CSV files (`ping_checker_YYYYMMDD_HHMMSS.csv`), companion `.log` event files, plus a `.meta.json` sidecar.
+- **Timestamped Session Logs & Reports**: Writes ISO 8601 formatted records to unique session CSV files (`ping_checker_YYYYMMDD_HHMMSS.csv`), companion `.log` event files, `.summary.md` markdown reports, plus a `.meta.json` sidecar.
+- **AI Agent Reference Manual & Diagnostic Protocol**: Built-in `--agent-manual` (alias `--agent-instructions`) flag emits an LLM-optimized guide covering autonomous non-interactive execution (`-n`, `--silent`), artifact schemas, failure-domain disambiguation heuristics, and a standardized feedback schema for AI assistants.
+- **Startup & Transition DNS Health Audit**: Audits system name resolution against a canary domain (`apple.com`), inspects active nameservers via `scutil --dns`, tests UDP port 53 reachability, and detects stale manual static overrides from foreign subnets (`networksetup -getdnsservers`). Emits an unsuppressed banner warning with the exact remediation command (`networksetup -setdnsservers "<service>" empty`) even in `--silent` mode.
 
 ---
 
@@ -90,10 +92,10 @@ python3 ping_checker.py
 
 ```
 ==========================================================================================
- Tri-Path Split-Tunnel Network & Root-Cause Outage Analyzer (v1.4.0)
+ Tri-Path Split-Tunnel Network & Root-Cause Outage Analyzer (v1.6.0)
  Pinpointing: [1] Local Network (LAN) · [2] Generic Internet (ISP) · [3] Corporate Tunnel (Zscaler)
 ==========================================================================================
-Monitor Version:           1.4.0 (log-schema: 4)
+Monitor Version:           1.6.0 (log-schema: 5)
 Logging to:                ping_checker_20260902_192849.csv
 Direct ISP Egress:         80.60.70.196 (AS1136 KPN B.V., NL)
 Corporate Tunnel Egress:   [Zscaler] 147.161.173.115 (AS62044 Zscaler Switzerland GmbH, CH); [Other] 156.114.10.14 (AS59630 Some Org, NL)
@@ -230,6 +232,8 @@ Each session writes a unique `ping_checker_YYYYMMDD_HHMMSS.csv` file plus a comp
 
 The `.meta.json` sidecar carries everything that used to live in comment/header/footer lines: `script_version`, `log_schema`, `started_at`, `path_verification_note`, and — once the session ends or rotates — `ended_at`, `reason`, `total_samples`, and a per-status sample-count breakdown.
 
+In addition, upon session exit or daily rotation, a companion `ping_checker_YYYYMMDD_HHMMSS.summary.md` file is generated. This report contains human-readable summary tables (incident timeline, status percentages, overhead percentiles) and an embedded directive instructing AI coding assistants (e.g. Claude Code, Cursor, Antigravity) how to apply the 5-point baseline, failure-domain heuristics, and conclude with standardized tooling feedback.
+
 ---
 
 ## Long-term Background Monitoring
@@ -269,7 +273,7 @@ Daily logfile rotation is **on by default** — each calendar day gets its own C
 **Typical background session output:**
 ```text
 ==========================================================================================
- Tri-Path Split-Tunnel Network & Root-Cause Outage Analyzer (v1.4.0)
+ Tri-Path Split-Tunnel Network & Root-Cause Outage Analyzer (v1.6.0)
  Pinpointing: [1] Local Network (LAN) · [2] Generic Internet (ISP) · [3] Corporate Tunnel (Zscaler)
 ==========================================================================================
 Logging to:                /Users/you/ping_checker_20260901_080001.csv
@@ -336,6 +340,10 @@ python3 ping_checker.py [OPTIONS]
 | `--logfile`                            | auto                                                                                    | Custom logfile path; default: `ping_checker_YYYYMMDD_HHMMSS.csv`                                                              |
 | `--zscaler-cidr`                       | none                                                                                    | Comma-separated extra CIDR ranges to classify as `zscaler` Corporate Tunnel egress, in addition to Zscaler's published ranges |
 | `--no-notify`                          | off                                                                                     | Disable macOS desktop notifications (on by default)                                                                           |
+| `--agent-manual`, `--agent-instructions` | off                                                                                   | Print comprehensive AI agent reference manual, forensic heuristics, and feedback schema, then exit                           |
+| `--dns-canary`                         | `apple.com`                                                                             | Canary domain to verify system DNS resolution (default: `apple.com`)                                                          |
+| `--dns-timeout`                        | `2.0`                                                                                   | Timeout in seconds for DNS canary resolution (default: `2.0`)                                                                 |
+| `--no-dns-check`                       | off                                                                                     | Disable startup and transition DNS health audit                                                                               |
 
 ---
 

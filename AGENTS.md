@@ -54,3 +54,12 @@ This protocol establishes the standardized telemetry intake and forensic feedbac
    - **Environment Baseline Matrix**: Table comparing the client's observed metrics against reference norms.
    - **Forensic Evidence & Timeline**: Exact timestamps and RTT excerpts proving the failure domain (LAN vs ISP vs VPN).
    - **Actionable Remediation**: Specific CLI flags, physical link suggestions, or network settings.
+
+5. **CLI Agent Manual & Standardized Tooling Feedback Block**:
+   - Remote AI agents or subagents executing or diagnosing `split-tunnel-monitor` can run:
+     ```bash
+     split-tunnel-monitor --agent-manual
+     ```
+   - Each session generates a companion `ping_checker_<ts>.summary.md` containing the executive summary, environmental snapshot, and an embedded agent directive.
+   - Conclude diagnostic analyses with the standardized **Agent Diagnostic & Tooling Feedback** Markdown block (recording Monitor Version, Platform & Arch, Physical Medium, Tunnel Substrate, Verdict, Confidence, Telemetry Gaps, Schema Clarity, and Suggested Tool Improvement) so clients can submit sanitized feedback to `https://github.com/iafilius/split-tunnel-monitor/issues`.
+

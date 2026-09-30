@@ -201,7 +201,7 @@ The system SHALL run ICMP-mode traceroute (`traceroute -I`) as a background task
 - **THEN** it is NOT source-bound, taking the default route exactly like the Zscaler ping probe, so `TRACE(Z=...)` and the `Zscaler_RTT_ms` column always describe the same route (the tunnel, when Zscaler is active)
 
 ### Requirement: Structured Logging and ISO Timestamped Output
-The system SHALL output real-time compact status line updates to the terminal console and append structured CSV log rows containing local ISO 8601 dates, timestamps, round-trip times (RTT), and outage classifications to a uniquely named CSV file per session run. The CSV file SHALL strictly adhere to RFC-4180 tabular format where Line 1 contains solely the comma-separated column header names without any leading `#` metadata comments. All session metadata (host, OS, Wi-Fi PHY, power profile, keep-awake configuration, target pool, schema version) SHALL be written to a companion `.meta.json` sidecar file instead of within the CSV. Probe target IP and RTT SHALL be written as separate atomic columns (not combined into a single field), and a missing/failed RTT SHALL be written as an empty cell rather than a text placeholder.
+The system SHALL output real-time compact status line updates to the terminal console and append structured CSV log rows containing local ISO 8601 dates, timestamps, round-trip times (RTT), outage classifications, and in-process host system telemetry (CPU%, 1m load average, memory pressure, swap usage, and disk I/O throughput) to a uniquely named CSV file per session run. The CSV file SHALL strictly adhere to RFC-4180 tabular format where Line 1 contains solely the comma-separated column header names without any leading `#` metadata comments. All session metadata (host, OS, Wi-Fi PHY, power profile, keep-awake configuration, target pool, schema version) SHALL be written to companion `.meta.json` and `.schema.json` sidecar files instead of within the CSV. Probe target IP and RTT SHALL be written as separate atomic columns (not combined into a single field), and a missing/failed RTT SHALL be written as an empty cell rather than a text placeholder.
 
 #### Scenario: Logfile initialization
 - **WHEN** the ping checker starts
@@ -211,13 +211,18 @@ The system SHALL output real-time compact status line updates to the terminal co
 - **WHEN** the logfile is initialized
 - **THEN** the system creates a companion `ping_checker_YYYYMMDD_HHMMSS.meta.json` file containing complete host, power, Wi-Fi PHY, keep-awake, VPN, and target pool metadata.
 
+#### Scenario: Schema sidecar creation
+- **WHEN** the logfile is initialized
+- **THEN** the system creates a companion `ping_checker_YYYYMMDD_HHMMSS.schema.json` file detailing all column definitions, units, and data types under Log Schema 5.
+
 #### Scenario: Outage record logging
 - **WHEN** a failure or status state change occurs
-- **THEN** the system writes a CSV row including the exact date, time, target IPs and RTTs in separate columns, and failure domain label.
+- **THEN** the system writes a CSV row including the exact date, time, target IPs, RTTs, host system telemetry metrics, and failure domain label.
 
 #### Scenario: Probe timeout is an empty cell, not text
 - **WHEN** a probe (LAN gateway, ISP direct, or Zscaler tunnel) times out or fails
 - **THEN** the corresponding `_RTT_ms` column for that row is written as an empty cell, not the text `TIMEOUT/FAIL` or `N/A`.
+
 
 ### Requirement: Public Egress IP and ASN Organization Discovery
 The system SHALL asynchronously discover the external public IPv4 address, Autonomous System Number (ASN), and ISP/organization name for the Direct ISP physical underlay path, and SHALL query all configured public egress-check endpoints (not stopping at the first successful response) for the Corporate Tunnel routed path, classifying each result as `direct` (matches the Direct ISP egress IP), `zscaler` (falls within a known Zscaler-published or user-supplied CIDR range), or `other` (neither). Direct ISP egress discovery SHALL bind to the active physical interface local IP (bypassing any active VPN tunnel). Corporate Tunnel egress discovery SHALL route through the system default routing table (flowing through the virtual tunnel adapter when active) for every configured endpoint. Zscaler CIDR-range knowledge SHALL be sourced from a live fetch of Zscaler's own published Cloud Enforcement Node Ranges, cached locally with a refresh TTL, falling back to a small built-in static seed list if the live fetch fails. No organization-specific ASN, name, or IP SHALL be hardcoded in source. Re-discovery triggered by a network interface, local IP, or tunnel transition SHALL preserve the previously-known-good direct or tunneled egress state when a re-discovery attempt transiently fails to resolve one of them, rather than discarding it.
@@ -275,3 +280,19 @@ The system SHALL continuously refresh active Wi-Fi physical radio metadata (incl
 #### Scenario: Real-time Wi-Fi polling rate-limiting
 - **WHEN** the monitoring loop runs at high frequency or under fast intervals
 - **THEN** physical Wi-Fi radio sampling is executed at most once per second to prevent unnecessary framework calls.
+
+### Requirement: 2.4 GHz Wi-Fi Contention Advisory and Roam Warning
+
+The system SHALL detect when the active Wi-Fi interface operates on the 2.4 GHz band (Channels 1–14), emit an informative advisory banner at startup and during downward roaming transitions, and record the RF band advisory state in the companion `.meta.json` sidecar.
+
+#### Scenario: 2.4 GHz Wi-Fi detected at startup
+
+- **WHEN** the monitor initializes on an active Wi-Fi interface whose band is "2.4GHz" or channel is between 1 and 14
+- **THEN** the console and logfile startup banner display an informative advisory that 2.4 GHz Wi-Fi operates in a shared ISM band with higher susceptibility to Bluetooth, peripheral dongles, and USB 3.0 EMI
+- **AND** the companion `.meta.json` records `"rf_band_advisory": "2.4GHZ_SHARED_ISM_RISK"`.
+
+#### Scenario: Roaming downgrade from 5GHz/6GHz to 2.4GHz
+
+- **WHEN** dynamic Wi-Fi roaming detects a transition from a 5 GHz or 6 GHz channel down to a 2.4 GHz channel
+- **THEN** the logged `[WIFI ROAM]` event appends an informative advisory indicating potential RF contention risk (e.g. `(shared 2.4GHz band -- higher RF contention risk)`).
+
