@@ -681,6 +681,17 @@ Live system state during capture: `vm.swapusage` showed 5.9GB of 7GB swap in use
 
 None of these factors are specific to this repository's tool or this particular Mac — they're structural properties of "a general-purpose laptop with mandatory corporate endpoint security" vs. "purpose-built server/datacenter networking hardware." A `split-tunnel-monitor` reading of ~1-4ms on a wired corporate-managed laptop, with jitter in the low single-digit milliseconds, is the **expected, correct floor for this class of machine** — not evidence of a misconfiguration to chase.
 
+#### D. Multi-homed hosts: a wired session is no longer misreported as Wi-Fi (fixed)
+
+On a multi-homed Mac — this exact `en14` USB adapter carrying the default route, while the internal Wi-Fi radio (`en0`) is independently powered on and associated to an AP in the background — earlier versions of `split-tunnel-monitor` misreported the session as Wi-Fi: `.meta.json` recorded `is_wifi: true` along with `en0`'s real channel/RSSI/SNR/TxRate, while `medium` correctly said `"USB 10/100/1G/2.5G LAN"` and `ssid`/`bssid` were empty — an internally contradictory snapshot. `physical_medium_advisory` consequently reported the Wi-Fi RF-contention advisory for what was actually a clean wired baseline, and the 2.4GHz RF-band advisory (§9, Fingerprint discussion) could fire falsely if the background radio happened to be associated on a 2.4GHz channel.
+
+Root cause: the CoreWLAN fast-path queried `CWWiFiClient.sharedWiFiClient().interface()`, which always returns the OS's default Wi-Fi interface regardless of which interface was actually being profiled, and the later per-interface `networksetup` hardware-port lookup never overrode the flag it had already set. Fixed by binding the CoreWLAN query to the requested interface (`interfaceWithName:`) and making the per-interface hardware-port lookup authoritative for `is_wifi` (OpenSpec change `fix-multihomed-wifi-detection`). Verified live on this same machine after the fix:
+
+```text
+_get_wifi_phy_metadata("en14")  ->  is_wifi=False, medium="USB 10/100/1G/2.5G LAN", channel=0, rssi=None
+_get_wifi_phy_metadata("en0")   ->  is_wifi=True,  medium="Wi-Fi", channel=100 (5GHz), rssi=-48
+```
+
 ---
 
 ### Authoritative Multi-Path Fault Domain Triangulation
