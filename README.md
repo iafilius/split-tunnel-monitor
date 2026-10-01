@@ -328,22 +328,45 @@ python3 ping_checker.py [OPTIONS]
 | `--overhead-window`                    | `60`                                                                                    | Rolling overhead window size (samples)                                                                                        |
 | `--overhead-baseline-samples`          | `30`                                                                                    | Samples before baseline is established (~60 s at default interval)                                                            |
 | `--overhead-alert-ms`                  | `20.0`                                                                                  | Alert when rolling p50 exceeds baseline by this many ms                                                                       |
-| `--keep-awake`, `--low-latency`        | `udp-tick`                                                                              | Suppress 802.11 PSM sleep buffering via background side-channel (`udp-tick`, `qos-vo`, `assertion`, `prewarm`)                 |
+| `--keep-awake`, `--low-latency`        | `udp-tick`                                                                              | Suppress 802.11 PSM sleep buffering via background side-channel (`udp-tick`, `qos-vo`, `assertion`, `prewarm`)                |
 | `--no-keep-awake`                      | off                                                                                     | Disable keep-awake side-channel (passive measurement with 802.11 PSM doze)                                                    |
-| `--prewarm`                            | off                                                                                     | Transmit a synchronized 1-byte pre-warm pulse to the gateway 15ms prior to concurrent probe dispatch                           |
-| `--no-prewarm`                         | off                                                                                     | Explicitly disable in-line pre-warm probe dispatch                                                                             |
+| `--prewarm`                            | off                                                                                     | Transmit a synchronized 1-byte pre-warm pulse to the gateway 15ms prior to concurrent probe dispatch                          |
+| `--no-prewarm`                         | off                                                                                     | Explicitly disable in-line pre-warm probe dispatch                                                                            |
 | `--prewarm-ms`                         | `15`                                                                                    | Hardware stabilization settle delay in milliseconds after pre-warm datagram before probe dispatch                             |
-| `--prewarm-count`                      | `1`                                                                                     | Number of pre-warm micro-datagrams to transmit prior to probe dispatch                                                         |
-| `--probe-stagger-ms`                   | `15`                                                                                    | Stagger delay in milliseconds between concurrent probe dispatches (default: 15; 0 to disable)                                  |
-| `--no-randomize-probe-order`           | off                                                                                     | Disable randomized public target dispatch order (dispatches sequentially: Direct at +15ms, Tunnel at +30ms)                  |
-| `--randomize-probe-order`              | off                                                                                     | Explicitly enable randomized public target dispatch order (enabled by default when micro-stagger is active)                 |
+| `--prewarm-count`                      | `1`                                                                                     | Number of pre-warm micro-datagrams to transmit prior to probe dispatch                                                        |
+| `--probe-stagger-ms`                   | `15`                                                                                    | Stagger delay in milliseconds between concurrent probe dispatches (default: 15; 0 to disable)                                 |
+| `--no-randomize-probe-order`           | off                                                                                     | Disable randomized public target dispatch order (dispatches sequentially: Direct at +15ms, Tunnel at +30ms)                   |
+| `--randomize-probe-order`              | off                                                                                     | Explicitly enable randomized public target dispatch order (enabled by default when micro-stagger is active)                   |
 | `--logfile`                            | auto                                                                                    | Custom logfile path; default: `ping_checker_YYYYMMDD_HHMMSS.csv`                                                              |
 | `--zscaler-cidr`                       | none                                                                                    | Comma-separated extra CIDR ranges to classify as `zscaler` Corporate Tunnel egress, in addition to Zscaler's published ranges |
+| `--audit-capture`                      | off                                                                                     | Run a one-shot packet-capture-based audit across the full target pool, then exit (see below)                                  |
 | `--no-notify`                          | off                                                                                     | Disable macOS desktop notifications (on by default)                                                                           |
 | `--agent-manual`, `--agent-instructions` | off                                                                                   | Print comprehensive AI agent reference manual, forensic heuristics, and feedback schema, then exit                           |
 | `--dns-canary`                         | `apple.com`                                                                             | Canary domain to verify system DNS resolution (default: `apple.com`)                                                          |
 | `--dns-timeout`                        | `2.0`                                                                                   | Timeout in seconds for DNS canary resolution (default: `2.0`)                                                                 |
 | `--no-dns-check`                       | off                                                                                     | Disable startup and transition DNS health audit                                                                               |
+
+---
+
+## Capture-Based Path Audit (`--audit-capture`)
+
+`assess_path_verification()` and `discover_egress()` already give routing-table- and egress-IP-based evidence that the direct/bypass probe and the tunnel probe take the correct path, but only for whichever single target the pool rotation currently has active. `--audit-capture` runs a one-shot, independent, stronger check: it re-discovers the physical interface, local IP, Zscaler tunnel interface, and tunnel virtual IP fresh (never hardcoded), then for **every** target in `--target-pool` captures ICMP on both interfaces while firing the exact same tunnel-intended and direct-intended probes the continuous monitor uses, and confirms each one's packets actually landed on the expected interface — not just what the routing table claims should happen.
+
+```bash
+python3 ping_checker.py --audit-capture
+```
+
+Rerun this after any Zscaler Client Connector upgrade, after a network change, or periodically as a spot-check — it requires no code changes to stay correct, since every interface/IP it checks against is rediscovered at run time. It requires `tcpdump` and packet-capture permission (macOS `access_bpf` group membership, or root); the audit fails fast with a specific error if that's unavailable, rather than hanging or silently passing.
+
+Prints a console table and writes a JSON report (`ping_checker_audit_YYYYMMDD_HHMMSS.json`), and exits non-zero if any target fails — safe to wire into a script or cron job. Per-target results:
+
+| Result         | Meaning                                                                                                                                                          |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PASS`         | Probe observed only on its intended interface; for the tunnel side, source IP also matched the discovered virtual IP                                             |
+| `PASS-WEAK`    | Tunnel-side probe observed only on the tunnel interface, but no virtual IP was discoverable to confirm the source (e.g. a future Zscaler client behavior change) |
+| `N/A`          | Zscaler is inactive, so the tunnel-side assertion is skipped rather than failed                                                                                  |
+| `FAIL`         | The probe was missing from its expected interface, leaked to the other interface, or (tunnel side) had an unexpected source IP                                   |
+| `INCONCLUSIVE` | A capture never became ready in time — retry rather than trust the result                                                                                        |
 
 ---
 

@@ -46,6 +46,8 @@ import ctypes
 import ctypes.util
 import threading
 import concurrent.futures
+import tempfile
+import select
 from datetime import datetime
 
 __version__ = "1.6.0"
@@ -1199,6 +1201,306 @@ async def _staggered_ping(delay_sec: float, *args, **kwargs) -> ProbeResult:
     return await ping_target(*args, **kwargs)
 
 
+# --- Capture-Based Path Audit (--audit-capture) -----------------------------
+# One-shot, packet-capture-based corroboration that the tunnel-intended and
+# direct-intended probes actually traverse the expected interface, across the
+# full target pool. Complements (does not replace) the routing-table-based
+# assess_path_verification() and egress-IP-based discover_egress() checks.
+# See openspec/changes/capture-based-path-verification/design.md.
+
+class _CaptureHandle:
+    """Handle for a running tcpdump capture subprocess."""
+    __slots__ = ("interface", "pcap_path", "proc")
+
+    def __init__(self, interface: str, pcap_path: str, proc: "subprocess.Popen"):
+        self.interface = interface
+        self.pcap_path = pcap_path
+        self.proc = proc
+
+
+def start_icmp_capture(interface: str, pcap_path: str, host: str = "") -> "_CaptureHandle | None":
+    """Start a tcpdump capture on interface, filtered to `icmp` (optionally scoped
+    to a single host), writing to pcap_path. Returns a handle, or None if tcpdump
+    is unavailable or the interface is empty."""
+    tcpdump_path = shutil.which("tcpdump")
+    if not tcpdump_path or not interface:
+        return None
+    bpf_filter = f"icmp and host {host}" if host else "icmp"
+    # --immediate-mode bypasses the kernel BPF read timeout (commonly ~1s on
+    # macOS), which otherwise buffers captured packets in the kernel and can
+    # silently drop them if the process is stopped before that timeout elapses.
+    cmd = [tcpdump_path, "--immediate-mode", "-i", interface, "-n", "-w", pcap_path, bpf_filter]
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    except Exception:
+        return None
+    return _CaptureHandle(interface, pcap_path, proc)
+
+
+def wait_capture_ready(handle: "_CaptureHandle | None", timeout_sec: float = 2.0) -> bool:
+    """Block (without hanging past timeout_sec) until tcpdump reports it is
+    listening, or the process exits early (e.g. a permission failure)."""
+    if handle is None or handle.proc.stderr is None:
+        return False
+    deadline = time.time() + timeout_sec
+    buf = ""
+    while time.time() < deadline:
+        if handle.proc.poll() is not None:
+            return False
+        remaining = max(0.0, deadline - time.time())
+        ready, _, _ = select.select([handle.proc.stderr], [], [], min(0.2, remaining))
+        if ready:
+            chunk = handle.proc.stderr.readline()
+            if not chunk:
+                return False
+            buf += chunk
+            if "listening on" in buf:
+                return True
+    return False
+
+
+def stop_capture(handle: "_CaptureHandle | None") -> list[dict]:
+    """Stop a running capture and return its observed ICMP packets."""
+    if handle is None:
+        return []
+    if handle.proc.poll() is None:
+        try:
+            handle.proc.send_signal(signal.SIGINT)
+            handle.proc.wait(timeout=3)
+        except Exception:
+            try:
+                handle.proc.kill()
+                handle.proc.wait(timeout=2)
+            except Exception:
+                pass
+    return read_icmp_packets(handle.pcap_path)
+
+
+def read_icmp_packets(pcap_path: str) -> list[dict]:
+    """Parse a pcap file (via `tcpdump -r`) into a list of {'src', 'dst'} ICMP packet dicts."""
+    tcpdump_path = shutil.which("tcpdump")
+    if not tcpdump_path or not os.path.exists(pcap_path):
+        return []
+    try:
+        res = subprocess.run([tcpdump_path, "-n", "-r", pcap_path], capture_output=True, text=True, timeout=5)
+    except Exception:
+        return []
+    packets = []
+    pattern = re.compile(r"IP\s+(\d{1,3}(?:\.\d{1,3}){3})\s*>\s*(\d{1,3}(?:\.\d{1,3}){3}):\s*ICMP")
+    for line in res.stdout.splitlines():
+        match = pattern.search(line)
+        if match:
+            packets.append({"src": match.group(1), "dst": match.group(2)})
+    return packets
+
+
+def check_capture_permission(interface: str) -> tuple[bool, str]:
+    """Attempt a short-lived probe capture on interface to confirm packet capture
+    permission before the real audit starts any probes. Returns (ok, error_message)."""
+    if not shutil.which("tcpdump"):
+        return False, "'tcpdump' not found on PATH"
+    if not interface:
+        return False, "no physical interface was discovered to capture on"
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        probe_path = os.path.join(tmp_dir, "permcheck.pcap")
+        handle = start_icmp_capture(interface, probe_path)
+        if handle is None:
+            return False, "failed to start tcpdump"
+        if wait_capture_ready(handle, timeout_sec=1.5):
+            stop_capture(handle)
+            return True, ""
+        stderr_tail = ""
+        if handle.proc.poll() is None:
+            try:
+                handle.proc.kill()
+                handle.proc.wait(timeout=2)
+            except Exception:
+                pass
+        if handle.proc.stderr:
+            try:
+                stderr_tail = handle.proc.stderr.read()
+            except Exception:
+                pass
+        return False, stderr_tail.strip() or "tcpdump did not start capturing (missing packet capture permission?)"
+
+
+def classify_target_capture(
+    target: str,
+    physical_packets: list[dict],
+    tunnel_packets: list[dict],
+    local_ip: str,
+    virtual_ip: str,
+    zscaler_active: bool,
+) -> tuple[str, str, str, str]:
+    """Classify one target's capture-based audit result.
+
+    Returns (direct_status, direct_reason, tunnel_status, tunnel_reason).
+    Leakage is detected by request COUNT (an echo request has dst == target;
+    replies do not, so this counts distinct probes, not request+reply pairs),
+    not by source IP alone — a bypassing tunnel probe would otherwise carry
+    the same source IP as the legitimate direct probe and be indistinguishable
+    by source. Source-IP matching against the tunnel virtual IP is used only
+    to upgrade a tunnel PASS to a stronger match (see design.md Decision 3).
+    """
+    physical_requests = [p for p in physical_packets if p.get("dst") == target]
+    tunnel_requests = [p for p in tunnel_packets if p.get("dst") == target]
+    # When Zscaler is inactive, the tunnel-intended probe legitimately also
+    # egresses the physical interface (there is no tunnel to bypass), so two
+    # requests there is expected, not a leak.
+    expected_physical = 1 if zscaler_active else 2
+
+    if len(physical_requests) == 0:
+        direct_status, direct_reason = "FAIL", "direct-intended probe was not observed on the physical interface"
+    elif len(physical_requests) > expected_physical:
+        direct_status, direct_reason = "FAIL", "unexpected extra traffic on the physical interface"
+    else:
+        direct_status, direct_reason = "PASS", "observed on physical interface as expected"
+
+    if not zscaler_active:
+        return direct_status, direct_reason, "N/A", "Zscaler inactive; tunnel-side assertion skipped"
+
+    if len(physical_requests) > 1:
+        tunnel_status, tunnel_reason = "FAIL", "tunnel-intended probe leaked to the physical interface"
+    elif len(tunnel_requests) == 0:
+        tunnel_status, tunnel_reason = "FAIL", "tunnel-intended probe was not observed on the tunnel interface"
+    elif virtual_ip:
+        if any(p.get("src") == virtual_ip for p in tunnel_requests):
+            tunnel_status, tunnel_reason = "PASS", f"observed only on tunnel interface, source matches virtual IP {virtual_ip}"
+        else:
+            tunnel_status, tunnel_reason = "FAIL", f"observed on tunnel interface but source did not match expected virtual IP {virtual_ip}"
+    else:
+        tunnel_status, tunnel_reason = "PASS-WEAK", "observed only on tunnel interface; no virtual IP available to confirm source"
+
+    return direct_status, direct_reason, tunnel_status, tunnel_reason
+
+
+async def audit_single_target(
+    target: str,
+    *,
+    physical_iface: str,
+    local_ip: str,
+    tunnel_iface: str,
+    virtual_ip: str,
+    zscaler_active: bool,
+    capture_dir: str,
+) -> dict:
+    """Run one capture-based audit pass for a single target: start both interface
+    captures, fire the tunnel-intended and direct-intended probes, stop both
+    captures, and classify the result."""
+    safe_name = target.replace(".", "_")
+    physical_pcap = os.path.join(capture_dir, f"physical_{safe_name}.pcap")
+    tunnel_pcap = os.path.join(capture_dir, f"tunnel_{safe_name}.pcap")
+
+    physical_handle = start_icmp_capture(physical_iface, physical_pcap, host=target)
+    tunnel_handle = start_icmp_capture(tunnel_iface, tunnel_pcap, host=target) if zscaler_active else None
+
+    physical_ready = wait_capture_ready(physical_handle)
+    tunnel_ready = wait_capture_ready(tunnel_handle) if tunnel_handle else True
+
+    if not physical_ready or (zscaler_active and not tunnel_ready):
+        stop_capture(physical_handle)
+        stop_capture(tunnel_handle)
+        reason = "physical interface capture never became ready" if not physical_ready else "tunnel interface capture never became ready"
+        return {
+            "target": target, "direct_status": "INCONCLUSIVE", "direct_reason": reason,
+            "tunnel_status": "INCONCLUSIVE" if zscaler_active else "N/A", "tunnel_reason": reason,
+            "physical_packets": [], "tunnel_packets": [],
+        }
+
+    await ping_target(target)                       # tunnel-intended (no source binding)
+    await ping_target(target, source_ip=local_ip)    # direct-intended (bound to physical local IP)
+
+    physical_packets = stop_capture(physical_handle)
+    tunnel_packets = stop_capture(tunnel_handle)
+
+    direct_status, direct_reason, tunnel_status, tunnel_reason = classify_target_capture(
+        target, physical_packets, tunnel_packets, local_ip, virtual_ip, zscaler_active
+    )
+    return {
+        "target": target,
+        "direct_status": direct_status, "direct_reason": direct_reason,
+        "tunnel_status": tunnel_status, "tunnel_reason": tunnel_reason,
+        "physical_packets": physical_packets, "tunnel_packets": tunnel_packets,
+    }
+
+
+def format_audit_result_line(result: dict) -> str:
+    """Render one target's audit result as a compact console table row."""
+    return (
+        f"  {result['target']:<16s} DIRECT={result['direct_status']:<12s} "
+        f"ZSCALER={result['tunnel_status']:<12s} "
+        f"({result['direct_reason']}; {result['tunnel_reason']})"
+    )
+
+
+async def run_capture_audit(target_pool: list[str]) -> int:
+    """Run the one-shot capture-based path audit across every target in the pool.
+
+    Prints a PASS/FAIL/N/A/PASS-WEAK table, writes a JSON report, and returns
+    the process exit code (0 if no FAIL/INCONCLUSIVE result, 1 otherwise).
+    """
+    if not shutil.which("tcpdump"):
+        print("ERROR: --audit-capture requires 'tcpdump', which was not found on PATH.")
+        return 2
+
+    print("Performing dynamic path discovery for capture-based audit...")
+    network_info = NetworkDiscovery.discover_all()
+    physical_iface = network_info.get("interface", "")
+    local_ip = network_info.get("local_ip", "")
+    zsc_info = network_info.get("zscaler", {})
+    zscaler_active = zsc_info.get("is_active", False)
+    tunnel_iface = zsc_info.get("interface", "")
+    virtual_ip = zsc_info.get("virtual_ip", "")
+
+    perm_ok, perm_error = check_capture_permission(physical_iface)
+    if not perm_ok:
+        print(f"ERROR: packet capture permission check failed: {perm_error}")
+        print("Hint: add this user to the 'access_bpf' group, or run with elevated privileges.")
+        return 2
+
+    print(f"Physical interface: {physical_iface or 'N/A'} (local IP {local_ip or 'N/A'})")
+    if zscaler_active:
+        print(f"Tunnel interface:   {tunnel_iface or 'N/A'} (virtual IP {virtual_ip or 'N/A'})")
+    else:
+        print("Tunnel interface:   N/A (Zscaler inactive)")
+    print(f"\nAuditing {len(target_pool)} target(s)...\n")
+
+    results = []
+    with tempfile.TemporaryDirectory(prefix="ping_checker_audit_") as capture_dir:
+        for target in target_pool:
+            result = await audit_single_target(
+                target,
+                physical_iface=physical_iface,
+                local_ip=local_ip,
+                tunnel_iface=tunnel_iface,
+                virtual_ip=virtual_ip,
+                zscaler_active=zscaler_active,
+                capture_dir=capture_dir,
+            )
+            results.append(result)
+            print(format_audit_result_line(result))
+
+    fail_count = sum(1 for r in results if r["direct_status"] in ("FAIL", "INCONCLUSIVE") or r["tunnel_status"] in ("FAIL", "INCONCLUSIVE"))
+    pass_count = len(results) - fail_count
+
+    report = {
+        "generated_at": datetime.now().astimezone().isoformat(),
+        "physical_interface": physical_iface,
+        "local_ip": local_ip,
+        "tunnel_interface": tunnel_iface,
+        "tunnel_virtual_ip": virtual_ip,
+        "zscaler_active": zscaler_active,
+        "results": results,
+    }
+    report_path = f"ping_checker_audit_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    with open(report_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2)
+
+    print(f"\n{pass_count}/{len(results)} targets fully passed" + (f", {fail_count} FAILED/INCONCLUSIVE" if fail_count else ""))
+    print(f"Report written to {report_path}")
+    return 1 if fail_count else 0
+
+
 def classify_outage(
     lan_res: ProbeResult,
     isp_res: ProbeResult,
@@ -1450,6 +1752,8 @@ def _get_wifi_phy_metadata(interface: str = "en0") -> dict:
             objc.sel_registerName.argtypes = [ctypes.c_char_p]
 
             msg_p_p = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)(("objc_msgSend", objc))
+            msg_p_p_p = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)(("objc_msgSend", objc))
+            msg_p_p_s = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_char_p)(("objc_msgSend", objc))
             msg_l_p = ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p)(("objc_msgSend", objc))
             msg_d_p = ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_void_p, ctypes.c_void_p)(("objc_msgSend", objc))
 
@@ -1457,7 +1761,12 @@ def _get_wifi_phy_metadata(interface: str = "en0") -> dict:
             if CWWiFiClient:
                 client = msg_p_p(CWWiFiClient, objc.sel_registerName(b"sharedWiFiClient"))
                 if client:
-                    iface = msg_p_p(client, objc.sel_registerName(b"interface"))
+                    # sharedWiFiClient().interface() ignores which interface we asked about and
+                    # always returns the OS's default Wi-Fi interface -- bind explicitly to the
+                    # requested interface so a wired session isn't misattributed a Wi-Fi radio's data.
+                    NSString = objc.objc_getClass(b"NSString")
+                    ns_iface_name = msg_p_p_s(NSString, objc.sel_registerName(b"stringWithUTF8String:"), interface.encode("utf-8")) if NSString else None
+                    iface = msg_p_p_p(client, objc.sel_registerName(b"interfaceWithName:"), ns_iface_name) if ns_iface_name else None
                     if iface:
                         rssi = msg_l_p(iface, objc.sel_registerName(b"rssiValue"))
                         noise = msg_l_p(iface, objc.sel_registerName(b"noiseMeasurement"))
@@ -1501,6 +1810,10 @@ def _get_wifi_phy_metadata(interface: str = "en0") -> dict:
                         telemetry["is_wifi"] = True
                         telemetry["medium"] = "Wi-Fi"
                     else:
+                        # Authoritative: this interface's hardware port is not Wi-Fi, so
+                        # override any is_wifi=True the CoreWLAN step may have set for a
+                        # different (background) Wi-Fi interface on a multi-homed host.
+                        telemetry["is_wifi"] = False
                         telemetry["medium"] = current_port or "Ethernet"
                     break
     except Exception:
@@ -1558,6 +1871,8 @@ def poll_wifi_phy_fast(interface: str = "en0") -> dict | None:
         objc.sel_registerName.argtypes = [ctypes.c_char_p]
 
         msg_p_p = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)(("objc_msgSend", objc))
+        msg_p_p_p = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)(("objc_msgSend", objc))
+        msg_p_p_s = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_char_p)(("objc_msgSend", objc))
         msg_l_p = ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p)(("objc_msgSend", objc))
         msg_d_p = ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_void_p, ctypes.c_void_p)(("objc_msgSend", objc))
 
@@ -1567,7 +1882,16 @@ def poll_wifi_phy_fast(interface: str = "en0") -> dict | None:
         client = msg_p_p(CWWiFiClient, objc.sel_registerName(b"sharedWiFiClient"))
         if not client:
             return None
-        iface = msg_p_p(client, objc.sel_registerName(b"interface"))
+        # sharedWiFiClient().interface() ignores which interface we asked about and always
+        # returns the OS's default Wi-Fi interface -- bind explicitly to the requested interface
+        # so a wired session isn't misattributed a background Wi-Fi radio's data (see _get_wifi_phy_metadata).
+        NSString = objc.objc_getClass(b"NSString")
+        if not NSString:
+            return None
+        ns_iface_name = msg_p_p_s(NSString, objc.sel_registerName(b"stringWithUTF8String:"), interface.encode("utf-8"))
+        if not ns_iface_name:
+            return None
+        iface = msg_p_p_p(client, objc.sel_registerName(b"interfaceWithName:"), ns_iface_name)
         if not iface:
             return None
 
@@ -3224,6 +3548,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Explicitly enable randomized public target dispatch order (on by default when micro-stagger is active)",
     )
     parser.add_argument("--zscaler-cidr", type=str, default="", help="Comma-separated extra CIDR ranges to classify as 'zscaler' Corporate Tunnel egress, in addition to Zscaler's published ranges (e.g. a Private Service Edge range not covered by Zscaler's public list)")
+    parser.add_argument("--audit-capture", dest="audit_capture", action="store_true", help="Run a one-shot packet-capture-based audit across the full target pool, verifying tunnel- and direct-intended probes actually traverse the expected interface, then exit (does not start continuous monitoring)")
     parser.add_argument("--logfile", type=str, default="", help="Custom logfile path (default: auto-generated unique .csv filename)")
     parser.add_argument("--version", action="version", version=f"ping_checker {__version__} (log-schema: {__log_schema__})")
     parser.add_argument("--no-notify", action="store_true", help="Disable macOS desktop notifications (notifications are on by default)")
@@ -3288,6 +3613,10 @@ async def main():
             parser.error(str(exc))
     else:
         target_pool = list(DEFAULT_IPV4_TARGET_POOL)
+
+    if args.audit_capture:
+        exit_code = await run_capture_audit(target_pool)
+        sys.exit(exit_code)
 
     direct_override = args.isp_target
     zscaler_override = args.zscaler_target
